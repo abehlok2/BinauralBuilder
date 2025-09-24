@@ -2,8 +2,12 @@
 
 from PyQt5.QtWidgets import QDialog, QGroupBox
 
-from ui.voice_editor_dialog import VoiceEditorDialog
-from utils.preferences import Preferences
+from src.ui.voice_editor_dialog import VoiceEditorDialog
+
+try:
+    from src.utils.preferences import Preferences
+except ImportError:  # Fallback for legacy execution contexts
+    from utils.preferences import Preferences
 
 
 class DefaultVoiceDialog(VoiceEditorDialog):
