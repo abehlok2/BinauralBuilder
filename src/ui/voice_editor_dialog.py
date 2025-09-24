@@ -26,14 +26,14 @@ from collections import OrderedDict
 import math
 import inspect
 import traceback
-from synth_functions import sound_creator  # Updated import path
-from utils.voice_file import (
+from src.synth_functions import sound_creator  # Updated import path
+from src.utils.voice_file import (
     VoicePreset,
     load_voice_preset,
     save_voice_preset,
     VOICE_FILE_EXTENSION,
 )
-from utils.amp_utils import amplitude_to_db, db_to_amplitude, is_amp_key
+from src.utils.amp_utils import amplitude_to_db, db_to_amplitude, is_amp_key
 from .spatial_trajectory_dialog import SpatialTrajectoryDialog
 
 # Constants from your original dialog structure for envelopes

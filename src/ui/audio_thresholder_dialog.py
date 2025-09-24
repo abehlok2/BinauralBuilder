@@ -27,10 +27,10 @@ except Exception as e:  # noqa: PIE786 - broad for missing backends
 import numpy as np
 
 try:
-    from utils.preferences import Preferences
+    from src.utils.preferences import Preferences
 except ImportError:  # running standalone
     from utils.preferences import Preferences
-from utils.amp_utils import db_to_amplitude, MIN_DB
+from src.utils.amp_utils import db_to_amplitude, MIN_DB
 
 
 class AudioThresholderDialog(QDialog):

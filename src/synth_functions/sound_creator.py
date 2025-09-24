@@ -304,11 +304,14 @@ SYNTH_FUNCTIONS = {
 }
 try:
     # Import the synth_functions package
-    import synth_functions
+    try:
+        import src.synth_functions as synth_functions
+    except ImportError:
+        import synth_functions
     for name, obj in inspect.getmembers(synth_functions):
         if inspect.isfunction(obj) and name not in _EXCLUDED_FUNCTION_NAMES and not name.startswith('_'):
              # Check if the function is defined in the synth_functions package or its submodules
-            if obj.__module__.startswith('synth_functions'):
+            if obj.__module__.startswith(('src.synth_functions', 'synth_functions')):
                 SYNTH_FUNCTIONS[name] = obj
 except Exception as e:
     print(f"Error inspecting functions: {e}")

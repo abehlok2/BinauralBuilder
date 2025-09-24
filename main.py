@@ -1,6 +1,6 @@
 import sys
 import json
-from synth_functions import sound_creator  # Updated import path
+from src.synth_functions import sound_creator  # Updated import path
 import soundfile as sf
 import os
 import copy  # For deep copying voice data
@@ -54,18 +54,18 @@ except Exception as e:  # noqa: PIE786 - generic Exception to capture missing Qt
     QAudioFormat = QAudioOutput = QAudioDeviceInfo = QAudio = None
 
 from functools import partial
-from ui.themes import THEMES, apply_theme
-from utils.preferences import Preferences
-from utils.settings_file import load_settings, save_settings
-from ui.preferences_dialog import PreferencesDialog
-from ui.noise_generator_dialog import NoiseGeneratorDialog
-from ui.frequency_tester_dialog import FrequencyTesterDialog
-from ui.subliminal_dialog import SubliminalDialog
-from utils.timeline_visualizer import visualize_track_timeline
-from ui.overlay_clip_dialog import OverlayClipDialog
-from ui.collapsible_box import CollapsibleBox
-from models import StepModel, VoiceModel
-from utils.voice_file import (
+from src.ui.themes import THEMES, apply_theme
+from src.utils.preferences import Preferences
+from src.utils.settings_file import load_settings, save_settings
+from src.ui.preferences_dialog import PreferencesDialog
+from src.ui.noise_generator_dialog import NoiseGeneratorDialog
+from src.ui.frequency_tester_dialog import FrequencyTesterDialog
+from src.ui.subliminal_dialog import SubliminalDialog
+from src.utils.timeline_visualizer import visualize_track_timeline
+from src.ui.overlay_clip_dialog import OverlayClipDialog
+from src.ui.collapsible_box import CollapsibleBox
+from src.models import StepModel, VoiceModel
+from src.utils.voice_file import (
     VoicePreset,
     save_voice_preset_list,
     load_voice_preset_list,
@@ -112,7 +112,7 @@ _patch_qmessagebox()
 
 # Attempt to import VoiceEditorDialog. Handle if ui/voice_editor_dialog.py is not found.
 try:
-    from ui.voice_editor_dialog import VoiceEditorDialog
+    from src.ui.voice_editor_dialog import VoiceEditorDialog
     VOICE_EDITOR_DIALOG_AVAILABLE = True
 except ImportError:
     VOICE_EDITOR_DIALOG_AVAILABLE = False
@@ -213,13 +213,13 @@ SUPPORTED_ENVELOPE_TYPES = [ENVELOPE_TYPE_NONE, ENVELOPE_TYPE_LINEAR] # From pre
 
 # Updated import path for sound_creator
 try:
-    from synth_functions.sound_creator import generate_single_step_audio_segment  # Used for test preview
+    from src.synth_functions.sound_creator import generate_single_step_audio_segment  # Used for test preview
     AUDIO_GENERATION_AVAILABLE = True # For test preview specifically
 except ImportError as e:
     generate_single_step_audio_segment = None
     AUDIO_GENERATION_AVAILABLE = False
     print(
-        f"Warning: Could not import 'generate_single_step_audio_segment' from 'synth_functions.sound_creator': {e}. "
+        f"Warning: Could not import 'generate_single_step_audio_segment' from 'src.synth_functions.sound_creator': {e}. "
         "Test step audio generation will be non-functional."
     )
 
@@ -391,7 +391,7 @@ class TrackEditorApp(QMainWindow):
                 self.track_data["global_settings"]["crossfade_curve"] = self.prefs.crossfade_curve
 
     def open_default_voice_config(self):
-        from ui.default_voice_dialog import DefaultVoiceDialog
+        from src.ui.default_voice_dialog import DefaultVoiceDialog
         dialog = DefaultVoiceDialog(self.prefs, self)
         if dialog.exec_() == QDialog.Accepted:
             self.prefs.default_voice = dialog.get_default_voice()
@@ -406,7 +406,7 @@ class TrackEditorApp(QMainWindow):
         dialog.exec_()
 
     def open_audio_thresholder(self):
-        from ui.audio_thresholder_dialog import AudioThresholderDialog
+        from src.ui.audio_thresholder_dialog import AudioThresholderDialog
         dialog = AudioThresholderDialog(self.prefs, self)
         if dialog.exec_() == QDialog.Accepted:
             self.prefs.target_output_amplitude = dialog.get_target_amplitude()

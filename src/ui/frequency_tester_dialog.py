@@ -29,10 +29,10 @@ except Exception as e:  # noqa: PIE786 - broad for missing backends
 
 import numpy as np
 
-from synth_functions.binaural_beat import binaural_beat
+from src.synth_functions.binaural_beat import binaural_beat
 
 try:
-    from utils.preferences import Preferences
+    from src.utils.preferences import Preferences
 except ImportError:  # when running stand-alone
     from utils.preferences import Preferences
 
@@ -71,7 +71,7 @@ class FrequencyTesterDialog(QDialog):
             beat_spin.setDecimals(2)
             amp_spin = QDoubleSpinBox()
             if getattr(self.prefs, "amplitude_display_mode", "absolute") == "dB":
-                from utils.amp_utils import amplitude_to_db, MIN_DB
+                from src.utils.amp_utils import amplitude_to_db, MIN_DB
                 amp_spin.setRange(MIN_DB, 0.0)
                 amp_spin.setDecimals(1)
                 amp_spin.setSingleStep(1.0)
@@ -130,7 +130,7 @@ class FrequencyTesterDialog(QDialog):
                 beat = vc["beat"].value()
                 amp = vc["amp"].value()
                 if getattr(self.prefs, "amplitude_display_mode", "absolute") == "dB":
-                    from utils.amp_utils import db_to_amplitude
+                    from src.utils.amp_utils import db_to_amplitude
                     amp = db_to_amplitude(amp)
                 voice = binaural_beat(duration, sample_rate=sample_rate,
                                        ampL=amp, ampR=amp,

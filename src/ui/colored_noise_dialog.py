@@ -14,7 +14,7 @@ from PyQt5.QtWidgets import (
 
 import soundfile as sf
 
-from utils.colored_noise import ColoredNoiseGenerator, plot_spectrogram
+from src.utils.colored_noise import ColoredNoiseGenerator, plot_spectrogram
 
 
 class ColoredNoiseDialog(QDialog):

@@ -7,7 +7,10 @@ import numpy as np
 from scipy.signal import butter, lfilter, spectrogram
 import matplotlib.pyplot as plt
 
-from synth_functions.common import _powerlaw_noise
+try:
+    from src.synth_functions.common import _powerlaw_noise
+except ImportError:  # Legacy fallback when running without package context
+    from synth_functions.common import _powerlaw_noise
 
 
 @dataclass
