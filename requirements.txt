@@ -1,0 +1,11 @@
+librosa==0.11.0
+numpy==2.2.5
+# numba provides optional JIT acceleration but isn't required on Windows
+numba
+pyqt5==5.15.11
+scipy==1.15.2
+pandas
+plotly>=5.20
+slab==1.8.0
+soundfile
+matplotlib
