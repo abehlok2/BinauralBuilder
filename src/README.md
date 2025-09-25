@@ -63,6 +63,41 @@ samples = rhythmic_waveshaping(duration=10.0, sample_rate=44100, carrierFreq=200
 
 The table below lists the currently implemented synth functions and the meaning of their most important parameters.  Frequencies are given in hertz and amplitudes generally range from 0.0 to 1.0.
 
+### binaural_beat
+Creates the classic binaural beat illusion by playing two close frequencies.
+
+| Parameter | Default | Effect |
+|-----------|---------|-------|
+| `ampL` / `ampR` | 0.5 | Amplitude of each ear |
+| `baseFreq` | 200 | Center frequency of the beat |
+| `beatFreq` | 4 | Difference between left and right tones |
+| `startPhaseL` / `startPhaseR` | 0 | Initial phase of each tone |
+| `ampOscDepthL` / `ampOscDepthR` | 0 | Depth of amplitude modulation |
+| `ampOscFreqL` / `ampOscFreqR` | 0 | Frequency of amplitude modulation |
+| `freqOscRangeL` / `freqOscRangeR` | 0 | Range of vibrato modulation |
+| `freqOscFreqL` / `freqOscFreqR` | 0 | Rate of vibrato modulation |
+| `freqOscPhaseOffsetL` / `freqOscPhaseOffsetR` | 0 | Phase of the vibrato LFO |
+| `phaseOscFreq` | 0 | Rate of interaural phase modulation |
+| `phaseOscRange` | 0 | Amount of phase modulation |
+
+### isochronic_tone
+A pulsing tone using a trapezoid envelope.  This voice now accepts the same
+set of modulation parameters as **`binaural_beat`** (excluding the glitch
+options) while retaining the isochronic-specific envelope controls.
+
+Additional parameters:
+
+| Parameter | Default | Effect |
+|-----------|---------|-------|
+| `rampPercent` | 0.2 | Portion of each pulse used for fade in/out |
+| `gapPercent` | 0.15 | Fraction of the cycle that is silent |
+| `pan` | 0 | Extra stereo pan applied after modulation |
+
+The `_transition` variant accepts `start` and `end` forms of each parameter
+(`startAmpL`/`endAmpL`, `startAmpR`/`endAmpR`, `startBaseFreq`/`endBaseFreq`, etc.) to smoothly move
+between settings over the step.
+
+
 ### rhythmic_waveshaping
 A carrier is modulated by an LFO, then passed through a tanh waveshaper.
 
@@ -101,39 +136,6 @@ Combines rhythmic waveshaping with stereo AM.
 | `stereoModDepthL` / `stereoModDepthR` | 0.8 | Depth of the channel AM |
 | `stereoModPhaseL` / `stereoModPhaseR` | 0 / π/2 | Phase of each AM LFO |
 
-### binaural_beat
-Creates the classic binaural beat illusion by playing two close frequencies.
-
-| Parameter | Default | Effect |
-|-----------|---------|-------|
-| `ampL` / `ampR` | 0.5 | Amplitude of each ear |
-| `baseFreq` | 200 | Center frequency of the beat |
-| `beatFreq` | 4 | Difference between left and right tones |
-| `startPhaseL` / `startPhaseR` | 0 | Initial phase of each tone |
-| `ampOscDepthL` / `ampOscDepthR` | 0 | Depth of amplitude modulation |
-| `ampOscFreqL` / `ampOscFreqR` | 0 | Frequency of amplitude modulation |
-| `freqOscRangeL` / `freqOscRangeR` | 0 | Range of vibrato modulation |
-| `freqOscFreqL` / `freqOscFreqR` | 0 | Rate of vibrato modulation |
-| `freqOscPhaseOffsetL` / `freqOscPhaseOffsetR` | 0 | Phase of the vibrato LFO |
-| `phaseOscFreq` | 0 | Rate of interaural phase modulation |
-| `phaseOscRange` | 0 | Amount of phase modulation |
-
-### isochronic_tone
-A pulsing tone using a trapezoid envelope.  This voice now accepts the same
-set of modulation parameters as **`binaural_beat`** (excluding the glitch
-options) while retaining the isochronic-specific envelope controls.
-
-Additional parameters:
-
-| Parameter | Default | Effect |
-|-----------|---------|-------|
-| `rampPercent` | 0.2 | Portion of each pulse used for fade in/out |
-| `gapPercent` | 0.15 | Fraction of the cycle that is silent |
-| `pan` | 0 | Extra stereo pan applied after modulation |
-
-The `_transition` variant accepts `start` and `end` forms of each parameter
-(`startAmpL`/`endAmpL`, `startAmpR`/`endAmpR`, `startBaseFreq`/`endBaseFreq`, etc.) to smoothly move
-between settings over the step.
 
 ### monaural_beat_stereo_amps
 Produces a monaural beat while allowing different amplitudes for the lower and upper components in each ear.
@@ -162,7 +164,7 @@ Left channel uses QAM style modulation while the right channel runs a monaural b
 Important parameters: `ampL`, `ampR`, QAM carrier and AM settings for the left side (`qamCarrierFreqL`, `qamAmFreqL`, `qamAmDepthL`, ...), plus monaural beat controls for the right side (`monoCarrierFreqR`, `monoBeatFreqInChannelR`, AM/FM/phase settings, etc.).
 
 ### spatial_angle_modulation
-Moves a tone along a geometric path using the optional `audio_engine` module.
+Moves a tone along a geometric path
 
 | Parameter | Default | Effect |
 |-----------|---------|-------|
@@ -178,11 +180,10 @@ Moves a tone along a geometric path using the optional `audio_engine` module.
 ### spatial_angle_modulation_monaural_beat
 Combines the monaural beat voice with spatial angle modulation.  Parameters mirror those of `monaural_beat_stereo_amps` along with spatial movement controls (`spatialBeatFreq`, `spatialPhaseOffset`, `pathRadius`, etc.).
 
-### generate_swept_notch_pink_sound
-Creates a flanged noise texture by sweeping deep notch filters through pink noise. Parameters include the duration, LFO rate, notch filter ranges, Q factor, and cascade count. A `_transition` variant allows these settings to move from starting values to ending values over the step.
-
 ### subliminal_encode
 Encodes audio files as ultrasonic subliminals. Multiple files may be supplied via `audio_paths` and can either be mixed together (`mode="stack"`) or played one after another (`mode="sequence"`). When sequencing, a one second silence is inserted between each subliminal. The chosen arrangement loops for the duration of the step.
+
+Accessed via the "Add Subliminal" GUI button.
 
 | Parameter | Default | Effect |
 |-----------|---------|-------|
@@ -221,9 +222,8 @@ If omitted, `linear` is used.
 ---
 
 ## Tips
-- Start simple and audition short sections first.
-- Use subtle panning and moderate modulation rates.
 - Crossfade between steps to avoid abrupt changes.
+- The "binaural beat" voice has a great deal of utility and is the most developed synth function
 
 ## Overlay Clips
 
@@ -236,36 +236,7 @@ selected.  You can audition a single clip without exporting the entire track by
 highlighting it and pressing **Start Clip**; the button changes to **Stop Clip**
 while the preview is playing.
 
-## Timeline Visualization
-
-The helper function `audio.visualize_track_timeline()` now renders a more
-"DAW-like" timeline view using **Plotly**. Each track lane is drawn similar to
-clips in a digital audio workstation, making it easier to see how binaural
-voices, vocals, sound effects and background noise overlap. Pass the track
-definition (as shown above) to this function and it will display (or
-save) the interactive timeline. You can zoom, pan and hover to inspect specific
-segments. Individual voices and overlay clips are color-coded within their
-categories and labeled using their descriptions (or filenames if no description
-is provided). Step boundaries are shown as dashed lines so you can quickly
-identify when the track transitions from one step to the next. If a file path
-ending in `.html` is supplied, the timeline is saved as a standalone web page.
-
-
-## Web Interface
-
-A small browser-based demo is located in `audio/src/web_ui`. It uses the
-`realtime_backend` crate compiled to WebAssembly to play tracks directly in the
-browser.
-
-1. Build the backend with `wasm-pack`:
-   ```bash
-   cd audio/src/realtime_backend
-   wasm-pack build --target web --release --no-default-features --features web
-   ```
-2. Copy the resulting `pkg` directory into `audio/src/web_ui/`.
-3. Serve the `web_ui` folder with any HTTP server, e.g. `python -m http.server`,
-   and open the page in your browser.
-
-Paste a track JSON object into the text area and press **Start** to hear it
-render in real time.
+## Frequency Tester 
+Accessible via the **Frequency Tester** button in the GUI
+Allows one to quickly set and check test frequency groups with reduced parameter sets (carrier frequency, beat frequency, amplitude). 
 
