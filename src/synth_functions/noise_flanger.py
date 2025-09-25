@@ -326,6 +326,186 @@ def generate_noise_samples(n_samples, noise_type, sample_rate=DEFAULT_SAMPLE_RAT
 
 
 # =========================
+# Helper utilities for synth voice usage
+# =========================
+def _safe_float(value, default):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def _safe_int(value, default):
+    try:
+        return int(round(float(value)))
+    except (TypeError, ValueError):
+        return int(default)
+
+
+def _prepare_static_sweeps(sweeps):
+    """Convert a ``sweeps`` specification into arrays for the notch helpers."""
+    if not sweeps:
+        return [(1000.0, 10000.0)], [25.0], [10]
+
+    filter_sweeps = []
+    q_vals = []
+    casc_vals = []
+
+    for entry in sweeps:
+        if isinstance(entry, dict):
+            min_f = _safe_float(
+                entry.get("min", entry.get("start_min", entry.get("startMin", 1000.0))),
+                1000.0,
+            )
+            max_f = _safe_float(
+                entry.get("max", entry.get("start_max", entry.get("startMax", 10000.0))),
+                10000.0,
+            )
+            q_val = _safe_float(entry.get("q", entry.get("start_q", 25.0)), 25.0)
+            casc = _safe_int(entry.get("cascade", entry.get("start_casc", 10)), 10)
+        elif isinstance(entry, (list, tuple)):
+            min_f = _safe_float(entry[0] if len(entry) > 0 else 1000.0, 1000.0)
+            max_f = _safe_float(entry[1] if len(entry) > 1 else 10000.0, 10000.0)
+            q_val = _safe_float(entry[2] if len(entry) > 2 else 25.0, 25.0)
+            casc = _safe_int(entry[3] if len(entry) > 3 else 10, 10)
+        else:
+            min_f, max_f, q_val, casc = 1000.0, 10000.0, 25.0, 10
+
+        if min_f > max_f:
+            min_f, max_f = max_f, min_f
+
+        filter_sweeps.append((float(min_f), float(max_f)))
+        q_vals.append(float(q_val))
+        casc_vals.append(int(max(1, casc)))
+
+    return filter_sweeps, q_vals, casc_vals
+
+
+def _prepare_transition_sweeps(sweeps):
+    if not sweeps:
+        defaults = [(1000.0, 10000.0)]
+        return defaults, defaults, [25.0], [25.0], [10], [10]
+
+    start_sweeps = []
+    end_sweeps = []
+    start_q_vals = []
+    end_q_vals = []
+    start_casc = []
+    end_casc = []
+
+    for entry in sweeps:
+        if isinstance(entry, dict):
+            start_min = _safe_float(
+                entry.get("start_min", entry.get("min", entry.get("startMin", 1000.0))),
+                1000.0,
+            )
+            start_max = _safe_float(
+                entry.get("start_max", entry.get("max", entry.get("startMax", 10000.0))),
+                10000.0,
+            )
+            end_min = _safe_float(
+                entry.get("end_min", entry.get("endMin", entry.get("max", start_min))),
+                start_min,
+            )
+            end_max = _safe_float(
+                entry.get("end_max", entry.get("endMax", entry.get("max", start_max))),
+                start_max,
+            )
+            start_q = _safe_float(entry.get("start_q", entry.get("q", 25.0)), 25.0)
+            end_q = _safe_float(entry.get("end_q", entry.get("q", start_q)), start_q)
+            start_c = _safe_int(entry.get("start_casc", entry.get("cascade", 10)), 10)
+            end_c = _safe_int(entry.get("end_casc", entry.get("cascade", start_c)), start_c)
+        elif isinstance(entry, (list, tuple)):
+            vals = list(entry)
+            start_min = _safe_float(vals[0] if len(vals) > 0 else 1000.0, 1000.0)
+            start_max = _safe_float(vals[1] if len(vals) > 1 else 10000.0, 10000.0)
+            end_min = _safe_float(vals[2] if len(vals) > 2 else start_min, start_min)
+            end_max = _safe_float(vals[3] if len(vals) > 3 else start_max, start_max)
+            start_q = _safe_float(vals[4] if len(vals) > 4 else 25.0, 25.0)
+            end_q = _safe_float(vals[5] if len(vals) > 5 else start_q, start_q)
+            start_c = _safe_int(vals[6] if len(vals) > 6 else 10, 10)
+            end_c = _safe_int(vals[7] if len(vals) > 7 else start_c, start_c)
+        else:
+            start_min, start_max = 1000.0, 10000.0
+            end_min, end_max = start_min, start_max
+            start_q = end_q = 25.0
+            start_c = end_c = 10
+
+        if start_min > start_max:
+            start_min, start_max = start_max, start_min
+        if end_min > end_max:
+            end_min, end_max = end_max, end_min
+
+        start_sweeps.append((float(start_min), float(start_max)))
+        end_sweeps.append((float(end_min), float(end_max)))
+        start_q_vals.append(float(start_q))
+        end_q_vals.append(float(end_q))
+        start_casc.append(int(max(1, start_c)))
+        end_casc.append(int(max(1, end_c)))
+
+    return start_sweeps, end_sweeps, start_q_vals, end_q_vals, start_casc, end_casc
+
+
+def _build_noise_envelope(num_samples, sample_rate, fade_in=0.0, fade_out=0.0, amp_envelope=None):
+    env = np.ones(num_samples, dtype=np.float32)
+    if num_samples == 0:
+        return env
+
+    fade_in = max(0.0, _safe_float(fade_in, 0.0))
+    fade_out = max(0.0, _safe_float(fade_out, 0.0))
+
+    if fade_in > 0.0:
+        n = min(int(round(fade_in * sample_rate)), num_samples)
+        if n > 0:
+            env[:n] *= np.linspace(0.0, 1.0, n, dtype=np.float32)
+
+    if fade_out > 0.0:
+        n = min(int(round(fade_out * sample_rate)), num_samples)
+        if n > 0:
+            env[-n:] *= np.linspace(1.0, 0.0, n, dtype=np.float32)
+
+    if amp_envelope:
+        times = []
+        amps = []
+        for point in amp_envelope:
+            if isinstance(point, dict):
+                t = _safe_float(point.get("time", point.get("t", point.get("x", 0.0))), 0.0)
+                a = _safe_float(point.get("amp", point.get("value", point.get("y", 1.0))), 1.0)
+            elif isinstance(point, (list, tuple)) and len(point) >= 2:
+                t = _safe_float(point[0], 0.0)
+                a = _safe_float(point[1], 1.0)
+            else:
+                continue
+            times.append(max(0.0, t))
+            amps.append(a)
+
+        if amps:
+            order = np.argsort(times)
+            times_arr = np.array(times, dtype=np.float64)[order]
+            amps_arr = np.array(amps, dtype=np.float32)[order]
+
+            if times_arr.size == 1:
+                env *= amps_arr[0]
+            else:
+                sample_positions = np.arange(num_samples, dtype=np.float64)
+                env *= np.interp(
+                    sample_positions,
+                    times_arr * sample_rate,
+                    amps_arr,
+                    left=amps_arr[0],
+                    right=amps_arr[-1],
+                ).astype(np.float32)
+
+    return env
+
+
+def _resolve_channel_amp(base_start, base_end, start_val=None, end_val=None):
+    start = _safe_float(start_val if start_val is not None else base_start, base_start)
+    end = _safe_float(end_val if end_val is not None else base_end, base_end)
+    return float(start), float(end)
+
+
+# =========================
 # Simple flanger (legacy)
 # =========================
 def triangle_wave_varying(freq_array, t, sample_rate=44100):
@@ -1057,6 +1237,230 @@ def generate_swept_notch_pink_sound_transition(
         print(f"\nSuccessfully generated and saved to '{filename}' in {total_time:.2f} seconds.")
     except Exception as e:
         print(f"Error saving audio file: {e}")
+
+
+# =========================
+# Step voice wrappers
+# =========================
+def noise_generator(
+    duration,
+    sample_rate=DEFAULT_SAMPLE_RATE,
+    noise_type="pink",
+    lfo_waveform="sine",
+    lfo_freq=DEFAULT_LFO_FREQ,
+    sweeps=None,
+    notch_q=None,
+    cascade_count=None,
+    lfo_phase_offset_deg=90.0,
+    intra_phase_offset_deg=0.0,
+    input_audio_path=None,
+    amp=0.25,
+    amp_left=None,
+    amp_right=None,
+    fade_in=0.0,
+    fade_out=0.0,
+    amp_envelope=None,
+    memory_efficient=False,
+    n_jobs=1,
+):
+    """Generate swept-notch coloured noise for a single step."""
+
+    duration = float(duration)
+    sample_rate = float(sample_rate)
+    n_jobs = max(1, int(n_jobs))
+
+    sweeps_cfg, q_vals, casc_vals = _prepare_static_sweeps(sweeps)
+
+    if notch_q is not None:
+        if isinstance(notch_q, (list, tuple)):
+            q_vals = [float(_safe_float(q, 25.0)) for q in notch_q]
+        else:
+            q_vals = [float(_safe_float(notch_q, 25.0))] * len(sweeps_cfg)
+
+    if cascade_count is not None:
+        if isinstance(cascade_count, (list, tuple)):
+            casc_vals = [int(max(1, _safe_int(c, 10))) for c in cascade_count]
+        else:
+            casc_vals = [int(max(1, _safe_int(cascade_count, 10)))] * len(sweeps_cfg)
+
+    notch_arg = q_vals if len(q_vals) > 1 else q_vals[0]
+    casc_arg = casc_vals if len(casc_vals) > 1 else casc_vals[0]
+
+    stereo_output, _ = _generate_swept_notch_arrays(
+        duration,
+        sample_rate,
+        lfo_freq,
+        sweeps_cfg,
+        notch_arg,
+        casc_arg,
+        lfo_phase_offset_deg,
+        intra_phase_offset_deg,
+        input_audio_path or None,
+        noise_type,
+        lfo_waveform,
+        bool(memory_efficient),
+        n_jobs,
+    )
+
+    audio = np.array(stereo_output, dtype=np.float32, copy=True)
+    if audio.ndim == 1:
+        audio = np.column_stack((audio, audio))
+
+    num_samples = audio.shape[0]
+    if num_samples == 0:
+        return audio.reshape(0, 2)
+
+    env = _build_noise_envelope(num_samples, sample_rate, fade_in, fade_out, amp_envelope)
+
+    base_amp = _safe_float(amp, 1.0)
+    left_amp = _safe_float(amp_left, base_amp) if amp_left is not None else base_amp
+    right_amp = _safe_float(amp_right, base_amp) if amp_right is not None else base_amp
+
+    gains = env.astype(np.float32)
+    audio[:, 0] *= gains * float(left_amp)
+    audio[:, 1] *= gains * float(right_amp)
+
+    return np.clip(audio, -1.0, 1.0)
+
+
+def noise_generator_transition(
+    duration,
+    sample_rate=DEFAULT_SAMPLE_RATE,
+    noise_type="pink",
+    lfo_waveform="sine",
+    start_lfo_freq=DEFAULT_LFO_FREQ,
+    end_lfo_freq=DEFAULT_LFO_FREQ,
+    sweeps=None,
+    start_notch_q=None,
+    end_notch_q=None,
+    start_cascade_count=None,
+    end_cascade_count=None,
+    start_lfo_phase_offset_deg=90.0,
+    end_lfo_phase_offset_deg=90.0,
+    start_intra_phase_offset_deg=0.0,
+    end_intra_phase_offset_deg=0.0,
+    initial_offset=0.0,
+    post_offset=0.0,
+    curve="linear",
+    input_audio_path=None,
+    start_amp=0.25,
+    end_amp=None,
+    start_amp_left=None,
+    end_amp_left=None,
+    start_amp_right=None,
+    end_amp_right=None,
+    fade_in=0.0,
+    fade_out=0.0,
+    amp_envelope=None,
+    memory_efficient=False,
+    n_jobs=1,
+):
+    """Transitioning version of :func:`noise_generator`."""
+
+    duration = float(duration)
+    sample_rate = float(sample_rate)
+    n_jobs = max(1, int(n_jobs))
+
+    (
+        start_sweeps,
+        end_sweeps,
+        start_q_vals,
+        end_q_vals,
+        start_casc_vals,
+        end_casc_vals,
+    ) = _prepare_transition_sweeps(sweeps)
+
+    if start_notch_q is not None:
+        if isinstance(start_notch_q, (list, tuple)):
+            start_q_vals = [float(_safe_float(q, 25.0)) for q in start_notch_q]
+        else:
+            start_q_vals = [float(_safe_float(start_notch_q, 25.0))] * len(start_sweeps)
+
+    if end_notch_q is not None:
+        if isinstance(end_notch_q, (list, tuple)):
+            end_q_vals = [float(_safe_float(q, start_q_vals[i])) for i, q in enumerate(end_notch_q)]
+        else:
+            end_q_vals = [float(_safe_float(end_notch_q, start_q_vals[i])) for i in range(len(start_q_vals))]
+
+    if start_cascade_count is not None:
+        if isinstance(start_cascade_count, (list, tuple)):
+            start_casc_vals = [int(max(1, _safe_int(c, 10))) for c in start_cascade_count]
+        else:
+            start_casc_vals = [int(max(1, _safe_int(start_cascade_count, 10)))] * len(start_sweeps)
+
+    if end_cascade_count is not None:
+        if isinstance(end_cascade_count, (list, tuple)):
+            end_casc_vals = [int(max(1, _safe_int(c, start_casc_vals[i]))) for i, c in enumerate(end_cascade_count)]
+        else:
+            end_casc_vals = [int(max(1, _safe_int(end_cascade_count, start_casc_vals[i])))] * len(start_sweeps)
+
+    start_notch_arg = start_q_vals if len(start_q_vals) > 1 else start_q_vals[0]
+    end_notch_arg = end_q_vals if len(end_q_vals) > 1 else end_q_vals[0]
+    start_casc_arg = start_casc_vals if len(start_casc_vals) > 1 else start_casc_vals[0]
+    end_casc_arg = end_casc_vals if len(end_casc_vals) > 1 else end_casc_vals[0]
+
+    stereo_output, _ = _generate_swept_notch_arrays_transition(
+        duration,
+        sample_rate,
+        start_lfo_freq,
+        end_lfo_freq,
+        start_sweeps,
+        end_sweeps,
+        start_notch_arg,
+        end_notch_arg,
+        start_casc_arg,
+        end_casc_arg,
+        start_lfo_phase_offset_deg,
+        end_lfo_phase_offset_deg,
+        start_intra_phase_offset_deg,
+        end_intra_phase_offset_deg,
+        input_audio_path or None,
+        noise_type,
+        lfo_waveform,
+        initial_offset,
+        post_offset,
+        curve,
+        bool(memory_efficient),
+        n_jobs,
+    )
+
+    audio = np.array(stereo_output, dtype=np.float32, copy=True)
+    if audio.ndim == 1:
+        audio = np.column_stack((audio, audio))
+
+    num_samples = audio.shape[0]
+    if num_samples == 0:
+        return audio.reshape(0, 2)
+
+    alpha = calculate_transition_alpha(duration, sample_rate, initial_offset, post_offset, curve)
+    if alpha.size == 0:
+        alpha = np.zeros(num_samples, dtype=np.float64)
+    elif alpha.size != num_samples:
+        positions = np.linspace(0.0, 1.0, num_samples, endpoint=False)
+        alpha = np.interp(
+            positions,
+            np.linspace(0.0, 1.0, alpha.size, endpoint=False),
+            alpha,
+            left=alpha[0],
+            right=alpha[-1],
+        )
+
+    base_start_amp = _safe_float(start_amp, 1.0)
+    base_end_amp = _safe_float(end_amp, base_start_amp)
+
+    left_start, left_end = _resolve_channel_amp(base_start_amp, base_end_amp, start_amp_left, end_amp_left)
+    right_start, right_end = _resolve_channel_amp(base_start_amp, base_end_amp, start_amp_right, end_amp_right)
+
+    alpha = alpha.astype(np.float32)
+    left_curve = left_start + (left_end - left_start) * alpha
+    right_curve = right_start + (right_end - right_start) * alpha
+
+    env = _build_noise_envelope(num_samples, sample_rate, fade_in, fade_out, amp_envelope).astype(np.float32)
+
+    audio[:, 0] *= env * left_curve
+    audio[:, 1] *= env * right_curve
+
+    return np.clip(audio, -1.0, 1.0)
 
 
 # =======================================================
