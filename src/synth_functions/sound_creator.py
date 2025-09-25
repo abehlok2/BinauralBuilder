@@ -8,6 +8,8 @@ import copy
 import inspect # Needed to inspect function parameters for GUI
 import os # Needed for path checks in main example
 import traceback # For detailed error printing
+import importlib
+import pkgutil
 from src.utils.noise_file import load_noise_params
 from src.synth_functions.noise_flanger import (
     _generate_swept_notch_arrays,
@@ -26,7 +28,7 @@ try:
     from .audio_engine import Node, SAMVoice, VALID_SAM_PATHS
     AUDIO_ENGINE_AVAILABLE = True
     print("INFO: audio_engine module loaded successfully.")
-except ImportError:
+except Exception:
     AUDIO_ENGINE_AVAILABLE = False
     print("WARNING: audio_engine module not found. Spatial Angle Modulation (SAM) functions will not be available.")
     # Define dummy classes/variables if audio_engine is missing
@@ -297,22 +299,67 @@ _EXCLUDED_FUNCTION_NAMES = [
     'trapezoid_envelope_vectorized', '_flanger_effect_stereo_continuous',
     'butter', 'lfilter', 'write', 'ensure_stereo', 'apply_filters', 'design_filter', 
     # Standard library functions that might be imported
-    'json', 'inspect', 'os', 'traceback', 'math', 'copy'
+    'json', 'inspect', 'os', 'traceback', 'math', 'copy', 'pkgutil', 'importlib'
 ]
 
-SYNTH_FUNCTIONS = {
-}
-try:
-    # Import the synth_functions package
+SYNTH_FUNCTIONS = {}
+
+
+def _import_module(module_name):
+    """Import ``module_name`` if it is available."""
+
     try:
-        import src.synth_functions as synth_functions
-    except ImportError:
-        import synth_functions
-    for name, obj in inspect.getmembers(synth_functions):
-        if inspect.isfunction(obj) and name not in _EXCLUDED_FUNCTION_NAMES and not name.startswith('_'):
-             # Check if the function is defined in the synth_functions package or its submodules
-            if obj.__module__.startswith(('src.synth_functions', 'synth_functions')):
-                SYNTH_FUNCTIONS[name] = obj
+        return importlib.import_module(module_name)
+    except Exception as exc:  # noqa: PIE786 - we want to surface the module name that failed
+        print(f"Warning: Failed to import synth module '{module_name}': {exc}")
+        return None
+
+
+def _discover_synth_modules():
+    """Yield imported synth modules within ``src.synth_functions``."""
+
+    base_package_names = ["src.synth_functions", "synth_functions"]
+    for base_name in base_package_names:
+        package = _import_module(base_name)
+        if package is None:
+            continue
+
+        yield package
+
+        package_path = getattr(package, "__path__", None)
+        if not package_path:
+            continue
+
+        prefix = package.__name__ + "."
+        for module_info in pkgutil.walk_packages(package_path, prefix):
+            # Ignore private/dunder modules
+            if module_info.name.rsplit(".", 1)[-1].startswith("_"):
+                continue
+            module = _import_module(module_info.name)
+            if module is not None:
+                yield module
+
+
+try:
+    for module in _discover_synth_modules():
+        for name, obj in inspect.getmembers(module):
+            if not inspect.isfunction(obj):
+                continue
+            if name in _EXCLUDED_FUNCTION_NAMES or name.startswith("_"):
+                continue
+            if not obj.__module__.startswith(("src.synth_functions", "synth_functions")):
+                continue
+
+            try:
+                parameters = inspect.signature(obj).parameters
+            except (TypeError, ValueError):
+                # Unable to introspect signature; skip to avoid surfacing helpers.
+                continue
+
+            if "duration" not in parameters or "sample_rate" not in parameters:
+                continue
+
+            SYNTH_FUNCTIONS[name] = obj
 except Exception as e:
     print(f"Error inspecting functions: {e}")
 
