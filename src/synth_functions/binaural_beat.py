@@ -2,7 +2,13 @@
 
 import numpy as np
 import numba
-from .common import skewed_sine_phase, skewed_triangle_phase, _frac
+from .common import (
+    skewed_sine_phase,
+    skewed_triangle_phase,
+    _frac,
+    generate_pan_envelope,
+    apply_pan_envelope,
+)
 from .spatial_ambi2d import spatialize_binaural_mid_only, generate_azimuth_trajectory
 
 
@@ -35,6 +41,10 @@ def binaural_beat(duration, sample_rate=44100, **params):
     shape_int = 1 if freqOscShape == 'triangle' else 0
     pOF = float(params.get('phaseOscFreq', 0.0))
     pOR = float(params.get('phaseOscRange', 0.0)) # in radians
+
+    pan = np.clip(float(params.get('pan', 0.0)), -1.0, 1.0)
+    pan_depth = np.clip(float(params.get('panDepth', 0.0)), -1.0, 1.0)
+    pan_freq = float(params.get('panFreq', 0.0))
 
     # --- UNCOMMENT IF "GLITCH/CHIRP" EFFECT NEEDED OR DESIRED
     # --- Unpack glitch parameters --- 
@@ -118,6 +128,10 @@ def binaural_beat(duration, sample_rate=44100, **params):
         shape_int,
         pos_arr, burst_arr
     )
+
+    if audio.size and (pan != 0.0 or pan_depth != 0.0 or pan_freq != 0.0):
+        pan_curve = generate_pan_envelope(audio.shape[0], sample_rate, pan, pan_depth, pan_freq)
+        apply_pan_envelope(audio, pan_curve)
 
     if bool(params.get("spatialEnable", False)):
         theta_deg, distance_m = generate_azimuth_trajectory(
@@ -324,6 +338,13 @@ def binaural_beat_transition(duration, sample_rate=44100, initial_offset=0.0, po
     startFreqOscPhaseOffsetR = float(params.get('startFreqOscPhaseOffsetR', params.get('freqOscPhaseOffsetR', 0.0)))
     endFreqOscPhaseOffsetR = float(params.get('endFreqOscPhaseOffsetR', startFreqOscPhaseOffsetR))
 
+    startPan = np.clip(float(params.get('startPan', params.get('pan', 0.0))), -1.0, 1.0)
+    endPan = np.clip(float(params.get('endPan', startPan)), -1.0, 1.0)
+    startPanDepth = np.clip(float(params.get('startPanDepth', params.get('panDepth', 0.0))), -1.0, 1.0)
+    endPanDepth = np.clip(float(params.get('endPanDepth', startPanDepth)), -1.0, 1.0)
+    startPanFreq = float(params.get('startPanFreq', params.get('panFreq', 0.0)))
+    endPanFreq = float(params.get('endPanFreq', startPanFreq))
+
     freqOscShape = str(params.get('freqOscShape', 'sine')).lower()
     shape_int = 1 if freqOscShape == 'triangle' else 0
 
@@ -431,6 +452,21 @@ def binaural_beat_transition(duration, sample_rate=44100, initial_offset=0.0, po
         pos_arr, burst_arr, # Pass pre-calculated glitches
         alpha_arr
     )
+
+    if audio.size:
+        pan_base_arr = startPan + (endPan - startPan) * alpha_arr
+        pan_depth_arr = startPanDepth + (endPanDepth - startPanDepth) * alpha_arr
+        pan_freq_arr = startPanFreq + (endPanFreq - startPanFreq) * alpha_arr
+
+        if (
+            np.any(pan_base_arr != 0.0)
+            or np.any(pan_depth_arr != 0.0)
+            or np.any(pan_freq_arr != 0.0)
+        ):
+            pan_curve = generate_pan_envelope(
+                audio.shape[0], sample_rate, pan_base_arr, pan_depth_arr, pan_freq_arr
+            )
+            apply_pan_envelope(audio, pan_curve)
 
     if bool(params.get("spatialEnable", False)):
         theta_deg, distance_m = generate_azimuth_trajectory(

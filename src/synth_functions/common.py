@@ -304,16 +304,85 @@ def pan2(signal, pan=0):
         return np.vstack([left, right]).T
     elif signal.ndim == 2 and signal.shape[1] == 1: # If input is already (N, 1)
         return np.hstack([left, right])
-    else: # If input is already stereo, apply gains? Or assume mono input?
-        # Assuming mono input is intended based on original code.
-        # If stereo input needs panning, logic would differ.
+    else: # If stereo input is supplied, fall back to using the first channel.
         print("Warning: pan2 received unexpected input shape. Assuming mono.")
-        # Attempt to take the first channel if stereo input received unexpectedly
         if signal.ndim == 2 and signal.shape[1] > 1:
             signal = signal[:, 0]
             left = left_gain * signal
             right = right_gain * signal
         return np.vstack([left, right]).T
+
+
+def _ensure_1d_length(value, length):
+    """Return a 1-D float64 array of ``length`` from ``value``.
+
+    Scalars are broadcast while 1-D arrays must already match the requested
+    length.  This helper keeps the pan utilities resilient to scalar or
+    per-sample modulation inputs.
+    """
+    arr = np.asarray(value, dtype=np.float64)
+    if arr.ndim == 0:
+        return np.full(length, float(arr), dtype=np.float64)
+    arr = np.ravel(arr).astype(np.float64, copy=False)
+    if arr.size != length:
+        raise ValueError(f"Expected array of length {length}, received shape {arr.shape}.")
+    return arr
+
+
+def generate_pan_envelope(num_samples, sample_rate, pan_base, pan_depth, pan_freq, initial_phase=0.0):
+    """Create a per-sample pan curve in the range [-1, 1].
+
+    Parameters mirror the UI controls – ``pan_base`` acts as a static offset
+    while ``pan_depth`` and ``pan_freq`` describe a sinusoidal modulation.
+    Each argument can be a scalar or an array of ``num_samples`` values to
+    support transition voices.
+    """
+    if num_samples <= 0:
+        return np.zeros(0, dtype=np.float64)
+
+    base_arr = _ensure_1d_length(pan_base, num_samples)
+    depth_arr = _ensure_1d_length(pan_depth, num_samples)
+    freq_arr = _ensure_1d_length(pan_freq, num_samples)
+
+    if sample_rate <= 0.0:
+        return np.clip(base_arr, -1.0, 1.0)
+
+    dt = 1.0 / float(sample_rate)
+    freq_prefix = np.concatenate(([0.0], freq_arr[:-1]))
+    cycles = np.cumsum(freq_prefix) * dt
+    phase = initial_phase + 2.0 * np.pi * cycles
+    lfo = np.sin(phase)
+
+    pan_values = base_arr + depth_arr * lfo
+    return np.clip(pan_values, -1.0, 1.0)
+
+
+def apply_pan_envelope(audio, pan_values):
+    """Apply an equal-power pan envelope to a stereo signal.
+
+    ``pan_values`` can be a scalar or a vector of length ``len(audio)``.
+    ``audio`` is modified in-place and also returned for convenience.
+    """
+    if audio.ndim != 2 or audio.shape[1] != 2:
+        raise ValueError("apply_pan_envelope expects an array of shape (N, 2).")
+
+    pan_arr = np.asarray(pan_values, dtype=np.float64)
+    if pan_arr.ndim == 0:
+        pan_arr = np.full(audio.shape[0], float(pan_arr), dtype=np.float64)
+    elif pan_arr.ndim == 1 and pan_arr.shape[0] == audio.shape[0]:
+        pan_arr = pan_arr.astype(np.float64, copy=False)
+    else:
+        raise ValueError("Pan envelope length must match the number of samples.")
+
+    pan_clipped = np.clip(pan_arr, -1.0, 1.0)
+    angle = (pan_clipped + 1.0) * (np.pi / 4.0)
+
+    left_gain = np.cos(angle).astype(audio.dtype, copy=False)
+    right_gain = np.sin(angle).astype(audio.dtype, copy=False)
+    audio[:, 0] *= left_gain
+    audio[:, 1] *= right_gain
+
+    return audio
 
 def butter_bandpass(lowcut, highcut, fs, order=4):
     nyq = 0.5 * fs

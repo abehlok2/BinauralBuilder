@@ -3,7 +3,14 @@
 import numpy as np
 import numba
 from scipy.signal import butter, filtfilt
-from .common import pan2, trapezoid_envelope_vectorized, calculate_transition_alpha, skewed_sine_phase, _frac
+from .common import (
+    trapezoid_envelope_vectorized,
+    calculate_transition_alpha,
+    skewed_sine_phase,
+    _frac,
+    generate_pan_envelope,
+    apply_pan_envelope,
+)
 from .spatial_ambi2d import spatialize_binaural_mid_only, generate_azimuth_trajectory
 
 
@@ -138,8 +145,9 @@ def _isochronic_tone_core(
 def isochronic_tone(duration, sample_rate=44100, **params):
     """Generate an isochronic tone with extended modulation options."""
 
-    # Legacy pan parameter
-    pan = float(params.get('pan', 0.0))
+    pan = np.clip(float(params.get('pan', 0.0)), -1.0, 1.0)
+    pan_depth = np.clip(float(params.get('panDepth', 0.0)), -1.0, 1.0)
+    pan_freq = float(params.get('panFreq', 0.0))
 
     # Extended parameters matching ``binaural_beat`` (glitch parameters omitted)
     ampL = float(params.get('ampL', 0.5))
@@ -206,8 +214,9 @@ def isochronic_tone(duration, sample_rate=44100, **params):
         gapPercent,
     )
 
-    if pan != 0.0:
-        audio = pan2(audio.mean(axis=1), pan=pan)
+    if audio.size and (pan != 0.0 or pan_depth != 0.0 or pan_freq != 0.0):
+        pan_curve = generate_pan_envelope(audio.shape[0], sample_rate, pan, pan_depth, pan_freq)
+        apply_pan_envelope(audio, pan_curve)
 
     if harmonic_suppression:
         nyq = 0.5 * sample_rate
@@ -325,7 +334,12 @@ def isochronic_tone_transition(duration, sample_rate=44100, initial_offset=0.0, 
     )
     endHarmonicSuppression = _parse_bool(params.get('endHarmonicSuppression', startHarmonicSuppression))
     harmonic_suppression = startHarmonicSuppression or endHarmonicSuppression
-    pan = np.clip(float(params.get('pan', 0.0)), -1.0, 1.0)
+    startPan = np.clip(float(params.get('startPan', params.get('pan', 0.0))), -1.0, 1.0)
+    endPan = np.clip(float(params.get('endPan', startPan)), -1.0, 1.0)
+    startPanDepth = np.clip(float(params.get('startPanDepth', params.get('panDepth', 0.0))), -1.0, 1.0)
+    endPanDepth = np.clip(float(params.get('endPanDepth', startPanDepth)), -1.0, 1.0)
+    startPanFreq = float(params.get('startPanFreq', params.get('panFreq', 0.0)))
+    endPanFreq = float(params.get('endPanFreq', startPanFreq))
 
 
     N = int(sample_rate * duration)
@@ -446,14 +460,22 @@ def isochronic_tone_transition(duration, sample_rate=44100, initial_offset=0.0, 
     left = carrier_L * iso_env * env_amp_L * ampL_arr
     right = carrier_R * iso_env * env_amp_R * ampR_arr
 
-    if pan != 0.0:
-        angle = (pan + 1.0) * np.pi / 4.0
-        left_gain = np.cos(angle)
-        right_gain = np.sin(angle)
-        left *= left_gain
-        right *= right_gain
-
     audio = np.column_stack((left, right))
+
+    if audio.size:
+        pan_base_arr = startPan + (endPan - startPan) * alpha
+        pan_depth_arr = startPanDepth + (endPanDepth - startPanDepth) * alpha
+        pan_freq_arr = startPanFreq + (endPanFreq - startPanFreq) * alpha
+
+        if (
+            np.any(pan_base_arr != 0.0)
+            or np.any(pan_depth_arr != 0.0)
+            or np.any(pan_freq_arr != 0.0)
+        ):
+            pan_curve = generate_pan_envelope(
+                audio.shape[0], sample_rate, pan_base_arr, pan_depth_arr, pan_freq_arr
+            )
+            apply_pan_envelope(audio, pan_curve)
 
     if harmonic_suppression:
         nyq = 0.5 * sample_rate
