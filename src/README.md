@@ -136,6 +136,27 @@ Combines rhythmic waveshaping with stereo AM.
 | `stereoModDepthL` / `stereoModDepthR` | 0.8 | Depth of the channel AM |
 | `stereoModPhaseL` / `stereoModPhaseR` | 0 / π/2 | Phase of each AM LFO |
 
+### noise_generator
+Swept-notch coloured-noise voice shared with the standalone noise generator. The
+static version produces a constant setting per step, while
+`noise_generator_transition` sweeps between start/end values (including stereo
+levels) using the same curve controls as other transition voices.
+
+| Parameter | Default | Effect |
+|-----------|---------|-------|
+| `noise_type` | "pink" | Selects the underlying noise colour (`pink`, `brown`, `deep brown`, `blue`, `purple`, `green`, `white`). |
+| `lfo_freq` | 1/12 | Rate used to move the swept notch filters. |
+| `sweeps` | `[(1000, 10000)]` | List of dictionaries or tuples describing notch frequency ranges, Q values, and cascade counts. |
+| `notch_q` / `cascade_count` | `25` / `10` | Override all sweep Q/cascade settings for static mode. |
+| `amp` / `amp_left` / `amp_right` | 0.25 / — / — | Overall and per-channel level scaling. |
+| `fade_in` / `fade_out` | 0.0 | Optional fades in seconds applied to the output. |
+| `amp_envelope` | `None` | Optional list of `[time, level]` points for additional amplitude automation. |
+
+The transition variant recognises the same parameters with `start`/`end`
+prefixes (for example `start_lfo_freq`, `end_lfo_freq`, `start_amp_left`,
+`end_amp_left`) plus `initial_offset`, `post_offset`, and `curve` to match the
+step transition helpers.
+
 
 ### monaural_beat_stereo_amps
 Produces a monaural beat while allowing different amplitudes for the lower and upper components in each ear.
