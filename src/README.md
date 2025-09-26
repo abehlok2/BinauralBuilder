@@ -80,7 +80,9 @@ Creates the classic binaural beat illusion by playing two close frequencies.
 | `phaseOscFreq` | 0 | Rate of interaural phase modulation |
 | `phaseOscRange` | 0 | Amount of phase modulation |
 | `pan` | 0 | Static stereo offset (-1 left to +1 right) |
-| `panDepth` | 0 | Depth of sinusoidal pan modulation (clipped to ±1) |
+| `panRangeMin` | 0 | Lower bound of the modulation range (-1 left to +1 right) |
+| `panRangeMax` | 0 | Upper bound of the modulation range (-1 left to +1 right) |
+| `panType` | linear | Motion style across the range (`linear`, `inward`, `outward`) |
 | `panFreq` | 0 | Frequency of the pan modulation LFO |
 
 ### isochronic_tone
@@ -95,7 +97,9 @@ Additional parameters:
 | `rampPercent` | 0.2 | Portion of each pulse used for fade in/out |
 | `gapPercent` | 0.15 | Fraction of the cycle that is silent |
 | `pan` | 0 | Static stereo offset (-1 left to +1 right) |
-| `panDepth` | 0 | Depth of sinusoidal pan modulation (clipped to ±1) |
+| `panRangeMin` | 0 | Lower bound of the modulation range (-1 left to +1 right) |
+| `panRangeMax` | 0 | Upper bound of the modulation range (-1 left to +1 right) |
+| `panType` | linear | Motion style across the range (`linear`, `inward`, `outward`) |
 | `panFreq` | 0 | Frequency of the pan modulation LFO |
 
 The `_transition` variant accepts `start` and `end` forms of each parameter

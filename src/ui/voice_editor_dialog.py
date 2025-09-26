@@ -1807,7 +1807,7 @@ class VoiceEditorDialog(QDialog): # Standard class name
                     ('baseFreq', 200.0), ('beatFreq', 4.0), ('leftHigh', False),
                     ('startPhaseL', 0.0), ('startPhaseR', 0.0),
                     ('ampOscDepthL', 0.0), ('ampOscFreqL', 0.0), ('ampOscPhaseOffsetL', 0.0), ('ampOscDepthR', 0.0), ('ampOscFreqR', 0.0), ('ampOscPhaseOffsetR', 0.0), ('freqOscRangeL', 0.0), ('freqOscFreqL', 0.0), ('freqOscSkewL', 0.0), ('freqOscPhaseOffsetL', 0.0), ('freqOscRangeR', 0.0), ('freqOscFreqR', 0.0), ('freqOscSkewR', 0.0), ('freqOscPhaseOffsetR', 0.0), ('freqOscShape', 'sine'), ('phaseOscFreq', 0.0), ('phaseOscRange', 0.0),
-                    ('pan', 0.0), ('panDepth', 0.0), ('panFreq', 0.0)
+                    ('pan', 0.0), ('panRangeMin', 0.0), ('panRangeMax', 0.0), ('panType', 'linear'), ('panFreq', 0.0)
                 ],
                 "transition": [
                     ('startAmpL', 0.5), ('endAmpL', 0.5), ('startAmpR', 0.5), ('endAmpR', 0.5),
@@ -1822,7 +1822,11 @@ class VoiceEditorDialog(QDialog): # Standard class name
                     ('startFreqOscSkewR', 0.0), ('endFreqOscSkewR', 0.0), ('startFreqOscPhaseOffsetR', 0.0), ('endFreqOscPhaseOffsetR', 0.0),
                     ('freqOscShape', 'sine'),
                     ('startPhaseOscFreq', 0.0), ('endPhaseOscFreq', 0.0), ('startPhaseOscRange', 0.0), ('endPhaseOscRange', 0.0),
-                    ('startPan', 0.0), ('endPan', 0.0), ('startPanDepth', 0.0), ('endPanDepth', 0.0), ('startPanFreq', 0.0), ('endPanFreq', 0.0),
+                    ('startPan', 0.0), ('endPan', 0.0),
+                    ('startPanRangeMin', 0.0), ('endPanRangeMin', 0.0),
+                    ('startPanRangeMax', 0.0), ('endPanRangeMax', 0.0),
+                    ('startPanType', 'linear'), ('endPanType', 'linear'),
+                    ('startPanFreq', 0.0), ('endPanFreq', 0.0),
                     ('initial_offset', 0.0), ('post_offset', 0.0), ('transition_curve', 'linear')
                 ]
             },
@@ -1892,7 +1896,7 @@ class VoiceEditorDialog(QDialog): # Standard class name
                     ('baseFreq', 200.0), ('beatFreq', 4.0), ('forceMono', False),
                     ('startPhaseL', 0.0), ('startPhaseR', 0.0),
                     ('ampOscDepthL', 0.0), ('ampOscFreqL', 0.0), ('ampOscPhaseOffsetL', 0.0), ('ampOscDepthR', 0.0), ('ampOscFreqR', 0.0), ('ampOscPhaseOffsetR', 0.0), ('freqOscRangeL', 0.0), ('freqOscFreqL', 0.0), ('freqOscSkewL', 0.0), ('freqOscPhaseOffsetL', 0.0), ('freqOscRangeR', 0.0), ('freqOscFreqR', 0.0), ('freqOscSkewR', 0.0), ('freqOscPhaseOffsetR', 0.0), ('phaseOscFreq', 0.0), ('phaseOscRange', 0.0), ('rampPercent', 0.2), ('gapPercent', 0.15),
-                    ('harmonicSuppression', False), ('pan', 0.0), ('panDepth', 0.0), ('panFreq', 0.0)
+                    ('harmonicSuppression', False), ('pan', 0.0), ('panRangeMin', 0.0), ('panRangeMax', 0.0), ('panType', 'linear'), ('panFreq', 0.0)
                 ],
                 "transition": [
                     ('startAmpL', 0.5), ('endAmpL', 0.5), ('startAmpR', 0.5), ('endAmpR', 0.5),
@@ -1901,7 +1905,10 @@ class VoiceEditorDialog(QDialog): # Standard class name
                     ('startStartPhaseL', 0.0), ('endStartPhaseL', 0.0), ('startStartPhaseR', 0.0), ('endStartPhaseR', 0.0),
                     ('startAmpOscDepthL', 0.0), ('endAmpOscDepthL', 0.0), ('startAmpOscFreqL', 0.0), ('endAmpOscFreqL', 0.0), ('startAmpOscPhaseOffsetL', 0.0), ('endAmpOscPhaseOffsetL', 0.0), ('startAmpOscDepthR', 0.0), ('endAmpOscDepthR', 0.0), ('startAmpOscFreqR', 0.0), ('endAmpOscFreqR', 0.0), ('startAmpOscPhaseOffsetR', 0.0), ('endAmpOscPhaseOffsetR', 0.0), ('startFreqOscRangeL', 0.0), ('endFreqOscRangeL', 0.0), ('startFreqOscFreqL', 0.0), ('endFreqOscFreqL', 0.0), ('startFreqOscSkewL', 0.0), ('endFreqOscSkewL', 0.0), ('startFreqOscPhaseOffsetL', 0.0), ('endFreqOscPhaseOffsetL', 0.0), ('startFreqOscRangeR', 0.0), ('endFreqOscRangeR', 0.0), ('startFreqOscFreqR', 0.0), ('endFreqOscFreqR', 0.0), ('startFreqOscSkewR', 0.0), ('endFreqOscSkewR', 0.0), ('startFreqOscPhaseOffsetR', 0.0), ('endFreqOscPhaseOffsetR', 0.0), ('startPhaseOscFreq', 0.0), ('endPhaseOscFreq', 0.0), ('startPhaseOscRange', 0.0), ('endPhaseOscRange', 0.0), ('startRampPercent', 0.2), ('endRampPercent', 0.2), ('startGapPercent', 0.15), ('endGapPercent', 0.15),
                     ('startHarmonicSuppression', False), ('endHarmonicSuppression', False), ('startPan', 0.0), ('endPan', 0.0),
-                    ('startPanDepth', 0.0), ('endPanDepth', 0.0), ('startPanFreq', 0.0), ('endPanFreq', 0.0),
+                    ('startPanRangeMin', 0.0), ('endPanRangeMin', 0.0),
+                    ('startPanRangeMax', 0.0), ('endPanRangeMax', 0.0),
+                    ('startPanType', 'linear'), ('endPanType', 'linear'),
+                    ('startPanFreq', 0.0), ('endPanFreq', 0.0),
                     ('initial_offset', 0.0), ('post_offset', 0.0), ('transition_curve', 'linear')
                 ]
             },
