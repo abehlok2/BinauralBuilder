@@ -79,6 +79,9 @@ Creates the classic binaural beat illusion by playing two close frequencies.
 | `freqOscPhaseOffsetL` / `freqOscPhaseOffsetR` | 0 | Phase of the vibrato LFO |
 | `phaseOscFreq` | 0 | Rate of interaural phase modulation |
 | `phaseOscRange` | 0 | Amount of phase modulation |
+| `pan` | 0 | Static stereo offset (-1 left to +1 right) |
+| `panDepth` | 0 | Depth of sinusoidal pan modulation (clipped to ±1) |
+| `panFreq` | 0 | Frequency of the pan modulation LFO |
 
 ### isochronic_tone
 A pulsing tone using a trapezoid envelope.  This voice now accepts the same
@@ -91,7 +94,9 @@ Additional parameters:
 |-----------|---------|-------|
 | `rampPercent` | 0.2 | Portion of each pulse used for fade in/out |
 | `gapPercent` | 0.15 | Fraction of the cycle that is silent |
-| `pan` | 0 | Extra stereo pan applied after modulation |
+| `pan` | 0 | Static stereo offset (-1 left to +1 right) |
+| `panDepth` | 0 | Depth of sinusoidal pan modulation (clipped to ±1) |
+| `panFreq` | 0 | Frequency of the pan modulation LFO |
 
 The `_transition` variant accepts `start` and `end` forms of each parameter
 (`startAmpL`/`endAmpL`, `startAmpR`/`endAmpR`, `startBaseFreq`/`endBaseFreq`, etc.) to smoothly move
