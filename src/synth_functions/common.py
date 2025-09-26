@@ -329,31 +329,103 @@ def _ensure_1d_length(value, length):
     return arr
 
 
-def generate_pan_envelope(num_samples, sample_rate, pan_base, pan_depth, pan_freq, initial_phase=0.0):
+def generate_pan_envelope(
+    num_samples,
+    sample_rate,
+    pan_base,
+    pan_range_min,
+    pan_range_max,
+    pan_freq,
+    pan_type="linear",
+    initial_phase=0.0,
+):
     """Create a per-sample pan curve in the range [-1, 1].
 
-    Parameters mirror the UI controls – ``pan_base`` acts as a static offset
-    while ``pan_depth`` and ``pan_freq`` describe a sinusoidal modulation.
-    Each argument can be a scalar or an array of ``num_samples`` values to
-    support transition voices.
+    ``pan_base`` provides a static offset (used primarily when ``pan_freq`` is
+    zero) while ``pan_range_min``/``pan_range_max`` describe the dynamic
+    excursion limits. ``pan_type`` selects how the motion traverses the range:
+
+    ``linear``
+        Sinusoidal motion that smoothly oscillates between the configured
+        minimum and maximum.
+    ``inward``
+        Alternating ramps that start at either extremum and move toward the
+        center (zero).
+    ``outward``
+        Alternating ramps that begin at the center and move toward the
+        configured extrema.
+
+    Each of these parameters can be a scalar or an array of ``num_samples``
+    values to support transition voices.
     """
     if num_samples <= 0:
         return np.zeros(0, dtype=np.float64)
 
     base_arr = _ensure_1d_length(pan_base, num_samples)
-    depth_arr = _ensure_1d_length(pan_depth, num_samples)
+    range_min_arr = _ensure_1d_length(pan_range_min, num_samples)
+    range_max_arr = _ensure_1d_length(pan_range_max, num_samples)
     freq_arr = _ensure_1d_length(pan_freq, num_samples)
+
+    range_low = np.minimum(range_min_arr, range_max_arr)
+    range_high = np.maximum(range_min_arr, range_max_arr)
 
     if sample_rate <= 0.0:
         return np.clip(base_arr, -1.0, 1.0)
 
+    if np.all(freq_arr <= 0.0):
+        # No modulation requested – prefer the configured range (if any),
+        # otherwise fall back to the static pan control.
+        if np.any(range_low != range_high):
+            center = 0.5 * (range_high + range_low)
+            return np.clip(center, -1.0, 1.0)
+        if np.any(range_low != base_arr):
+            return np.clip(range_low, -1.0, 1.0)
+        return np.clip(base_arr, -1.0, 1.0)
+
+    # Ensure positive frequencies (negative values would simply invert the
+    # traversal direction; treat them as their absolute magnitude).
+    freq_arr = np.abs(freq_arr)
     dt = 1.0 / float(sample_rate)
     freq_prefix = np.concatenate(([0.0], freq_arr[:-1]))
     cycles = np.cumsum(freq_prefix) * dt
-    phase = initial_phase + 2.0 * np.pi * cycles
-    lfo = np.sin(phase)
 
-    pan_values = base_arr + depth_arr * lfo
+    pan_type_key = str(pan_type).strip().lower()
+    if pan_type_key not in {"linear", "inward", "outward"}:
+        pan_type_key = "linear"
+
+    if pan_type_key == "linear":
+        phase = initial_phase + 2.0 * np.pi * cycles
+        lfo = np.sin(phase)
+        center = 0.5 * (range_high + range_low)
+        half_span = 0.5 * (range_high - range_low)
+        pan_values = center + half_span * lfo
+    else:
+        phase_cycles = (initial_phase / (2.0 * np.pi)) + cycles
+        cycle_index = np.floor(phase_cycles).astype(np.int64)
+        cycle_pos = phase_cycles - cycle_index
+
+        even_mask = (cycle_index & 1) == 0
+        pan_values = np.empty(num_samples, dtype=np.float64)
+
+        if pan_type_key == "inward":
+            start_even = range_high
+            start_odd = range_low
+            pan_values[even_mask] = start_even[even_mask] + (
+                0.0 - start_even[even_mask]
+            ) * cycle_pos[even_mask]
+            pan_values[~even_mask] = start_odd[~even_mask] + (
+                0.0 - start_odd[~even_mask]
+            ) * cycle_pos[~even_mask]
+        else:  # outward
+            target_even = range_high
+            target_odd = range_low
+            pan_values[even_mask] = 0.0 + (
+                target_even[even_mask] - 0.0
+            ) * cycle_pos[even_mask]
+            pan_values[~even_mask] = 0.0 + (
+                target_odd[~even_mask] - 0.0
+            ) * cycle_pos[~even_mask]
+
     return np.clip(pan_values, -1.0, 1.0)
 
 

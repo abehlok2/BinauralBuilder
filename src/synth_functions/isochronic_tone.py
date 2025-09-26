@@ -146,7 +146,11 @@ def isochronic_tone(duration, sample_rate=44100, **params):
     """Generate an isochronic tone with extended modulation options."""
 
     pan = np.clip(float(params.get('pan', 0.0)), -1.0, 1.0)
-    pan_depth = np.clip(float(params.get('panDepth', 0.0)), -1.0, 1.0)
+    pan_range_min = np.clip(float(params.get('panRangeMin', params.get('pan', 0.0))), -1.0, 1.0)
+    pan_range_max = np.clip(float(params.get('panRangeMax', params.get('pan', 0.0))), -1.0, 1.0)
+    if pan_range_min > pan_range_max:
+        pan_range_min, pan_range_max = pan_range_max, pan_range_min
+    pan_type = str(params.get('panType', 'linear')).strip().lower()
     pan_freq = float(params.get('panFreq', 0.0))
 
     # Extended parameters matching ``binaural_beat`` (glitch parameters omitted)
@@ -214,8 +218,22 @@ def isochronic_tone(duration, sample_rate=44100, **params):
         gapPercent,
     )
 
-    if audio.size and (pan != 0.0 or pan_depth != 0.0 or pan_freq != 0.0):
-        pan_curve = generate_pan_envelope(audio.shape[0], sample_rate, pan, pan_depth, pan_freq)
+    if audio.size and (
+        pan != 0.0
+        or pan_range_min != pan
+        or pan_range_max != pan
+        or pan_range_min != pan_range_max
+        or pan_freq != 0.0
+    ):
+        pan_curve = generate_pan_envelope(
+            audio.shape[0],
+            sample_rate,
+            pan,
+            pan_range_min,
+            pan_range_max,
+            pan_freq,
+            pan_type=pan_type,
+        )
         apply_pan_envelope(audio, pan_curve)
 
     if harmonic_suppression:
@@ -336,8 +354,42 @@ def isochronic_tone_transition(duration, sample_rate=44100, initial_offset=0.0, 
     harmonic_suppression = startHarmonicSuppression or endHarmonicSuppression
     startPan = np.clip(float(params.get('startPan', params.get('pan', 0.0))), -1.0, 1.0)
     endPan = np.clip(float(params.get('endPan', startPan)), -1.0, 1.0)
-    startPanDepth = np.clip(float(params.get('startPanDepth', params.get('panDepth', 0.0))), -1.0, 1.0)
-    endPanDepth = np.clip(float(params.get('endPanDepth', startPanDepth)), -1.0, 1.0)
+    startPanRangeMin = np.clip(
+        float(
+            params.get(
+                'startPanRangeMin',
+                params.get('panRangeMin', params.get('startPan', params.get('pan', 0.0))))
+        ),
+        -1.0,
+        1.0,
+    )
+    endPanRangeMin = np.clip(
+        float(params.get('endPanRangeMin', startPanRangeMin)),
+        -1.0,
+        1.0,
+    )
+    startPanRangeMax = np.clip(
+        float(
+            params.get(
+                'startPanRangeMax',
+                params.get('panRangeMax', params.get('startPan', params.get('pan', 0.0))))
+        ),
+        -1.0,
+        1.0,
+    )
+    endPanRangeMax = np.clip(
+        float(params.get('endPanRangeMax', startPanRangeMax)),
+        -1.0,
+        1.0,
+    )
+    if startPanRangeMin > startPanRangeMax:
+        startPanRangeMin, startPanRangeMax = startPanRangeMax, startPanRangeMin
+    if endPanRangeMin > endPanRangeMax:
+        endPanRangeMin, endPanRangeMax = endPanRangeMax, endPanRangeMin
+    startPanType = str(params.get('startPanType', params.get('panType', 'linear'))).strip().lower()
+    endPanType = str(params.get('endPanType', startPanType)).strip().lower()
+    if startPanType != endPanType:
+        raise ValueError('Transition pan types must match for isochronic_tone voices.')
     startPanFreq = float(params.get('startPanFreq', params.get('panFreq', 0.0)))
     endPanFreq = float(params.get('endPanFreq', startPanFreq))
 
@@ -464,16 +516,25 @@ def isochronic_tone_transition(duration, sample_rate=44100, initial_offset=0.0, 
 
     if audio.size:
         pan_base_arr = startPan + (endPan - startPan) * alpha
-        pan_depth_arr = startPanDepth + (endPanDepth - startPanDepth) * alpha
+        pan_range_min_arr = startPanRangeMin + (endPanRangeMin - startPanRangeMin) * alpha
+        pan_range_max_arr = startPanRangeMax + (endPanRangeMax - startPanRangeMax) * alpha
         pan_freq_arr = startPanFreq + (endPanFreq - startPanFreq) * alpha
 
         if (
             np.any(pan_base_arr != 0.0)
-            or np.any(pan_depth_arr != 0.0)
+            or np.any(pan_range_min_arr != pan_base_arr)
+            or np.any(pan_range_max_arr != pan_base_arr)
+            or np.any(pan_range_min_arr != pan_range_max_arr)
             or np.any(pan_freq_arr != 0.0)
         ):
             pan_curve = generate_pan_envelope(
-                audio.shape[0], sample_rate, pan_base_arr, pan_depth_arr, pan_freq_arr
+                audio.shape[0],
+                sample_rate,
+                pan_base_arr,
+                np.minimum(pan_range_min_arr, pan_range_max_arr),
+                np.maximum(pan_range_min_arr, pan_range_max_arr),
+                pan_freq_arr,
+                pan_type=startPanType,
             )
             apply_pan_envelope(audio, pan_curve)
 
