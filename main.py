@@ -64,6 +64,7 @@ from src.ui.subliminal_dialog import SubliminalDialog
 from src.utils.timeline_visualizer import visualize_track_timeline
 from src.ui.overlay_clip_dialog import OverlayClipDialog
 from src.ui.collapsible_box import CollapsibleBox
+from src.ui.binaural_encoder_dialog import BinauralEncoderDialog
 from src.models import StepModel, VoiceModel
 from src.utils.voice_file import (
     VoicePreset,
@@ -405,6 +406,10 @@ class TrackEditorApp(QMainWindow):
         dialog = FrequencyTesterDialog(self, self.prefs)
         dialog.exec_()
 
+    def open_binaural_encoder(self):
+        dialog = BinauralEncoderDialog(self)
+        dialog.exec_()
+
     def open_audio_thresholder(self):
         from src.ui.audio_thresholder_dialog import AudioThresholderDialog
         dialog = AudioThresholderDialog(self.prefs, self)
@@ -478,6 +483,10 @@ class TrackEditorApp(QMainWindow):
         self.open_freq_tester_button = QPushButton("Frequency Tester")
         self.open_freq_tester_button.clicked.connect(self.open_frequency_tester)
         tools_left_layout.addWidget(self.open_freq_tester_button)
+
+        self.open_binaural_button = QPushButton("Binaural Encoder")
+        self.open_binaural_button.clicked.connect(self.open_binaural_encoder)
+        tools_left_layout.addWidget(self.open_binaural_button)
 
         self.open_thresholder_button = QPushButton("Audio Thresholder")
         self.open_thresholder_button.clicked.connect(self.open_audio_thresholder)
