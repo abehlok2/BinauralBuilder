@@ -365,6 +365,7 @@ def generate_pan_envelope(
     range_min_arr = _ensure_1d_length(pan_range_min, num_samples)
     range_max_arr = _ensure_1d_length(pan_range_max, num_samples)
     freq_arr = _ensure_1d_length(pan_freq, num_samples)
+    phase_arr = _ensure_1d_length(initial_phase, num_samples)
 
     range_low = np.minimum(range_min_arr, range_max_arr)
     range_high = np.maximum(range_min_arr, range_max_arr)
@@ -394,13 +395,13 @@ def generate_pan_envelope(
         pan_type_key = "linear"
 
     if pan_type_key == "linear":
-        phase = initial_phase + 2.0 * np.pi * cycles
+        phase = phase_arr + 2.0 * np.pi * cycles
         lfo = np.sin(phase)
         center = 0.5 * (range_high + range_low)
         half_span = 0.5 * (range_high - range_low)
         pan_values = center + half_span * lfo
     else:
-        phase_cycles = (initial_phase / (2.0 * np.pi)) + cycles
+        phase_cycles = (phase_arr / (2.0 * np.pi)) + cycles
         cycle_index = np.floor(phase_cycles).astype(np.int64)
         cycle_pos = phase_cycles - cycle_index
 
