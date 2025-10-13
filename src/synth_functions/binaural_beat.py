@@ -42,13 +42,14 @@ def binaural_beat(duration, sample_rate=44100, **params):
     pOF = float(params.get('phaseOscFreq', 0.0))
     pOR = float(params.get('phaseOscRange', 0.0)) # in radians
 
-    pan = np.clip(float(params.get('pan', 0.0)), -1.0, 1.0)
-    pan_range_min = np.clip(float(params.get('panRangeMin', params.get('pan', 0.0))), -1.0, 1.0)
-    pan_range_max = np.clip(float(params.get('panRangeMax', params.get('pan', 0.0))), -1.0, 1.0)
+    pan_default = float(params.get('pan', 0.0))
+    pan_range_min = np.clip(float(params.get('panRangeMin', pan_default)), -1.0, 1.0)
+    pan_range_max = np.clip(float(params.get('panRangeMax', pan_default)), -1.0, 1.0)
     if pan_range_min > pan_range_max:
         pan_range_min, pan_range_max = pan_range_max, pan_range_min
     pan_type = str(params.get('panType', 'linear')).strip().lower()
     pan_freq = float(params.get('panFreq', 0.0))
+    pan_phase = float(params.get('panPhase', 0.0))
 
     # --- UNCOMMENT IF "GLITCH/CHIRP" EFFECT NEEDED OR DESIRED
     # --- Unpack glitch parameters --- 
@@ -133,21 +134,23 @@ def binaural_beat(duration, sample_rate=44100, **params):
         pos_arr, burst_arr
     )
 
+    pan_min = min(pan_range_min, pan_range_max)
+    pan_max = max(pan_range_min, pan_range_max)
+
     if audio.size and (
-        pan != 0.0
-        or pan_range_min != pan
-        or pan_range_max != pan
-        or pan_range_min != pan_range_max
-        or pan_freq != 0.0
+        not np.isclose(pan_min, 0.0)
+        or not np.isclose(pan_max, 0.0)
+        or not np.isclose(pan_freq, 0.0)
     ):
         pan_curve = generate_pan_envelope(
             audio.shape[0],
             sample_rate,
-            pan,
-            pan_range_min,
-            pan_range_max,
+            0.0,
+            pan_min,
+            pan_max,
             pan_freq,
             pan_type=pan_type,
+            initial_phase=pan_phase,
         )
         apply_pan_envelope(audio, pan_curve)
 
@@ -356,33 +359,25 @@ def binaural_beat_transition(duration, sample_rate=44100, initial_offset=0.0, po
     startFreqOscPhaseOffsetR = float(params.get('startFreqOscPhaseOffsetR', params.get('freqOscPhaseOffsetR', 0.0)))
     endFreqOscPhaseOffsetR = float(params.get('endFreqOscPhaseOffsetR', startFreqOscPhaseOffsetR))
 
-    startPan = np.clip(float(params.get('startPan', params.get('pan', 0.0))), -1.0, 1.0)
-    endPan = np.clip(float(params.get('endPan', startPan)), -1.0, 1.0)
+    start_pan_value = float(params.get('startPan', params.get('pan', 0.0)))
+    end_pan_value = float(params.get('endPan', start_pan_value))
     startPanRangeMin = np.clip(
-        float(
-            params.get(
-                'startPanRangeMin',
-                params.get('panRangeMin', params.get('startPan', params.get('pan', 0.0))))
-        ),
+        float(params.get('startPanRangeMin', params.get('panRangeMin', start_pan_value))),
         -1.0,
         1.0,
     )
     endPanRangeMin = np.clip(
-        float(params.get('endPanRangeMin', startPanRangeMin)),
+        float(params.get('endPanRangeMin', params.get('panRangeMin', end_pan_value))),
         -1.0,
         1.0,
     )
     startPanRangeMax = np.clip(
-        float(
-            params.get(
-                'startPanRangeMax',
-                params.get('panRangeMax', params.get('startPan', params.get('pan', 0.0))))
-        ),
+        float(params.get('startPanRangeMax', params.get('panRangeMax', start_pan_value))),
         -1.0,
         1.0,
     )
     endPanRangeMax = np.clip(
-        float(params.get('endPanRangeMax', startPanRangeMax)),
+        float(params.get('endPanRangeMax', params.get('panRangeMax', end_pan_value))),
         -1.0,
         1.0,
     )
@@ -396,6 +391,8 @@ def binaural_beat_transition(duration, sample_rate=44100, initial_offset=0.0, po
         raise ValueError('Transition pan types must match for binaural_beat voices.')
     startPanFreq = float(params.get('startPanFreq', params.get('panFreq', 0.0)))
     endPanFreq = float(params.get('endPanFreq', startPanFreq))
+    startPanPhase = float(params.get('startPanPhase', params.get('panPhase', 0.0)))
+    endPanPhase = float(params.get('endPanPhase', startPanPhase))
 
     freqOscShape = str(params.get('freqOscShape', 'sine')).lower()
     shape_int = 1 if freqOscShape == 'triangle' else 0
@@ -506,26 +503,25 @@ def binaural_beat_transition(duration, sample_rate=44100, initial_offset=0.0, po
     )
 
     if audio.size:
-        pan_base_arr = startPan + (endPan - startPan) * alpha_arr
         pan_range_min_arr = startPanRangeMin + (endPanRangeMin - startPanRangeMin) * alpha_arr
         pan_range_max_arr = startPanRangeMax + (endPanRangeMax - startPanRangeMax) * alpha_arr
         pan_freq_arr = startPanFreq + (endPanFreq - startPanFreq) * alpha_arr
+        pan_phase_arr = startPanPhase + (endPanPhase - startPanPhase) * alpha_arr
 
         if (
-            np.any(pan_base_arr != 0.0)
-            or np.any(pan_range_min_arr != pan_base_arr)
-            or np.any(pan_range_max_arr != pan_base_arr)
-            or np.any(pan_range_min_arr != pan_range_max_arr)
-            or np.any(pan_freq_arr != 0.0)
+            np.any(~np.isclose(pan_range_min_arr, 0.0))
+            or np.any(~np.isclose(pan_range_max_arr, 0.0))
+            or np.any(~np.isclose(pan_freq_arr, 0.0))
         ):
             pan_curve = generate_pan_envelope(
                 audio.shape[0],
                 sample_rate,
-                pan_base_arr,
+                0.0,
                 np.minimum(pan_range_min_arr, pan_range_max_arr),
                 np.maximum(pan_range_min_arr, pan_range_max_arr),
                 pan_freq_arr,
                 pan_type=startPanType,
+                initial_phase=pan_phase_arr,
             )
             apply_pan_envelope(audio, pan_curve)
 
