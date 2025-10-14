@@ -157,6 +157,7 @@ levels) using the same curve controls as other transition voices.
 | `lfo_freq` | 1/12 | Rate used to move the swept notch filters. |
 | `sweeps` | `[(1000, 10000)]` | List of dictionaries or tuples describing notch frequency ranges, Q values, and cascade counts. |
 | `notch_q` / `cascade_count` | `25` / `10` | Override all sweep Q/cascade settings for static mode. |
+| `static_notches` | `[]` | Optional list of static notch filters (`freq`, `q`, `cascade`) mixed in alongside the swept filters. |
 | `amp` / `amp_left` / `amp_right` | 0.25 / — / — | Overall and per-channel level scaling. |
 | `fade_in` / `fade_out` | 0.0 | Optional fades in seconds applied to the output. |
 | `amp_envelope` | `None` | Optional list of `[time, level]` points for additional amplitude automation. |
