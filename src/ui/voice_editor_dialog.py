@@ -18,6 +18,8 @@ from PyQt5.QtWidgets import (
     QLineEdit,
     QInputDialog,
     QFileDialog,
+    QSpinBox,
+    QDoubleSpinBox,
 )
 from PyQt5.QtCore import Qt, pyqtSlot, QTimer
 from PyQt5.QtGui import QIntValidator, QDoubleValidator, QFont
