@@ -16,6 +16,7 @@ from .common import (
     green_noise,
     deep_brown_noise,
 )
+from .spatial_ambi2d import spatialize_binaural_mid_only, generate_azimuth_trajectory
 
 # --- Parameters ---
 DEFAULT_SAMPLE_RATE = 44100  # Hz
@@ -1343,6 +1344,7 @@ def noise_generator(
     memory_efficient=False,
     n_jobs=1,
     static_notches=None,
+    **extra_params,
 ):
     """Generate swept-notch coloured noise for a single step."""
 
@@ -1402,7 +1404,51 @@ def noise_generator(
     audio[:, 0] *= gains * float(left_amp)
     audio[:, 1] *= gains * float(right_amp)
 
-    return np.clip(audio, -1.0, 1.0)
+    audio = np.clip(audio, -1.0, 1.0)
+
+    if bool(extra_params.get("spatialEnable", False)):
+        theta_deg, distance_m = generate_azimuth_trajectory(
+            duration,
+            sample_rate,
+            segments=extra_params.get(
+                "spatialTrajectory",
+                [
+                    {
+                        "mode": "oscillate",
+                        "center_deg": 0,
+                        "extent_deg": 75,
+                        "period_s": 20.0,
+                        "distance_m": [1.0, 1.4],
+                        "seconds": duration,
+                    }
+                ],
+            ),
+        )
+        audio = spatialize_binaural_mid_only(
+            audio.astype(np.float32),
+            float(sample_rate),
+            theta_deg,
+            distance_m,
+            ild_enable=int(extra_params.get("spatialUseIld", 1)),
+            ear_angle_deg=float(extra_params.get("spatialEarAngleDeg", 30.0)),
+            head_radius_m=float(extra_params.get("spatialHeadRadiusM", 0.0875)),
+            itd_scale=float(extra_params.get("spatialItdScale", 1.0)),
+            ild_max_db=float(extra_params.get("spatialIldMaxDb", 1.5)),
+            ild_xover_hz=float(extra_params.get("spatialIldXoverHz", 700.0)),
+            ref_distance_m=float(extra_params.get("spatialRefDistanceM", 1.0)),
+            rolloff=float(extra_params.get("spatialRolloff", 1.0)),
+            hf_roll_db_per_m=float(extra_params.get("spatialHfRollDbPerM", 0.0)),
+            dz_theta_ms=float(extra_params.get("spatialDezipperThetaMs", 60.0)),
+            dz_dist_ms=float(extra_params.get("spatialDezipperDistMs", 80.0)),
+            decoder=0 if str(extra_params.get("spatialDecoder", "itd_head")).lower() != "foa_cardioid" else 1,
+            min_distance_m=float(extra_params.get("spatialMinDistanceM", 0.1)),
+            max_deg_per_s=float(extra_params.get("spatialMaxDegPerS", 90.0)),
+            max_delay_step_samples=float(extra_params.get("spatialMaxDelayStepSamples", 0.02)),
+            interp_mode=int(extra_params.get("spatialInterp", 1)),
+        )
+        audio = np.clip(audio, -1.0, 1.0)
+
+    return audio
 
 
 def noise_generator_transition(
@@ -1437,6 +1483,7 @@ def noise_generator_transition(
     memory_efficient=False,
     n_jobs=1,
     static_notches=None,
+    **extra_params,
 ):
     """Transitioning version of :func:`noise_generator`."""
 
@@ -1544,7 +1591,51 @@ def noise_generator_transition(
     audio[:, 0] *= env * left_curve
     audio[:, 1] *= env * right_curve
 
-    return np.clip(audio, -1.0, 1.0)
+    audio = np.clip(audio, -1.0, 1.0)
+
+    if bool(extra_params.get("spatialEnable", False)):
+        theta_deg, distance_m = generate_azimuth_trajectory(
+            duration,
+            sample_rate,
+            segments=extra_params.get(
+                "spatialTrajectory",
+                [
+                    {
+                        "mode": "oscillate",
+                        "center_deg": 0,
+                        "extent_deg": 75,
+                        "period_s": 20.0,
+                        "distance_m": [1.0, 1.4],
+                        "seconds": duration,
+                    }
+                ],
+            ),
+        )
+        audio = spatialize_binaural_mid_only(
+            audio.astype(np.float32),
+            float(sample_rate),
+            theta_deg,
+            distance_m,
+            ild_enable=int(extra_params.get("spatialUseIld", 1)),
+            ear_angle_deg=float(extra_params.get("spatialEarAngleDeg", 30.0)),
+            head_radius_m=float(extra_params.get("spatialHeadRadiusM", 0.0875)),
+            itd_scale=float(extra_params.get("spatialItdScale", 1.0)),
+            ild_max_db=float(extra_params.get("spatialIldMaxDb", 1.5)),
+            ild_xover_hz=float(extra_params.get("spatialIldXoverHz", 700.0)),
+            ref_distance_m=float(extra_params.get("spatialRefDistanceM", 1.0)),
+            rolloff=float(extra_params.get("spatialRolloff", 1.0)),
+            hf_roll_db_per_m=float(extra_params.get("spatialHfRollDbPerM", 0.0)),
+            dz_theta_ms=float(extra_params.get("spatialDezipperThetaMs", 60.0)),
+            dz_dist_ms=float(extra_params.get("spatialDezipperDistMs", 80.0)),
+            decoder=0 if str(extra_params.get("spatialDecoder", "itd_head")).lower() != "foa_cardioid" else 1,
+            min_distance_m=float(extra_params.get("spatialMinDistanceM", 0.1)),
+            max_deg_per_s=float(extra_params.get("spatialMaxDegPerS", 90.0)),
+            max_delay_step_samples=float(extra_params.get("spatialMaxDelayStepSamples", 0.02)),
+            interp_mode=int(extra_params.get("spatialInterp", 1)),
+        )
+        audio = np.clip(audio, -1.0, 1.0)
+
+    return audio
 
 
 # =======================================================
