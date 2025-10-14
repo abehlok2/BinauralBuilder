@@ -855,7 +855,7 @@ class TrackEditorApp(QMainWindow):
         self.remove_step_button.setEnabled(has_selection)
         self.duplicate_step_button.setEnabled(is_single_selection)
         self.create_end_state_button.setEnabled(is_single_selection)
-        self.edit_duration_button.setEnabled(is_single_selection)
+        self.edit_duration_button.setEnabled(has_selection)
         self.edit_description_button.setEnabled(is_single_selection)
         # Enable Add Voice if a single step is selected. Availability of the
         # actual editor will be checked when the button is pressed so that the
@@ -1535,21 +1535,49 @@ class TrackEditorApp(QMainWindow):
 
     @pyqtSlot()
     def edit_step_duration(self):
-        selected_index = self.get_selected_step_index()
-        if selected_index is None or len(self.get_selected_step_indices()) != 1:
-            QMessageBox.warning(self, "Edit Duration", "Please select exactly one step to edit.")
+        selected_indices = self.get_selected_step_indices()
+        if not selected_indices:
+            QMessageBox.warning(self, "Edit Duration", "Please select one or more steps to edit.")
             return
-        try: current_duration = float(self.track_data["steps"][selected_index].get("duration", 0.0))
-        except (IndexError, ValueError, TypeError) as e: QMessageBox.critical(self, "Error", f"Failed to get current duration (index {selected_index}):\n{e}"); return
-        new_duration, ok = QInputDialog.getDouble(self, f"Edit Step {selected_index + 1} Duration", "New Duration (s):", current_duration, 0.001, 99999.0, 3)
+
+        first_selected_index = selected_indices[0]
+        try:
+            current_duration = float(self.track_data["steps"][first_selected_index].get("duration", 0.0))
+        except (IndexError, ValueError, TypeError) as e:
+            QMessageBox.critical(
+                self,
+                "Error",
+                f"Failed to get current duration (index {first_selected_index}):\n{e}",
+            )
+            return
+
+        title = (
+            f"Edit Step {first_selected_index + 1} Duration"
+            if len(selected_indices) == 1
+            else f"Edit Duration for {len(selected_indices)} Steps"
+        )
+        prompt = (
+            "New Duration (s):"
+            if len(selected_indices) == 1
+            else "New Duration (s) for selected steps:"
+        )
+        new_duration, ok = QInputDialog.getDouble(self, title, prompt, current_duration, 0.001, 99999.0, 3)
         if ok and new_duration is not None:
-            if new_duration <= 0: QMessageBox.warning(self, "Invalid Input", "Duration must be positive."); return
+            if new_duration <= 0:
+                QMessageBox.warning(self, "Invalid Input", "Duration must be positive.")
+                return
             try:
-                self.track_data["steps"][selected_index]["duration"] = new_duration
+                for index in selected_indices:
+                    if 0 <= index < len(self.track_data["steps"]):
+                        self.track_data["steps"][index]["duration"] = new_duration
+                    else:
+                        raise IndexError(f"Step index {index} out of range")
                 self.refresh_steps_tree()
                 self._push_history_state()
-            except IndexError: QMessageBox.critical(self, "Error", "Failed to set duration (index out of range after edit).")
-            except Exception as e: QMessageBox.critical(self, "Error", f"Failed to set duration:\n{e}")
+            except IndexError:
+                QMessageBox.critical(self, "Error", "Failed to set duration (index out of range after edit).")
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Failed to set duration:\n{e}")
 
     @pyqtSlot()
     def edit_step_description(self):
