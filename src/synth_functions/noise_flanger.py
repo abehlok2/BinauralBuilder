@@ -342,6 +342,74 @@ def _safe_int(value, default):
         return int(default)
 
 
+def _prepare_static_notches(static_notches, limit=10):
+    """Parse a static notch specification into ``(freq, q, cascade)`` tuples."""
+    if not static_notches:
+        return []
+
+    parsed = []
+    for entry in static_notches:
+        if len(parsed) >= int(limit):
+            break
+
+        freq = 1000.0
+        q_val = 25.0
+        casc = 1
+
+        if isinstance(entry, dict):
+            freq = _safe_float(
+                entry.get("freq", entry.get("frequency", entry.get("hz", 1000.0))),
+                1000.0,
+            )
+            q_val = _safe_float(entry.get("q", entry.get("quality", 25.0)), 25.0)
+            casc = _safe_int(entry.get("cascade", entry.get("count", 1)), 1)
+        elif isinstance(entry, (list, tuple)):
+            items = list(entry)
+            if items:
+                freq = _safe_float(items[0], 1000.0)
+            if len(items) > 1:
+                q_val = _safe_float(items[1], 25.0)
+            if len(items) > 2:
+                casc = _safe_int(items[2], 1)
+        else:
+            continue
+
+        freq = max(1.0, float(freq))
+        q_val = max(0.1, float(q_val))
+        casc = max(1, int(casc))
+        parsed.append((freq, q_val, casc))
+
+    return parsed
+
+
+def _apply_static_notches(stereo_output, sample_rate, static_notches):
+    """Apply non-modulated notch filters to ``stereo_output`` in-place."""
+    parsed = _prepare_static_notches(static_notches)
+    if not parsed:
+        return stereo_output
+
+    left = stereo_output[:, 0].astype(np.float64, copy=True)
+    right = stereo_output[:, 1].astype(np.float64, copy=True)
+
+    nyquist = sample_rate * 0.49
+    for freq, q_val, casc in parsed:
+        if freq <= 0.0 or freq >= nyquist:
+            continue
+
+        try:
+            b, a = signal.iirnotch(freq, q_val, sample_rate)
+        except ValueError:
+            continue
+
+        for _ in range(casc):
+            left = signal.filtfilt(b, a, left)
+            right = signal.filtfilt(b, a, right)
+
+    stereo_output[:, 0] = left.astype(np.float32)
+    stereo_output[:, 1] = right.astype(np.float32)
+    return stereo_output
+
+
 def _prepare_static_sweeps(sweeps):
     """Convert a ``sweeps`` specification into arrays for the notch helpers."""
     if not sweeps:
@@ -837,6 +905,7 @@ def _generate_swept_notch_arrays(
     lfo_waveform,
     memory_efficient,
     n_jobs,
+    static_notches=None,
 ):
     """Internal helper to generate swept notch noise and return stereo array."""
     if filter_sweeps is None:
@@ -932,6 +1001,9 @@ def _generate_swept_notch_arrays(
 
     stereo_output = np.stack((left_output, right_output), axis=-1)
 
+    if static_notches:
+        stereo_output = _apply_static_notches(stereo_output, sample_rate, static_notches)
+
     max_val = np.max(np.abs(stereo_output))
     if max_val > 0.95:
         stereo_output = np.clip(stereo_output, -0.95, 0.95)
@@ -965,6 +1037,7 @@ def _generate_swept_notch_arrays_transition(
     transition_curve,
     memory_efficient,
     n_jobs,
+    static_notches=None,
 ):
     """Internal helper generating swept notch noise with parameter transitions."""
     if start_filter_sweeps is None:
@@ -1133,6 +1206,9 @@ def _generate_swept_notch_arrays_transition(
 
     stereo_output = np.stack((left_output, right_output), axis=-1)
 
+    if static_notches:
+        stereo_output = _apply_static_notches(stereo_output, sample_rate, static_notches)
+
     max_val = np.max(np.abs(stereo_output))
     if max_val > 0.95:
         stereo_output = np.clip(stereo_output, -0.95, 0.95)
@@ -1157,6 +1233,7 @@ def generate_swept_notch_pink_sound(
     lfo_waveform="sine",
     memory_efficient=False,
     n_jobs=2,
+    static_notches=None,
 ):
     """Generate swept notch noise and save to ``filename``."""
     stereo_output, total_time = _generate_swept_notch_arrays(
@@ -1173,6 +1250,7 @@ def generate_swept_notch_pink_sound(
         lfo_waveform,
         memory_efficient,
         n_jobs,
+        static_notches,
     )
     try:
         sf.write(filename, stereo_output, sample_rate, subtype="PCM_16")
@@ -1206,6 +1284,7 @@ def generate_swept_notch_pink_sound_transition(
     transition_curve="linear",
     memory_efficient=False,
     n_jobs=2,
+    static_notches=None,
 ):
     """Generate swept notch noise with parameters smoothly transitioning from start→end."""
     stereo_output, total_time = _generate_swept_notch_arrays_transition(
@@ -1231,6 +1310,7 @@ def generate_swept_notch_pink_sound_transition(
         transition_curve,
         memory_efficient,
         n_jobs,
+        static_notches,
     )
     try:
         sf.write(filename, stereo_output, sample_rate, subtype="PCM_16")
@@ -1262,6 +1342,7 @@ def noise_generator(
     amp_envelope=None,
     memory_efficient=False,
     n_jobs=1,
+    static_notches=None,
 ):
     """Generate swept-notch coloured noise for a single step."""
 
@@ -1300,6 +1381,7 @@ def noise_generator(
         lfo_waveform,
         bool(memory_efficient),
         n_jobs,
+        static_notches,
     )
 
     audio = np.array(stereo_output, dtype=np.float32, copy=True)
@@ -1354,6 +1436,7 @@ def noise_generator_transition(
     amp_envelope=None,
     memory_efficient=False,
     n_jobs=1,
+    static_notches=None,
 ):
     """Transitioning version of :func:`noise_generator`."""
 
@@ -1422,6 +1505,7 @@ def noise_generator_transition(
         curve,
         bool(memory_efficient),
         n_jobs,
+        static_notches,
     )
 
     audio = np.array(stereo_output, dtype=np.float32, copy=True)

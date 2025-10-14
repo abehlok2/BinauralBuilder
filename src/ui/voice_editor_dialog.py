@@ -21,8 +21,10 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import Qt, pyqtSlot, QTimer
 from PyQt5.QtGui import QIntValidator, QDoubleValidator, QFont
+import ast
 import copy
 from collections import OrderedDict
+import json
 import math
 import inspect
 import traceback
@@ -142,6 +144,451 @@ SPATIAL_TOOLTIPS = {
     'spatialTrajectory': 'Array of movement segments (rotate or oscillate) defining azimuth and distance over time.',
 }
 
+
+# Helper utilities specific to sweep / static notch editing
+def _coerce_to_sequence(value):
+    """Convert stored parameter ``value`` into a list for editing widgets."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            try:
+                parsed = ast.literal_eval(value)
+            except (ValueError, SyntaxError):
+                return []
+        else:
+            value = parsed
+    if isinstance(value, dict):
+        return [value]
+    if isinstance(value, list):
+        return value
+    return []
+
+
+class NoiseSweepRow(QWidget):
+    """Row widget for configuring a single swept notch specification."""
+
+    def __init__(self, is_transition=False, parent=None):
+        super().__init__(parent)
+        self.is_transition = is_transition
+        self._build_ui()
+
+    def _build_ui(self):
+        layout = QGridLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setHorizontalSpacing(6)
+        layout.setVerticalSpacing(4)
+
+        self.start_min_label = QLabel(self)
+        self.start_min_spin = QSpinBox(self)
+        self.start_min_spin.setRange(20, 20000)
+        self.start_min_spin.setSingleStep(10)
+
+        self.start_max_label = QLabel(self)
+        self.start_max_spin = QSpinBox(self)
+        self.start_max_spin.setRange(20, 22050)
+        self.start_max_spin.setSingleStep(10)
+
+        self.start_q_label = QLabel(self)
+        self.start_q_spin = QDoubleSpinBox(self)
+        self.start_q_spin.setDecimals(2)
+        self.start_q_spin.setRange(0.1, 1000.0)
+        self.start_q_spin.setSingleStep(0.5)
+
+        self.start_casc_label = QLabel(self)
+        self.start_casc_spin = QSpinBox(self)
+        self.start_casc_spin.setRange(1, 20)
+
+        self.end_min_label = QLabel(self)
+        self.end_min_spin = QSpinBox(self)
+        self.end_min_spin.setRange(20, 20000)
+        self.end_min_spin.setSingleStep(10)
+
+        self.end_max_label = QLabel(self)
+        self.end_max_spin = QSpinBox(self)
+        self.end_max_spin.setRange(20, 22050)
+        self.end_max_spin.setSingleStep(10)
+
+        self.end_q_label = QLabel(self)
+        self.end_q_spin = QDoubleSpinBox(self)
+        self.end_q_spin.setDecimals(2)
+        self.end_q_spin.setRange(0.1, 1000.0)
+        self.end_q_spin.setSingleStep(0.5)
+
+        self.end_casc_label = QLabel(self)
+        self.end_casc_spin = QSpinBox(self)
+        self.end_casc_spin.setRange(1, 20)
+
+        self.remove_button = QPushButton("Remove", self)
+
+        # Row 0 -> start values + remove
+        layout.addWidget(self.start_min_label, 0, 0)
+        layout.addWidget(self.start_min_spin, 0, 1)
+        layout.addWidget(self.start_max_label, 0, 2)
+        layout.addWidget(self.start_max_spin, 0, 3)
+        layout.addWidget(self.start_q_label, 0, 4)
+        layout.addWidget(self.start_q_spin, 0, 5)
+        layout.addWidget(self.start_casc_label, 0, 6)
+        layout.addWidget(self.start_casc_spin, 0, 7)
+        layout.addWidget(self.remove_button, 0, 8)
+
+        # Row 1 -> end values
+        layout.addWidget(self.end_min_label, 1, 0)
+        layout.addWidget(self.end_min_spin, 1, 1)
+        layout.addWidget(self.end_max_label, 1, 2)
+        layout.addWidget(self.end_max_spin, 1, 3)
+        layout.addWidget(self.end_q_label, 1, 4)
+        layout.addWidget(self.end_q_spin, 1, 5)
+        layout.addWidget(self.end_casc_label, 1, 6)
+        layout.addWidget(self.end_casc_spin, 1, 7)
+
+        layout.setColumnStretch(1, 1)
+        layout.setColumnStretch(3, 1)
+        layout.setColumnStretch(5, 1)
+        layout.setColumnStretch(7, 1)
+        layout.setColumnStretch(8, 0)
+
+        self._end_widgets = [
+            self.end_min_label,
+            self.end_min_spin,
+            self.end_max_label,
+            self.end_max_spin,
+            self.end_q_label,
+            self.end_q_spin,
+            self.end_casc_label,
+            self.end_casc_spin,
+        ]
+
+        self.set_transition_mode(self.is_transition)
+        self.set_values({})
+
+    def set_transition_mode(self, is_transition: bool):
+        self.is_transition = bool(is_transition)
+        if self.is_transition:
+            self.start_min_label.setText("Start Min Hz")
+            self.start_max_label.setText("Start Max Hz")
+            self.start_q_label.setText("Start Q")
+            self.start_casc_label.setText("Start Casc")
+            self.end_min_label.setText("End Min Hz")
+            self.end_max_label.setText("End Max Hz")
+            self.end_q_label.setText("End Q")
+            self.end_casc_label.setText("End Casc")
+            for widget in self._end_widgets:
+                widget.show()
+        else:
+            self.start_min_label.setText("Min Hz")
+            self.start_max_label.setText("Max Hz")
+            self.start_q_label.setText("Q")
+            self.start_casc_label.setText("Casc")
+            for widget in self._end_widgets:
+                widget.hide()
+
+    def set_values(self, data):
+        if isinstance(data, dict):
+            start_min = data.get("start_min", data.get("min", 1000))
+            start_max = data.get("start_max", data.get("max", 10000))
+            end_min = data.get("end_min", data.get("max", start_min))
+            end_max = data.get("end_max", data.get("max", start_max))
+            start_q = data.get("start_q", data.get("q", 25.0))
+            end_q = data.get("end_q", data.get("q", start_q))
+            start_casc = data.get("start_casc", data.get("cascade", 10))
+            end_casc = data.get("end_casc", data.get("cascade", start_casc))
+        elif isinstance(data, (list, tuple)):
+            items = list(data)
+            start_min = items[0] if len(items) > 0 else 1000
+            start_max = items[1] if len(items) > 1 else 10000
+            end_min = items[2] if len(items) > 2 else start_min
+            end_max = items[3] if len(items) > 3 else start_max
+            start_q = items[4] if len(items) > 4 else 25.0
+            end_q = items[5] if len(items) > 5 else start_q
+            start_casc = items[6] if len(items) > 6 else 10
+            end_casc = items[7] if len(items) > 7 else start_casc
+        else:
+            start_min = 1000
+            start_max = 10000
+            end_min = start_min
+            end_max = start_max
+            start_q = 25.0
+            end_q = start_q
+            start_casc = 10
+            end_casc = start_casc
+
+        self.start_min_spin.setValue(int(round(start_min)))
+        self.start_max_spin.setValue(int(round(start_max)))
+        self.end_min_spin.setValue(int(round(end_min)))
+        self.end_max_spin.setValue(int(round(end_max)))
+        self.start_q_spin.setValue(float(start_q))
+        self.end_q_spin.setValue(float(end_q))
+        self.start_casc_spin.setValue(int(round(start_casc)))
+        self.end_casc_spin.setValue(int(round(end_casc)))
+
+    def get_value(self):
+        start_data = {
+            "start_min": int(self.start_min_spin.value()),
+            "start_max": int(self.start_max_spin.value()),
+            "start_q": float(self.start_q_spin.value()),
+            "start_casc": int(self.start_casc_spin.value()),
+        }
+        end_data = {
+            "end_min": int(self.end_min_spin.value()),
+            "end_max": int(self.end_max_spin.value()),
+            "end_q": float(self.end_q_spin.value()),
+            "end_casc": int(self.end_casc_spin.value()),
+        }
+        if self.is_transition:
+            merged = {**start_data, **end_data}
+            return merged
+        return {
+            "min": start_data["start_min"],
+            "max": start_data["start_max"],
+            "q": start_data["start_q"],
+            "cascade": start_data["start_casc"],
+        }
+
+
+class NoiseSweepEditor(QWidget):
+    """Widget managing a collection of swept notch specifications."""
+
+    def __init__(self, parent=None, is_transition=False, max_rows=6):
+        super().__init__(parent)
+        self.is_transition = bool(is_transition)
+        self.max_rows = max_rows
+        self.rows = []
+        self._build_ui()
+
+    def _build_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+
+        self.rows_container = QVBoxLayout()
+        self.rows_container.setContentsMargins(0, 0, 0, 0)
+        self.rows_container.setSpacing(4)
+        layout.addLayout(self.rows_container)
+
+        button_layout = QHBoxLayout()
+        button_layout.addStretch(1)
+        self.add_button = QPushButton("Add Sweep", self)
+        self.add_button.clicked.connect(self.add_row)
+        button_layout.addWidget(self.add_button)
+        layout.addLayout(button_layout)
+
+    def _default_entry(self):
+        if self.is_transition:
+            return {
+                "start_min": 1000,
+                "start_max": 10000,
+                "end_min": 1000,
+                "end_max": 10000,
+                "start_q": 25.0,
+                "end_q": 25.0,
+                "start_casc": 10,
+                "end_casc": 10,
+            }
+        return {"min": 1000, "max": 10000, "q": 25.0, "cascade": 10}
+
+    def set_values(self, values):
+        entries = _coerce_to_sequence(values)
+        if not entries:
+            entries = [self._default_entry()]
+        self.clear_rows()
+        for entry in entries[: self.max_rows]:
+            self.add_row(entry)
+        self._update_button_states()
+
+    def add_row(self, entry=None):
+        if len(self.rows) >= self.max_rows:
+            return
+        row = NoiseSweepRow(self.is_transition, self)
+        row.set_transition_mode(self.is_transition)
+        if entry is None:
+            row.set_values(self._default_entry())
+        else:
+            row.set_values(entry)
+        row.remove_button.clicked.connect(lambda: self.remove_row(row))
+        self.rows.append(row)
+        self.rows_container.addWidget(row)
+        self._update_button_states()
+
+    def remove_row(self, row_widget):
+        if row_widget not in self.rows:
+            return
+        if len(self.rows) <= 1:
+            return  # maintain at least one sweep
+        self.rows.remove(row_widget)
+        row_widget.setParent(None)
+        row_widget.deleteLater()
+        self._update_button_states()
+
+    def clear_rows(self):
+        for row in self.rows:
+            row.setParent(None)
+            row.deleteLater()
+        self.rows = []
+
+    def set_transition_mode(self, is_transition: bool):
+        self.is_transition = bool(is_transition)
+        for row in self.rows:
+            row.set_transition_mode(self.is_transition)
+        self._update_button_states()
+
+    def get_values(self):
+        return [row.get_value() for row in self.rows]
+
+    def _update_button_states(self):
+        self.add_button.setEnabled(len(self.rows) < self.max_rows)
+
+
+class StaticNotchRow(QWidget):
+    """Row widget describing a static notch filter."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._build_ui()
+
+    def _build_ui(self):
+        layout = QGridLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setHorizontalSpacing(6)
+        layout.setVerticalSpacing(4)
+
+        self.freq_label = QLabel("Frequency (Hz)", self)
+        self.freq_spin = QDoubleSpinBox(self)
+        self.freq_spin.setRange(20.0, 20000.0)
+        self.freq_spin.setDecimals(2)
+        self.freq_spin.setSingleStep(10.0)
+
+        self.q_label = QLabel("Q", self)
+        self.q_spin = QDoubleSpinBox(self)
+        self.q_spin.setRange(0.1, 1000.0)
+        self.q_spin.setDecimals(2)
+        self.q_spin.setSingleStep(0.5)
+
+        self.casc_label = QLabel("Casc", self)
+        self.casc_spin = QSpinBox(self)
+        self.casc_spin.setRange(1, 20)
+
+        self.remove_button = QPushButton("Remove", self)
+
+        layout.addWidget(self.freq_label, 0, 0)
+        layout.addWidget(self.freq_spin, 0, 1)
+        layout.addWidget(self.q_label, 0, 2)
+        layout.addWidget(self.q_spin, 0, 3)
+        layout.addWidget(self.casc_label, 0, 4)
+        layout.addWidget(self.casc_spin, 0, 5)
+        layout.addWidget(self.remove_button, 0, 6)
+
+        layout.setColumnStretch(1, 1)
+        layout.setColumnStretch(3, 1)
+        layout.setColumnStretch(5, 0)
+
+        self.set_values({})
+
+    def set_values(self, data):
+        if isinstance(data, dict):
+            freq = data.get("freq", data.get("frequency", data.get("hz", 1000.0)))
+            q_val = data.get("q", data.get("quality", 25.0))
+            cascade = data.get("cascade", data.get("count", 1))
+        elif isinstance(data, (list, tuple)):
+            items = list(data)
+            freq = items[0] if len(items) > 0 else 1000.0
+            q_val = items[1] if len(items) > 1 else 25.0
+            cascade = items[2] if len(items) > 2 else 1
+        else:
+            freq = 1000.0
+            q_val = 25.0
+            cascade = 1
+
+        self.freq_spin.setValue(float(freq))
+        self.q_spin.setValue(float(q_val))
+        self.casc_spin.setValue(int(round(cascade)))
+
+    def get_value(self):
+        return {
+            "freq": float(self.freq_spin.value()),
+            "q": float(self.q_spin.value()),
+            "cascade": int(self.casc_spin.value()),
+        }
+
+
+class StaticNotchEditor(QWidget):
+    """Widget managing a collection of static notch filters."""
+
+    def __init__(self, parent=None, max_rows=10):
+        super().__init__(parent)
+        self.max_rows = max_rows
+        self.rows = []
+        self._build_ui()
+
+    def _build_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+
+        self.empty_label = QLabel("No static notches configured.", self)
+        self.empty_label.setStyleSheet("color: gray;")
+        layout.addWidget(self.empty_label)
+
+        self.rows_container = QVBoxLayout()
+        self.rows_container.setContentsMargins(0, 0, 0, 0)
+        self.rows_container.setSpacing(4)
+        layout.addLayout(self.rows_container)
+
+        button_layout = QHBoxLayout()
+        button_layout.addStretch(1)
+        self.add_button = QPushButton("Add Static Notch", self)
+        self.add_button.clicked.connect(self.add_row)
+        button_layout.addWidget(self.add_button)
+        layout.addLayout(button_layout)
+
+    def _default_entry(self):
+        return {"freq": 1000.0, "q": 25.0, "cascade": 1}
+
+    def set_values(self, values):
+        entries = _coerce_to_sequence(values)
+        if not entries:
+            entries = []
+        self.clear_rows()
+        for entry in entries[: self.max_rows]:
+            self.add_row(entry)
+        self._update_state()
+
+    def add_row(self, entry=None):
+        if len(self.rows) >= self.max_rows:
+            return
+        row = StaticNotchRow(self)
+        if entry is None:
+            row.set_values(self._default_entry())
+        else:
+            row.set_values(entry)
+        row.remove_button.clicked.connect(lambda: self.remove_row(row))
+        self.rows.append(row)
+        self.rows_container.addWidget(row)
+        self._update_state()
+
+    def remove_row(self, row_widget):
+        if row_widget not in self.rows:
+            return
+        self.rows.remove(row_widget)
+        row_widget.setParent(None)
+        row_widget.deleteLater()
+        self._update_state()
+
+    def clear_rows(self):
+        for row in self.rows:
+            row.setParent(None)
+            row.deleteLater()
+        self.rows = []
+
+    def get_values(self):
+        return [row.get_value() for row in self.rows]
+
+    def _update_state(self):
+        has_rows = bool(self.rows)
+        self.empty_label.setVisible(not has_rows)
+        self.add_button.setEnabled(len(self.rows) < self.max_rows)
 
 class VoiceEditorDialog(QDialog): # Standard class name
 
@@ -490,6 +937,45 @@ class VoiceEditorDialog(QDialog): # Standard class name
                             f"{len(self.param_widgets[name]['value'])} segments"
                         )
                 edit_btn.clicked.connect(_edit_traj)
+                self.params_scroll_layout.addWidget(frame)
+                processed_names.add(name)
+                continue
+
+            if name == 'sweeps':
+                frame = QWidget()
+                frame_layout = QVBoxLayout(frame)
+                frame_layout.setContentsMargins(2, 2, 2, 2)
+                label = QLabel('sweeps:')
+                label.setStyleSheet('font-weight: bold;')
+                editor = NoiseSweepEditor(self, is_transition=is_transition)
+                editor.set_transition_mode(is_transition)
+                editor.set_values(current_value)
+                frame_layout.addWidget(label)
+                frame_layout.addWidget(editor)
+                self.param_widgets[name] = {'widget': editor, 'type': 'sweep_list'}
+                tooltip = self._get_param_tooltip(func_name, name)
+                if tooltip:
+                    label.setToolTip(tooltip)
+                    editor.setToolTip(tooltip)
+                self.params_scroll_layout.addWidget(frame)
+                processed_names.add(name)
+                continue
+
+            if name == 'static_notches':
+                frame = QWidget()
+                frame_layout = QVBoxLayout(frame)
+                frame_layout.setContentsMargins(2, 2, 2, 2)
+                label = QLabel('static_notches:')
+                label.setStyleSheet('font-weight: bold;')
+                editor = StaticNotchEditor(self)
+                editor.set_values(current_value)
+                frame_layout.addWidget(label)
+                frame_layout.addWidget(editor)
+                self.param_widgets[name] = {'widget': editor, 'type': 'static_notch_list'}
+                tooltip = self._get_param_tooltip(func_name, name)
+                if tooltip:
+                    label.setToolTip(tooltip)
+                    editor.setToolTip(tooltip)
                 self.params_scroll_layout.addWidget(frame)
                 processed_names.add(name)
                 continue
@@ -1566,7 +2052,18 @@ class VoiceEditorDialog(QDialog): # Standard class name
         for name, data in self.param_widgets.items():
             widget, param_type = data['widget'], data['type']
             value = None
-            
+
+            if param_type == 'sweep_list':
+                value = widget.get_values()
+                if value:
+                    synth_params[name] = value
+                continue
+            if param_type == 'static_notch_list':
+                value = widget.get_values()
+                if value:
+                    synth_params[name] = value
+                continue
+
             if isinstance(widget, QCheckBox):
                 value = widget.isChecked()
             elif isinstance(widget, QComboBox):
@@ -1859,7 +2356,7 @@ class VoiceEditorDialog(QDialog): # Standard class name
                 ]
             },
             "spatial_angle_modulation_monaural_beat": {
-                "standard": [ 
+                "standard": [
                     ('sam_ampOscDepth', 0.0), ('sam_ampOscFreq', 0.0), ('sam_ampOscPhaseOffset', 0.0), ('amp_lower_L', 0.5), ('amp_upper_L', 0.5),
                     ('amp_lower_R', 0.5), ('amp_upper_R', 0.5),
                     ('baseFreq', 200.0), ('beatFreq', 4.0),
@@ -1891,6 +2388,68 @@ class VoiceEditorDialog(QDialog): # Standard class name
                     ('startAmp', 0.7), ('endAmp', 0.7),
                     ('frame_dur_ms', 46.4), ('overlap_factor', 8),
                     ('initial_offset', 0.0), ('post_offset', 0.0), ('transition_curve', 'linear')
+                ]
+            },
+            "noise_generator": {
+                "standard": [
+                    ('noise_type', 'pink'),
+                    ('lfo_waveform', 'sine'),
+                    ('lfo_freq', 1.0 / 12.0),
+                    ('sweeps', [{'min': 1000, 'max': 10000, 'q': 25.0, 'cascade': 10}]),
+                    ('notch_q', None),
+                    ('cascade_count', None),
+                    ('lfo_phase_offset_deg', 90.0),
+                    ('intra_phase_offset_deg', 0.0),
+                    ('input_audio_path', ''),
+                    ('amp', 0.25),
+                    ('amp_left', None),
+                    ('amp_right', None),
+                    ('fade_in', 0.0),
+                    ('fade_out', 0.0),
+                    ('amp_envelope', []),
+                    ('memory_efficient', False),
+                    ('n_jobs', 1),
+                    ('static_notches', []),
+                ],
+                "transition": [
+                    ('noise_type', 'pink'),
+                    ('lfo_waveform', 'sine'),
+                    ('start_lfo_freq', 1.0 / 12.0),
+                    ('end_lfo_freq', 1.0 / 12.0),
+                    ('sweeps', [{
+                        'start_min': 1000,
+                        'start_max': 10000,
+                        'end_min': 1000,
+                        'end_max': 10000,
+                        'start_q': 25.0,
+                        'end_q': 25.0,
+                        'start_casc': 10,
+                        'end_casc': 10,
+                    }]),
+                    ('start_notch_q', None),
+                    ('end_notch_q', None),
+                    ('start_cascade_count', None),
+                    ('end_cascade_count', None),
+                    ('start_lfo_phase_offset_deg', 90.0),
+                    ('end_lfo_phase_offset_deg', 90.0),
+                    ('start_intra_phase_offset_deg', 0.0),
+                    ('end_intra_phase_offset_deg', 0.0),
+                    ('initial_offset', 0.0),
+                    ('post_offset', 0.0),
+                    ('curve', 'linear'),
+                    ('input_audio_path', ''),
+                    ('start_amp', 0.25),
+                    ('end_amp', None),
+                    ('start_amp_left', None),
+                    ('end_amp_left', None),
+                    ('start_amp_right', None),
+                    ('end_amp_right', None),
+                    ('fade_in', 0.0),
+                    ('fade_out', 0.0),
+                    ('amp_envelope', []),
+                    ('memory_efficient', False),
+                    ('n_jobs', 1),
+                    ('static_notches', []),
                 ]
             },
             "isochronic_tone": {
@@ -2219,6 +2778,18 @@ class VoiceEditorDialog(QDialog): # Standard class name
             value = None
             widget.setStyleSheet("") # Clear previous error styles
 
+            if param_type == 'sweep_list':
+                sweeps_value = widget.get_values()
+                if sweeps_value:
+                    new_synth_params[name] = sweeps_value
+                continue
+
+            if param_type == 'static_notch_list':
+                static_value = widget.get_values()
+                if static_value:
+                    new_synth_params[name] = static_value
+                continue
+
             if param_type == 'json':
                 new_synth_params[name] = data.get('value', [])
                 continue
@@ -2265,7 +2836,11 @@ class VoiceEditorDialog(QDialog): # Standard class name
             
             if value is not None: # Only add if value is set (allows params to be omitted if they are None)
                 new_synth_params[name] = value
-            elif value_str == "" and param_type == 'str': # explicitly save empty string if it's a string type
+            elif (
+                param_type == 'str'
+                and isinstance(widget, QLineEdit)
+                and widget.text().strip() == ""
+            ):
                 new_synth_params[name] = ""
 
 

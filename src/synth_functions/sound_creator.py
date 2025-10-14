@@ -930,6 +930,7 @@ def assemble_track_from_data(track_data, sample_rate, crossfade_duration, crossf
                     "linear",
                     False,
                     2,
+                    getattr(params, "static_notches", None),
                 )
             else:
                 sweeps = [(sw.get("start_min", 1000), sw.get("start_max", 10000)) for sw in params.sweeps]
@@ -949,6 +950,7 @@ def assemble_track_from_data(track_data, sample_rate, crossfade_duration, crossf
                     params.lfo_waveform,
                     False,
                     2,
+                    getattr(params, "static_notches", None),
                 )
 
             if noise_audio.shape[0] < final_track_samples:
