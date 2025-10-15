@@ -1406,6 +1406,13 @@ def noise_generator(
 
     audio = np.clip(audio, -1.0, 1.0)
 
+    if not np.isfinite(audio).all():
+        bad_count = np.count_nonzero(~np.isfinite(audio))
+        print(
+            f"Warning: noise_generator produced {bad_count} non-finite samples; replacing with zeros."
+        )
+        audio = np.nan_to_num(audio, nan=0.0, posinf=0.0, neginf=0.0)
+
     if bool(extra_params.get("spatialEnable", False)):
         theta_deg, distance_m = generate_azimuth_trajectory(
             duration,
@@ -1447,6 +1454,13 @@ def noise_generator(
             interp_mode=int(extra_params.get("spatialInterp", 1)),
         )
         audio = np.clip(audio, -1.0, 1.0)
+
+        if not np.isfinite(audio).all():
+            bad_count = np.count_nonzero(~np.isfinite(audio))
+            print(
+                f"Warning: noise_generator produced {bad_count} non-finite samples after spatialization; replacing with zeros."
+            )
+            audio = np.nan_to_num(audio, nan=0.0, posinf=0.0, neginf=0.0)
 
     return audio
 
@@ -1593,6 +1607,13 @@ def noise_generator_transition(
 
     audio = np.clip(audio, -1.0, 1.0)
 
+    if not np.isfinite(audio).all():
+        bad_count = np.count_nonzero(~np.isfinite(audio))
+        print(
+            f"Warning: noise_generator_transition produced {bad_count} non-finite samples; replacing with zeros."
+        )
+        audio = np.nan_to_num(audio, nan=0.0, posinf=0.0, neginf=0.0)
+
     if bool(extra_params.get("spatialEnable", False)):
         theta_deg, distance_m = generate_azimuth_trajectory(
             duration,
@@ -1634,6 +1655,14 @@ def noise_generator_transition(
             interp_mode=int(extra_params.get("spatialInterp", 1)),
         )
         audio = np.clip(audio, -1.0, 1.0)
+
+        if not np.isfinite(audio).all():
+            bad_count = np.count_nonzero(~np.isfinite(audio))
+            print(
+                "Warning: noise_generator_transition produced "
+                f"{bad_count} non-finite samples after spatialization; replacing with zeros."
+            )
+            audio = np.nan_to_num(audio, nan=0.0, posinf=0.0, neginf=0.0)
 
     return audio
 
