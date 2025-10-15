@@ -712,20 +712,6 @@ def assemble_track_from_data(track_data, sample_rate, crossfade_duration, crossf
         N_step = int(step_duration * sample_rate)
         step_end_sample_abs = step_start_sample_abs + N_step
 
-        # Ensure the backing track buffer is large enough for this step.
-        # The initial pre-allocation can fall short for long programmes due
-        # to floating point rounding or manual start times, especially when
-        # step durations approach ten minutes or more.  If the buffer is too
-        # small we would silently truncate the tail of the current (usually
-        # final) step.  Dynamically grow the buffer so every step has room.
-        required_capacity = step_end_sample_abs + crossfade_samples
-        if required_capacity > track.shape[0]:
-            growth = required_capacity - track.shape[0]
-            # Grow by at least one second to reduce how often we reallocate.
-            growth = max(growth, sample_rate)
-            track = np.pad(track, ((0, growth), (0, 0)), mode="constant")
-            estimated_total_samples = track.shape[0]
-
         print(
             f"  Processing Step {i+1}: Place Start: {step_start_time:.2f}s ({step_start_sample_abs}), "
             f"Duration: {step_duration:.2f}s, Samples: {N_step}"
@@ -765,7 +751,7 @@ def assemble_track_from_data(track_data, sample_rate, crossfade_duration, crossf
         # --- Placement and Crossfading ---
         # Clip placement indices to the allocated track buffer boundaries
         safe_place_start = max(0, step_start_sample_abs)
-        safe_place_end = step_end_sample_abs
+        safe_place_end = min(estimated_total_samples, step_end_sample_abs)
         segment_len_in_track = safe_place_end - safe_place_start
 
         if segment_len_in_track <= 0:
