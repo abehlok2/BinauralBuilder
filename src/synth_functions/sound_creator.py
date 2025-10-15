@@ -677,6 +677,17 @@ def assemble_track_from_data(track_data, sample_rate, crossfade_duration, crossf
     # Add buffer for potential rounding errors and final sample
     estimated_total_samples = int(estimated_total_duration * sample_rate) + sample_rate
     track = np.zeros((estimated_total_samples, 2), dtype=np.float32) # Use float32
+    initial_estimated_total_samples = estimated_total_samples
+
+    def ensure_track_capacity(required_end_index: int) -> None:
+        """Ensure the working track buffer is large enough for the requested index."""
+        nonlocal track
+        if required_end_index <= track.shape[0]:
+            return
+        extra_samples = required_end_index - track.shape[0]
+        if extra_samples <= 0:
+            return
+        track = np.pad(track, ((0, extra_samples), (0, 0)), mode="constant")
 
     # --- Time and Sample Tracking ---
     current_time = 0.0 # Start time for the *next* step to be placed
@@ -751,7 +762,9 @@ def assemble_track_from_data(track_data, sample_rate, crossfade_duration, crossf
         # --- Placement and Crossfading ---
         # Clip placement indices to the allocated track buffer boundaries
         safe_place_start = max(0, step_start_sample_abs)
-        safe_place_end = min(estimated_total_samples, step_end_sample_abs)
+        safe_place_end = max(safe_place_start, step_end_sample_abs)
+
+        ensure_track_capacity(safe_place_end)
         segment_len_in_track = safe_place_end - safe_place_start
 
         if segment_len_in_track <= 0:
@@ -812,10 +825,9 @@ def assemble_track_from_data(track_data, sample_rate, crossfade_duration, crossf
                         remaining_start_index_in_step_audio : remaining_start_index_in_step_audio
                         + num_remaining_samples_to_add
                     ]
-                    track[
-                        remaining_start_index_in_track : remaining_start_index_in_track
-                        + remaining_audio_from_step.shape[0]
-                    ] += remaining_audio_from_step
+                    end_index = remaining_start_index_in_track + remaining_audio_from_step.shape[0]
+                    ensure_track_capacity(end_index)
+                    track[remaining_start_index_in_track:end_index] += remaining_audio_from_step
 
         else:
             if i > 0 and crossfade_samples > 0:
@@ -850,9 +862,11 @@ def assemble_track_from_data(track_data, sample_rate, crossfade_duration, crossf
 
                     remaining_audio = audio_to_use[actual_crossfade_samples:]
                     end_idx = last_step_end_sample_in_track + remaining_audio.shape[0]
+                    ensure_track_capacity(end_idx)
                     track[last_step_end_sample_in_track:end_idx] += remaining_audio
                     safe_place_end = end_idx
                 else:
+                    ensure_track_capacity(safe_place_end)
                     track[safe_place_start:safe_place_end] += audio_to_use
             else:
                 print(f"        Placing Step {i+1} without crossfade. Adding.")
@@ -885,8 +899,11 @@ def assemble_track_from_data(track_data, sample_rate, crossfade_duration, crossf
 
     if final_track_samples < track.shape[0]:
         track = track[:final_track_samples]
-    elif final_track_samples > estimated_total_samples:
-         print(f"Warning: Final track samples ({final_track_samples}) exceeded initial estimate ({estimated_total_samples}).")
+    elif final_track_samples > initial_estimated_total_samples:
+        print(
+            "Warning: Final track samples (" \
+            f"{final_track_samples}) exceeded initial estimate ({initial_estimated_total_samples})."
+        )
 
     track_duration_sec = final_track_samples / sample_rate
 
