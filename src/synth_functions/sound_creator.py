@@ -1244,6 +1244,13 @@ def generate_audio(track_data, output_filename=None, target_level=0.25, progress
     # Assemble the track (includes per-step normalization now)
     track_audio = assemble_track_from_data(track_data, sample_rate, crossfade_duration, crossfade_curve, progress_callback)
 
+    if track_audio is not None and track_audio.size > 0 and not np.isfinite(track_audio).all():
+        bad_count = np.count_nonzero(~np.isfinite(track_audio))
+        print(
+            f"Warning: Track assembly produced {bad_count} non-finite samples; replacing with zeros before normalization."
+        )
+        track_audio = np.nan_to_num(track_audio, nan=0.0, posinf=0.0, neginf=0.0)
+
     if track_audio is None or track_audio.size == 0:
         print("Error: Track assembly failed or resulted in empty audio.")
         return False
