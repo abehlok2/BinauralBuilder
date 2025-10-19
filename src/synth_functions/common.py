@@ -757,14 +757,22 @@ def apply_filters(signal_segment, fs):
     return signal_segment
 
 
-def calculate_transition_alpha(total_duration, sample_rate, initial_offset=0.0, post_offset=0.0, curve="linear"):
+def calculate_transition_alpha(
+    total_duration,
+    sample_rate,
+    initial_offset=0.0,
+    duration=None,
+    curve="linear",
+):
     """Create an interpolation factor array taking start/end offsets into account.
 
     Args:
         total_duration (float): Length of the transition in seconds.
         sample_rate (float): Sampling rate of the generated audio.
         initial_offset (float): Time before the transition begins.
-        post_offset (float): Time after the transition ends.
+        duration (float, optional): Length of the transition itself. If ``None``
+            the transition lasts for the remainder of ``total_duration`` after
+            ``initial_offset``.
         curve (str): Name of the transition curve to apply. Supported values are
             ``"linear"`` (default), ``"logarithmic"``, and ``"exponential"``.
             Any other string is interpreted as a Python expression using
@@ -777,7 +785,15 @@ def calculate_transition_alpha(total_duration, sample_rate, initial_offset=0.0, 
     total_duration = float(total_duration)
     sample_rate = float(sample_rate)
     initial_offset = max(0.0, float(initial_offset))
-    post_offset = max(0.0, float(post_offset))
+    initial_offset = min(initial_offset, total_duration)
+
+    if duration is None:
+        duration = total_duration - initial_offset
+    else:
+        duration = max(0.0, float(duration))
+
+    max_duration = max(0.0, total_duration - initial_offset)
+    duration = min(duration, max_duration)
 
     N = int(total_duration * sample_rate)
     if N <= 0:
@@ -785,8 +801,8 @@ def calculate_transition_alpha(total_duration, sample_rate, initial_offset=0.0, 
 
     t = np.linspace(0.0, total_duration, N, endpoint=False)
 
-    start_t = min(initial_offset, total_duration)
-    end_t = max(start_t, total_duration - post_offset)
+    start_t = initial_offset
+    end_t = min(total_duration, start_t + duration)
     trans_time = end_t - start_t
 
     if trans_time <= 0.0:

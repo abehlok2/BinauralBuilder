@@ -197,23 +197,23 @@ class NoiseGeneratorDialog(QDialog):
         intra_layout.addWidget(self.intra_phase_end_spin)
         form.addRow("Intra-Phase Offset (deg):", intra_layout)
 
-        # Initial/Post transition offsets
+        # Initial offset and transition duration
         offset_layout = QHBoxLayout()
         self.initial_offset_spin = QDoubleSpinBox()
         self.initial_offset_spin.setRange(0.0, 10000.0)
         self.initial_offset_spin.setDecimals(3)
         self.initial_offset_spin.setValue(0.0)
         self.initial_offset_spin.setToolTip("Time before transition starts")
-        self.post_offset_spin = QDoubleSpinBox()
-        self.post_offset_spin.setRange(0.0, 10000.0)
-        self.post_offset_spin.setDecimals(3)
-        self.post_offset_spin.setValue(0.0)
-        self.post_offset_spin.setToolTip("Time after transition ends")
+        self.duration_spin = QDoubleSpinBox()
+        self.duration_spin.setRange(0.0, 10000.0)
+        self.duration_spin.setDecimals(3)
+        self.duration_spin.setValue(0.0)
+        self.duration_spin.setToolTip("Duration of the transition")
         offset_layout.addWidget(QLabel("Init:"))
         offset_layout.addWidget(self.initial_offset_spin)
-        offset_layout.addWidget(QLabel("Post:"))
-        offset_layout.addWidget(self.post_offset_spin)
-        form.addRow("Offsets (s):", offset_layout)
+        offset_layout.addWidget(QLabel("Duration:"))
+        offset_layout.addWidget(self.duration_spin)
+        form.addRow("Offset & Duration (s):", offset_layout)
 
         # Optional input file
         input_layout = QHBoxLayout()
@@ -290,7 +290,7 @@ class NoiseGeneratorDialog(QDialog):
             start_intra_phase_offset_deg=int(self.intra_phase_start_spin.value()),
             end_intra_phase_offset_deg=int(self.intra_phase_end_spin.value()),
             initial_offset=float(self.initial_offset_spin.value()),
-            post_offset=float(self.post_offset_spin.value()),
+            duration=float(self.duration_spin.value()),
             input_audio_path=self.input_file_edit.text(),
         )
         sweeps = []
@@ -346,7 +346,7 @@ class NoiseGeneratorDialog(QDialog):
         self.intra_phase_start_spin.setValue(params.start_intra_phase_offset_deg)
         self.intra_phase_end_spin.setValue(params.end_intra_phase_offset_deg)
         self.initial_offset_spin.setValue(params.initial_offset)
-        self.post_offset_spin.setValue(params.post_offset)
+        self.duration_spin.setValue(params.duration)
         self.input_file_edit.setText(params.input_audio_path or "")
 
     def save_settings(self):
@@ -419,7 +419,7 @@ class NoiseGeneratorDialog(QDialog):
                     end_intra_phase_offset_deg=int(self.intra_phase_end_spin.value()),
                   
                     initial_offset=float(self.initial_offset_spin.value()),
-                    post_offset=float(self.post_offset_spin.value()),
+                    duration=float(self.duration_spin.value()),
 
                     input_audio_path=input_path,
                     noise_type=self.noise_type_combo.currentText().lower(),
@@ -479,7 +479,7 @@ class NoiseGeneratorDialog(QDialog):
                 params.noise_type,
                 params.lfo_waveform,
                 params.initial_offset,
-                params.post_offset,
+                params.duration,
                 "linear",
                 False,
                 2,

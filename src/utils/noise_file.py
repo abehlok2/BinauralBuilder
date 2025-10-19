@@ -27,7 +27,7 @@ class NoiseParams:
     start_intra_phase_offset_deg: int = 0
     end_intra_phase_offset_deg: int = 0
     initial_offset: float = 0.0
-    post_offset: float = 0.0
+    duration: float = 0.0
     input_audio_path: str = ""
     start_time: float = 0.0
     fade_in: float = 0.0
@@ -55,8 +55,9 @@ def load_noise_params(filepath: str) -> NoiseParams:
         data = json.load(f)
     params = NoiseParams()
     for k, v in data.items():
-        if hasattr(params, k):
-            setattr(params, k, v)
+        target = "duration" if k == "post_offset" else k
+        if hasattr(params, target):
+            setattr(params, target, v)
     return params
 
 __all__ = ["NoiseParams", "save_noise_params", "load_noise_params", "NOISE_FILE_EXTENSION"]

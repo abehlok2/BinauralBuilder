@@ -164,7 +164,7 @@ def dual_pulse_binaural_transition(
     duration,
     sample_rate=44100,
     initial_offset=0.0,
-    post_offset=0.0,
+    transition_duration=None,
     **params,
 ):
     """Transition-capable variant of :func:`dual_pulse_binaural`."""
@@ -184,7 +184,7 @@ def dual_pulse_binaural_transition(
         duration,
         sample_rate=sample_rate,
         initial_offset=initial_offset,
-        post_offset=post_offset,
+        transition_duration=transition_duration,
         **binaural_kwargs,
     )
     if audio.ndim == 1:
@@ -198,7 +198,7 @@ def dual_pulse_binaural_transition(
         duration,
         sample_rate,
         initial_offset=initial_offset,
-        post_offset=post_offset,
+        duration=transition_duration,
         curve=params.get("transition_curve", "linear"),
     )
     if alpha.size != num_samples:
