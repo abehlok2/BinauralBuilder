@@ -164,7 +164,7 @@ levels) using the same curve controls as other transition voices.
 
 The transition variant recognises the same parameters with `start`/`end`
 prefixes (for example `start_lfo_freq`, `end_lfo_freq`, `start_amp_left`,
-`end_amp_left`) plus `initial_offset`, `post_offset`, and `curve` to match the
+`end_amp_left`) plus `initial_offset`, `duration`, and `curve` to match the
 step transition helpers.
 
 

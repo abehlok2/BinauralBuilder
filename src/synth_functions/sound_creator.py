@@ -167,7 +167,7 @@ def _flanger_effect_stereo_continuous(
     sample_rate: float,
     duration: float,
     initial_offset: float,
-    post_offset: float,
+    transition_duration,
     curve: str,
     start_params: dict,
     end_params: dict,
@@ -185,9 +185,11 @@ def _flanger_effect_stereo_continuous(
         Sample rate of the audio.
     duration : float
         Duration of the voice in seconds.
-    initial_offset, post_offset : float
-        Silence durations before and after the active transition portion. These
-        mirror the semantics used by :func:`calculate_transition_alpha`.
+    initial_offset : float
+        Silence duration before the active transition portion begins.
+    transition_duration : float or None
+        Length of the active transition portion. ``None`` means the transition
+        spans the remaining voice duration after ``initial_offset``.
     curve : str
         Name of the interpolation curve (e.g. ``"linear"``).
     start_params, end_params : dict
@@ -200,7 +202,13 @@ def _flanger_effect_stereo_continuous(
     from .common import calculate_transition_alpha
 
     N = audio.shape[0]
-    alpha = calculate_transition_alpha(duration, sample_rate, initial_offset, post_offset, curve)
+    alpha = calculate_transition_alpha(
+        duration,
+        sample_rate,
+        initial_offset,
+        transition_duration,
+        curve,
+    )
     if len(alpha) != N:
         alpha = np.interp(np.linspace(0, 1, N), np.linspace(0, 1, len(alpha)), alpha)
 
@@ -427,6 +435,10 @@ def generate_voice_audio(voice_data, duration, sample_rate, global_start_time):
     )):
         flange_params = {}
     core_params = {k: v for k, v in params.items() if "flange" not in k.lower()}
+    if "duration" not in core_params and "post_offset" in core_params:
+        core_params["duration"] = core_params["post_offset"]
+    if "post_offset" in core_params:
+        core_params.pop("post_offset", None)
     is_transition = voice_data.get("is_transition", False) # Check if this step IS a transition
 
     # --- Select the correct function (static or transition) ---
@@ -618,10 +630,15 @@ def generate_voice_audio(voice_data, duration, sample_rate, global_start_time):
         enable_end = end_conf.pop('enable', False)
 
         if is_transition and (start_conf != end_conf or enable_start != enable_end):
+            transition_duration = core_params.get('duration')
+            if transition_duration is None:
+                transition_duration = core_params.get('post_offset')
+            if transition_duration is not None:
+                transition_duration = float(transition_duration)
             audio = _flanger_effect_stereo_continuous(
                 audio, float(sample_rate), duration,
                 float(core_params.get('initial_offset', 0.0)),
-                float(core_params.get('post_offset', 0.0)),
+                transition_duration,
                 str(core_params.get('transition_curve', 'linear')),
                 start_conf, end_conf, enable_start, enable_end,
             )
@@ -926,7 +943,7 @@ def assemble_track_from_data(track_data, sample_rate, crossfade_duration, crossf
                     params.noise_type,
                     params.lfo_waveform,
                     params.initial_offset,
-                    params.post_offset,
+                    params.duration,
                     "linear",
                     False,
                     2,

@@ -108,7 +108,7 @@ class VoiceModel(QAbstractTableModel):
         "Beat Freq",
         "Transition?",
         "Init Offset",
-        "Post Offset",
+        "Duration",
         "Description",
     ]
 
@@ -144,7 +144,9 @@ class VoiceModel(QAbstractTableModel):
             if index.column() == 4:
                 return self._format_number(params.get("initial_offset", 0.0)) if is_transition else "N/A"
             if index.column() == 5:
-                return self._format_number(params.get("post_offset", 0.0)) if is_transition else "N/A"
+                return self._format_number(
+                    params.get("duration", params.get("post_offset", 0.0))
+                ) if is_transition else "N/A"
             if index.column() == 6:
                 return description
         return None
@@ -254,7 +256,10 @@ class VoiceModel(QAbstractTableModel):
             return True
         if index.column() == 5:
             try:
-                voice.setdefault('params', {})['post_offset'] = float(value)
+                params = voice.setdefault('params', {})
+                params['duration'] = float(value)
+                if 'post_offset' in params:
+                    params.pop('post_offset', None)
             except (ValueError, TypeError):
                 return False
             self.dataChanged.emit(index, index, [Qt.DisplayRole, Qt.EditRole])

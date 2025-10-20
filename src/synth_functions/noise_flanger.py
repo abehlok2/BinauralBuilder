@@ -1101,7 +1101,7 @@ def _generate_swept_notch_arrays_transition(
     noise_type,
     lfo_waveform,
     initial_offset,
-    post_offset,
+    transition_duration,
     transition_curve,
     memory_efficient,
     n_jobs,
@@ -1173,7 +1173,11 @@ def _generate_swept_notch_arrays_transition(
         num_samples = len(input_signal)
         t = np.arange(num_samples) / sample_rate
         alpha = calculate_transition_alpha(
-            duration_seconds, sample_rate, initial_offset, post_offset, transition_curve
+            duration_seconds,
+            sample_rate,
+            initial_offset,
+            transition_duration,
+            transition_curve,
         )
         if len(alpha) != num_samples:
             alpha = np.interp(
@@ -1355,7 +1359,7 @@ def generate_swept_notch_pink_sound_transition(
     noise_type="pink",
     lfo_waveform="sine",
     initial_offset=0.0,
-    post_offset=0.0,
+    transition_duration=None,
     transition_curve="linear",
     memory_efficient=False,
     n_jobs=2,
@@ -1381,7 +1385,7 @@ def generate_swept_notch_pink_sound_transition(
         noise_type,
         lfo_waveform,
         initial_offset,
-        post_offset,
+        transition_duration,
         transition_curve,
         memory_efficient,
         n_jobs,
@@ -1556,7 +1560,7 @@ def noise_generator_transition(
     start_intra_phase_offset_deg=0.0,
     end_intra_phase_offset_deg=0.0,
     initial_offset=0.0,
-    post_offset=0.0,
+    transition_duration=None,
     curve="linear",
     input_audio_path=None,
     start_amp=0.25,
@@ -1578,6 +1582,10 @@ def noise_generator_transition(
     duration = float(duration)
     sample_rate = float(sample_rate)
     n_jobs = max(1, int(n_jobs))
+    if transition_duration is None and "post_offset" in extra_params:
+        transition_duration = extra_params.pop("post_offset")
+    if transition_duration is not None:
+        transition_duration = float(transition_duration)
 
     (
         start_sweeps,
@@ -1636,7 +1644,7 @@ def noise_generator_transition(
         noise_type,
         lfo_waveform,
         initial_offset,
-        post_offset,
+        transition_duration,
         curve,
         bool(memory_efficient),
         n_jobs,
@@ -1651,7 +1659,9 @@ def noise_generator_transition(
     if num_samples == 0:
         return audio.reshape(0, 2)
 
-    alpha = calculate_transition_alpha(duration, sample_rate, initial_offset, post_offset, curve)
+    alpha = calculate_transition_alpha(
+        duration, sample_rate, initial_offset, transition_duration, curve
+    )
     if alpha.size == 0:
         alpha = np.zeros(num_samples, dtype=np.float64)
     elif alpha.size != num_samples:
