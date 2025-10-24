@@ -128,8 +128,9 @@ class NoiseGeneratorDialog(QDialog):
         form.addRow("LFO Freq (Hz):", lfo_layout)
 
         # Number of sweeps
+        self._max_sweeps = 4
         self.num_sweeps_spin = QSpinBox()
-        self.num_sweeps_spin.setRange(1, 3)
+        self.num_sweeps_spin.setRange(1, self._max_sweeps)
         self.num_sweeps_spin.setValue(1)
         self.num_sweeps_spin.setToolTip("How many independent sweeps to apply")
         self.num_sweeps_spin.valueChanged.connect(self.update_sweep_visibility)
@@ -137,16 +138,24 @@ class NoiseGeneratorDialog(QDialog):
 
         # Sweep frequency ranges
         self.sweep_rows = []
-        default_values = [(1000, 10000), (500, 1000), (1850, 3350)]
-        for i in range(3):
+        default_values = [
+            (1000, 10000),
+            (500, 1000),
+            (1850, 3350),
+            (4000, 8000),
+        ]
+        for i in range(self._max_sweeps):
             row_widget = QWidget()
             row_layout = QGridLayout(row_widget)
             row_layout.setContentsMargins(0, 0, 0, 0)
 
-            s_min = QSpinBox(); s_min.setRange(20, 20000); s_min.setValue(default_values[i][0])
-            e_min = QSpinBox(); e_min.setRange(20, 20000); e_min.setValue(default_values[i][0])
-            s_max = QSpinBox(); s_max.setRange(20, 22050); s_max.setValue(default_values[i][1])
-            e_max = QSpinBox(); e_max.setRange(20, 22050); e_max.setValue(default_values[i][1])
+            default_min, default_max = (
+                default_values[i] if i < len(default_values) else default_values[-1]
+            )
+            s_min = QSpinBox(); s_min.setRange(20, 20000); s_min.setValue(default_min)
+            e_min = QSpinBox(); e_min.setRange(20, 20000); e_min.setValue(default_min)
+            s_max = QSpinBox(); s_max.setRange(20, 22050); s_max.setValue(default_max)
+            e_max = QSpinBox(); e_max.setRange(20, 22050); e_max.setValue(default_max)
             s_q = QSpinBox(); s_q.setRange(1, 1000); s_q.setValue(25)
             e_q = QSpinBox(); e_q.setRange(1, 1000); e_q.setValue(25)
             s_casc = QSpinBox(); s_casc.setRange(1, 20); s_casc.setValue(10)
@@ -294,7 +303,8 @@ class NoiseGeneratorDialog(QDialog):
             input_audio_path=self.input_file_edit.text(),
         )
         sweeps = []
-        for i in range(self.num_sweeps_spin.value()):
+        count = min(self.num_sweeps_spin.value(), len(self.sweep_rows))
+        for i in range(count):
             (
                 _, s_min, e_min, s_max, e_max, s_q, e_q, s_casc, e_casc
             ) = self.sweep_rows[i]
@@ -327,7 +337,8 @@ class NoiseGeneratorDialog(QDialog):
         start_freq = params.start_lfo_freq if params.transition else params.lfo_freq
         self.lfo_start_spin.setValue(start_freq)
         self.lfo_end_spin.setValue(params.end_lfo_freq)
-        self.num_sweeps_spin.setValue(max(1, len(params.sweeps)))
+        requested_sweeps = max(1, len(params.sweeps))
+        self.num_sweeps_spin.setValue(min(self._max_sweeps, requested_sweeps))
         for i, (
             _, s_min, e_min, s_max, e_max, s_q, e_q, s_casc, e_casc
         ) in enumerate(self.sweep_rows):

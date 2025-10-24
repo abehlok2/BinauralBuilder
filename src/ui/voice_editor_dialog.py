@@ -353,11 +353,12 @@ class NoiseSweepRow(QWidget):
 class NoiseSweepEditor(QWidget):
     """Widget managing a collection of swept notch specifications."""
 
-    def __init__(self, parent=None, is_transition=False, max_rows=6):
+    def __init__(self, parent=None, is_transition=False, max_rows=4):
         super().__init__(parent)
         self.is_transition = bool(is_transition)
         self.max_rows = max_rows
         self.rows = []
+        self._row_wrappers = []
         self._build_ui()
 
     def _build_ui(self):
@@ -409,9 +410,17 @@ class NoiseSweepEditor(QWidget):
             row.set_values(self._default_entry())
         else:
             row.set_values(entry)
-        row.remove_button.clicked.connect(lambda: self.remove_row(row))
+        row.remove_button.clicked.connect(lambda _, r=row: self.remove_row(r))
+
+        wrapper = QGroupBox(self)
+        wrapper_layout = QVBoxLayout(wrapper)
+        wrapper_layout.setContentsMargins(6, 6, 6, 6)
+        wrapper_layout.addWidget(row)
+
         self.rows.append(row)
-        self.rows_container.addWidget(row)
+        self._row_wrappers.append(wrapper)
+        self.rows_container.addWidget(wrapper)
+        self._renumber_rows()
         self._update_button_states()
 
     def remove_row(self, row_widget):
@@ -419,16 +428,25 @@ class NoiseSweepEditor(QWidget):
             return
         if len(self.rows) <= 1:
             return  # maintain at least one sweep
-        self.rows.remove(row_widget)
+        idx = self.rows.index(row_widget)
+        wrapper = self._row_wrappers.pop(idx)
+        self.rows.pop(idx)
         row_widget.setParent(None)
         row_widget.deleteLater()
+        wrapper.setParent(None)
+        wrapper.deleteLater()
+        self._renumber_rows()
         self._update_button_states()
 
     def clear_rows(self):
         for row in self.rows:
             row.setParent(None)
             row.deleteLater()
+        for wrapper in self._row_wrappers:
+            wrapper.setParent(None)
+            wrapper.deleteLater()
         self.rows = []
+        self._row_wrappers = []
 
     def set_transition_mode(self, is_transition: bool):
         self.is_transition = bool(is_transition)
@@ -441,6 +459,11 @@ class NoiseSweepEditor(QWidget):
 
     def _update_button_states(self):
         self.add_button.setEnabled(len(self.rows) < self.max_rows)
+        self._renumber_rows()
+
+    def _renumber_rows(self):
+        for idx, wrapper in enumerate(self._row_wrappers):
+            wrapper.setTitle(f"Sweep {idx + 1}")
 
 
 class StaticNotchRow(QWidget):
@@ -949,7 +972,7 @@ class VoiceEditorDialog(QDialog): # Standard class name
                 frame_layout.setContentsMargins(2, 2, 2, 2)
                 label = QLabel('sweeps:')
                 label.setStyleSheet('font-weight: bold;')
-                editor = NoiseSweepEditor(self, is_transition=is_transition)
+                editor = NoiseSweepEditor(self, is_transition=is_transition, max_rows=4)
                 editor.set_transition_mode(is_transition)
                 editor.set_values(current_value)
                 frame_layout.addWidget(label)
