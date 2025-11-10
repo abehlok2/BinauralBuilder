@@ -475,6 +475,14 @@ def generate_voice_audio(voice_data, duration, sample_rate, global_start_time):
     # Clean params: remove None values before passing to function, as functions use .get() with defaults
     cleaned_params = {k: v for k, v in core_params.items() if v is not None}
 
+    # duration (and sometimes sample_rate) are supplied explicitly below. If they
+    # are still present in the cleaned params dictionary we will pass them twice
+    # which results in a "multiple values for keyword argument" TypeError for
+    # transition synth functions. Strip them here so the explicit arguments take
+    # precedence without causing an error.
+    cleaned_params.pop("duration", None)
+    cleaned_params.pop("sample_rate", None)
+
     # --- Generate base audio ---
     try:
         print(f"  Calling: {actual_func_name}(duration={duration}, sample_rate={sample_rate}, **{cleaned_params})")
