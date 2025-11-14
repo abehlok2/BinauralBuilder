@@ -320,6 +320,7 @@ def session_to_track_data(
             track_data["clips"].append(
                 {
                     "file_path": step.warmup_clip_path,
+                    "path": step.warmup_clip_path,
                     "start": step_start,
                     "duration": 0.0,
                     "amp": 1.0,
@@ -330,7 +331,16 @@ def session_to_track_data(
                 }
             )
 
-        current_time = max(current_time, step_start) + step.duration
+        step_crossfade = (
+            step.crossfade_duration
+            if step.crossfade_duration is not None
+            else session.crossfade_duration
+        )
+        effective_advance = max(0.0, step.duration - max(0.0, step_crossfade))
+        if step.start is None:
+            current_time += effective_advance
+        else:
+            current_time = max(current_time, step_start + step.duration)
 
     return track_data
 

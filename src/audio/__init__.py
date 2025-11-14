@@ -8,6 +8,7 @@ from .session_model import (
     build_noise_preset_catalog,
     session_to_track_data,
 )
+from .session_engine import SessionAssembler
 
 __all__ = [
     "Session",
@@ -16,4 +17,5 @@ __all__ = [
     "build_binaural_preset_catalog",
     "build_noise_preset_catalog",
     "session_to_track_data",
+    "SessionAssembler",
 ]
