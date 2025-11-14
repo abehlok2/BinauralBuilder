@@ -9,6 +9,7 @@ from .session_model import (
     session_to_track_data,
 )
 from .session_engine import SessionAssembler
+from .session_stream import SessionStreamPlayer
 
 __all__ = [
     "Session",
@@ -18,4 +19,5 @@ __all__ = [
     "build_noise_preset_catalog",
     "session_to_track_data",
     "SessionAssembler",
+    "SessionStreamPlayer",
 ]
