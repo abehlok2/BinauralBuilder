@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 from typing import Iterable, Mapping, Optional, Sequence, TYPE_CHECKING
 
-from .session_model import (
+from session_model import (
     Session,
     SessionStep,
     build_binaural_preset_catalog,
