@@ -9,6 +9,7 @@ from .session_model import (
     session_to_track_data,
 )
 from .session_engine import SessionAssembler
+from .session_builder_launcher import launch_session_builder
 from .session_stream import SessionStreamPlayer
 
 __all__ = [
@@ -20,4 +21,5 @@ __all__ = [
     "session_to_track_data",
     "SessionAssembler",
     "SessionStreamPlayer",
+    "launch_session_builder",
 ]
