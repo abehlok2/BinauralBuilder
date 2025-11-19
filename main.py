@@ -1352,28 +1352,6 @@ class TrackEditorApp(QMainWindow):
         initial_filename = self.outfile_entry.text()
         initial_dir = os.path.dirname(self.current_json_path) if self.current_json_path else "."
         suggested_path = os.path.join(initial_dir, initial_filename if initial_filename else "my_track.wav")
-        filepath, _ = QFileDialog.getSaveFileName(self, "Select Output WAV File", suggested_path, "WAV files (*.wav);;All files (*.*)")
-        if filepath:
-            self.outfile_entry.setText(filepath)
-            self._update_global_settings_from_ui()
-
-    @pyqtSlot()
-    def browse_noise_file(self):
-        initial_dir = os.path.dirname(self.current_json_path) if self.current_json_path else "."
-        path, _ = QFileDialog.getOpenFileName(
-            self,
-            "Select Noise Preset",
-            initial_dir,
-            f"Noise Files (*{'.noise'});;All files (*.*)"
-        )
-        if path:
-            self.noise_file_entry.setText(path)
-            self._update_global_settings_from_ui()
-
-    @pyqtSlot()
-    def load_external_step(self):
-        filepath, _ = QFileDialog.getOpenFileName(
-            self,
             "Load External Steps from JSON",
             "",
             "JSON files (*.json);;All files (*.*)"

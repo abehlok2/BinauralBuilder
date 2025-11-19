@@ -269,17 +269,62 @@ class NoiseGeneratorDialog(QDialog):
         dialog = ColoredNoiseDialog(self)
         dialog.exec_()
 
+        # Optional input file
+        input_layout = QHBoxLayout()
+        self.input_file_edit = QLineEdit()
+        self.input_file_edit.setToolTip("Optional file to process instead of generated noise")
+        input_browse = QPushButton("Browse")
+        input_browse.clicked.connect(self.browse_input_file)
+        input_layout.addWidget(self.input_file_edit, 1)
+        input_layout.addWidget(input_browse)
+        form.addRow("Input Audio (optional):", input_layout)
+
+        layout.addLayout(form)
+
+        button_row = QHBoxLayout()
+        self.load_btn = QPushButton("Load")
+        self.load_btn.clicked.connect(self.load_settings)
+        self.save_btn = QPushButton("Save")
+        self.save_btn.setDefault(True)
+        self.save_btn.clicked.connect(self.save_settings)
+        self.colored_btn = QPushButton("Colored Noise...")
+        self.colored_btn.clicked.connect(self.open_colored_noise_dialog)
+        self.generate_btn = QPushButton("Generate")
+        self.generate_btn.clicked.connect(self.on_generate)
+        self.test_btn = QPushButton("Test")
+        self.test_btn.clicked.connect(self.on_test)
+        self.stop_btn = QPushButton("Stop")
+        self.stop_btn.clicked.connect(self.on_stop)
+        self.stop_btn.setEnabled(False)
+        self.audio_output = None
+        self.audio_buffer = None
+        button_row.addWidget(self.load_btn)
+        button_row.addWidget(self.save_btn)
+        button_row.addWidget(self.colored_btn)
+        button_row.addStretch(1)
+        button_row.addWidget(self.test_btn)
+        button_row.addWidget(self.stop_btn)
+        button_row.addWidget(self.generate_btn)
+        layout.addLayout(button_row)
+
+        if not QT_MULTIMEDIA_AVAILABLE:
+            self.test_btn.setEnabled(False)
+
+    def open_colored_noise_dialog(self) -> None:
+        dialog = ColoredNoiseDialog(self)
+        dialog.exec_()
+
     def update_sweep_visibility(self, count):
         for i, (row_widget, *_rest) in enumerate(self.sweep_rows):
             row_widget.setVisible(i < count)
 
     def browse_file(self):
-        path, _ = QFileDialog.getSaveFileName(self, "Save Audio", "", "WAV Files (*.wav)")
+        path, _ = QFileDialog.getSaveFileName(self, "Save Audio", "src/presets/audio", "WAV Files (*.wav)")
         if path:
             self.file_edit.setText(path)
 
     def browse_input_file(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Load Audio", "", "Audio Files (*.wav *.flac *.mp3)")
+        path, _ = QFileDialog.getOpenFileName(self, "Load Audio", "src/presets/audio", "Audio Files (*.wav *.flac *.mp3)")
         if path:
             self.input_file_edit.setText(path)
 
@@ -358,43 +403,6 @@ class NoiseGeneratorDialog(QDialog):
         self.intra_phase_end_spin.setValue(params.end_intra_phase_offset_deg)
         self.initial_offset_spin.setValue(params.initial_offset)
         self.duration_spin.setValue(params.duration)
-        self.input_file_edit.setText(params.input_audio_path or "")
-
-    def save_settings(self):
-        params = self.get_noise_params()
-        path, _ = QFileDialog.getSaveFileName(
-            self,
-            "Save Noise Settings",
-            "",
-            f"Noise Files (*{NOISE_FILE_EXTENSION})",
-        )
-        if not path:
-            return
-        try:
-            save_noise_params(params, path)
-        except Exception as exc:
-            QMessageBox.critical(self, "Error", str(exc))
-
-    def load_settings(self):
-        path, _ = QFileDialog.getOpenFileName(
-            self,
-            "Load Noise Settings",
-            "",
-            f"Noise Files (*{NOISE_FILE_EXTENSION})",
-        )
-        if not path:
-            return
-        try:
-            params = load_noise_params(path)
-            self.set_noise_params(params)
-        except Exception as exc:
-            QMessageBox.critical(self, "Error", str(exc))
-
-    def on_generate(self):
-        filename = self.file_edit.text() or "swept_notch_noise.wav"
-        input_path = self.input_file_edit.text() or None
-        try:
-            start_sweeps = []
             end_sweeps = []
             start_q_vals = []
             end_q_vals = []

@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 from typing import Iterable, Mapping, Optional, Sequence, TYPE_CHECKING
 
-from session_model import (
+from .session_model import (
     Session,
     SessionStep,
     build_binaural_preset_catalog,
@@ -118,14 +118,14 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--binaural-preset-dir",
         action="append",
-        default=[],
+        default=["src/presets/binaurals"],
         metavar="PATH",
         help="Directory containing .voice presets to include (can be repeated).",
     )
     parser.add_argument(
         "--noise-preset-dir",
         action="append",
-        default=[],
+        default=["src/presets/noise"],
         metavar="PATH",
         help="Directory containing .noise presets to include (can be repeated).",
     )

@@ -492,7 +492,7 @@ class SessionBuilderWindow(QMainWindow):
             step.crossfade_curve = self.step_crossfade_curve_combo.itemText(index)
 
     def _choose_warmup_file(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "Select Warmup Audio", "", "Audio Files (*.wav *.flac *.mp3);;All Files (*)")
+        path, _ = QFileDialog.getOpenFileName(self, "Select Warmup Audio", "src/presets/audio", "Audio Files (*.wav *.flac *.mp3);;All Files (*)")
         if not path:
             return
         self.warmup_edit.setText(path)

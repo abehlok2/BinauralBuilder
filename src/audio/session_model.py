@@ -10,6 +10,7 @@ from typing import Dict, Iterable, List, Mapping, Optional
 
 from src.utils.voice_file import load_voice_preset
 from src.utils.noise_file import load_noise_params
+import json
 
 try:  # Optional dependency: audio_engine requires PortAudio via slab
     from src.synth_functions.audio_engine import (  # type: ignore
@@ -180,6 +181,7 @@ def build_binaural_preset_catalog(
         )
 
     preset_dirs = preset_dirs or []
+    # Load .voice files
     voice_files = _collect_files(preset_dirs, ".voice")
     for path in voice_files:
         try:
@@ -205,6 +207,39 @@ def build_binaural_preset_catalog(
             source_path=path,
             payload={"voice_data": voice_payload},
         )
+
+    # Load .json files (new format)
+    json_files = _collect_files(preset_dirs, ".json")
+    for path in json_files:
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            
+            # Expecting structure like F10 Alt.json:
+            # { "progression": [ { "voices": [...] }, ... ] }
+            progression = data.get("progression", [])
+            if not progression or not isinstance(progression, list):
+                continue
+            
+            first_step = progression[0]
+            voices = first_step.get("voices", [])
+            if not voices:
+                continue
+
+            preset_id = f"json:{path.stem}"
+            label = path.stem.replace("_", " ").title()
+            description = first_step.get("description", "JSON preset loaded from file.")
+            
+            catalog[preset_id] = SessionPresetChoice(
+                id=preset_id,
+                label=label,
+                kind="binaural",
+                description=description,
+                source_path=path,
+                payload={"voices": voices},
+            )
+        except Exception:
+            continue
 
     return catalog
 
@@ -295,15 +330,22 @@ def session_to_track_data(
         if choice is None:
             raise KeyError(f"Unknown binaural preset: {step.binaural_preset_id}")
         voice_payload = choice.payload.get("voice_data")
-        if not isinstance(voice_payload, dict):
+        voices_payload = choice.payload.get("voices")
+        
+        if voices_payload:
+             # New JSON format with multiple voices
+             voice_entries = [copy.deepcopy(v) for v in voices_payload]
+        elif isinstance(voice_payload, dict):
+            # Old .voice format with single voice
+            voice_entries = [copy.deepcopy(voice_payload)]
+        else:
             raise ValueError(f"Binaural preset '{choice.id}' is missing voice data.")
-        voice_entry = copy.deepcopy(voice_payload)
 
         step_start = step.start if step.start is not None else current_time
         step_entry: Dict[str, object] = {
             "duration": step.duration,
             "start": step_start,
-            "voices": [voice_entry],
+            "voices": voice_entries,
         }
         if step.description:
             step_entry["description"] = step.description

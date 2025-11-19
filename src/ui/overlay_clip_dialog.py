@@ -106,7 +106,7 @@ class OverlayClipDialog(QDialog):
 
     def browse_file(self):
         path, _ = QFileDialog.getOpenFileName(
-            self, "Select Audio File", "", "Audio Files (*.wav *.flac *.mp3)"
+            self, "Select Audio File", "src/presets/audio", "Audio Files (*.wav *.flac *.mp3)"
         )
         if path:
             self.file_edit.setText(path)
