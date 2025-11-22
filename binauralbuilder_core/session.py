@@ -8,12 +8,12 @@ from enum import Enum
 from pathlib import Path
 from typing import Dict, Iterable, List, Mapping, Optional
 
-from src.utils.voice_file import load_voice_preset
-from src.utils.noise_file import load_noise_params
+from .utils.voice_file import load_voice_preset
+from .utils.noise_file import load_noise_params
 import json
 
 try:  # Optional dependency: audio_engine requires PortAudio via slab
-    from src.synth_functions.audio_engine import (  # type: ignore
+    from .synth_functions.audio_engine import (  # type: ignore
         BrainwaveState as _BrainwaveState,
         get_preset_nodes_for_state as _get_preset_nodes_for_state,
     )
