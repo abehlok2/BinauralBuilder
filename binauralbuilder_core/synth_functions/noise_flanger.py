@@ -1311,7 +1311,7 @@ def generate_swept_notch_pink_sound(
     noise_type="pink",
     lfo_waveform="sine",
     memory_efficient=False,
-    n_jobs=2,
+    n_jobs=1,
     static_notches=None,
 ):
     """Generate swept notch noise and save to ``filename``."""
@@ -1362,7 +1362,7 @@ def generate_swept_notch_pink_sound_transition(
     transition_duration=None,
     transition_curve="linear",
     memory_efficient=False,
-    n_jobs=2,
+    n_jobs=1,
     static_notches=None,
 ):
     """Generate swept notch noise with parameters smoothly transitioning from start→end."""
