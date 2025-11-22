@@ -265,6 +265,41 @@ class NoiseGeneratorDialog(QDialog):
         if not QT_MULTIMEDIA_AVAILABLE:
             self.test_btn.setEnabled(False)
 
+    def load_settings(self) -> None:
+        """Load noise generator settings from a ``.noise`` file."""
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Load Noise Settings",
+            "src/presets/noise",
+            f"Noise Files (*{NOISE_FILE_EXTENSION})",
+        )
+        if not path:
+            return
+
+        try:
+            params = load_noise_params(path)
+            self.set_noise_params(params)
+        except Exception as exc:  # noqa: PIE786 - user-facing error dialog
+            QMessageBox.critical(self, "Error", str(exc))
+
+    def save_settings(self) -> None:
+        """Save the current noise generator settings to a ``.noise`` file."""
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save Noise Settings",
+            "src/presets/noise/default.noise",
+            f"Noise Files (*{NOISE_FILE_EXTENSION})",
+        )
+        if not path:
+            return
+
+        try:
+            params = self.get_noise_params()
+            save_noise_params(params, path)
+            QMessageBox.information(self, "Saved", f"Settings saved to {path}")
+        except Exception as exc:  # noqa: PIE786 - user-facing error dialog
+            QMessageBox.critical(self, "Error", str(exc))
+
     def open_colored_noise_dialog(self) -> None:
         dialog = ColoredNoiseDialog(self)
         dialog.exec_()
