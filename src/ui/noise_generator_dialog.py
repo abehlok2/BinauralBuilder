@@ -269,51 +269,6 @@ class NoiseGeneratorDialog(QDialog):
         dialog = ColoredNoiseDialog(self)
         dialog.exec_()
 
-        # Optional input file
-        input_layout = QHBoxLayout()
-        self.input_file_edit = QLineEdit()
-        self.input_file_edit.setToolTip("Optional file to process instead of generated noise")
-        input_browse = QPushButton("Browse")
-        input_browse.clicked.connect(self.browse_input_file)
-        input_layout.addWidget(self.input_file_edit, 1)
-        input_layout.addWidget(input_browse)
-        form.addRow("Input Audio (optional):", input_layout)
-
-        layout.addLayout(form)
-
-        button_row = QHBoxLayout()
-        self.load_btn = QPushButton("Load")
-        self.load_btn.clicked.connect(self.load_settings)
-        self.save_btn = QPushButton("Save")
-        self.save_btn.setDefault(True)
-        self.save_btn.clicked.connect(self.save_settings)
-        self.colored_btn = QPushButton("Colored Noise...")
-        self.colored_btn.clicked.connect(self.open_colored_noise_dialog)
-        self.generate_btn = QPushButton("Generate")
-        self.generate_btn.clicked.connect(self.on_generate)
-        self.test_btn = QPushButton("Test")
-        self.test_btn.clicked.connect(self.on_test)
-        self.stop_btn = QPushButton("Stop")
-        self.stop_btn.clicked.connect(self.on_stop)
-        self.stop_btn.setEnabled(False)
-        self.audio_output = None
-        self.audio_buffer = None
-        button_row.addWidget(self.load_btn)
-        button_row.addWidget(self.save_btn)
-        button_row.addWidget(self.colored_btn)
-        button_row.addStretch(1)
-        button_row.addWidget(self.test_btn)
-        button_row.addWidget(self.stop_btn)
-        button_row.addWidget(self.generate_btn)
-        layout.addLayout(button_row)
-
-        if not QT_MULTIMEDIA_AVAILABLE:
-            self.test_btn.setEnabled(False)
-
-    def open_colored_noise_dialog(self) -> None:
-        dialog = ColoredNoiseDialog(self)
-        dialog.exec_()
-
     def update_sweep_visibility(self, count):
         for i, (row_widget, *_rest) in enumerate(self.sweep_rows):
             row_widget.setVisible(i < count)
@@ -403,22 +358,30 @@ class NoiseGeneratorDialog(QDialog):
         self.intra_phase_end_spin.setValue(params.end_intra_phase_offset_deg)
         self.initial_offset_spin.setValue(params.initial_offset)
         self.duration_spin.setValue(params.duration)
-            end_sweeps = []
-            start_q_vals = []
-            end_q_vals = []
-            start_casc = []
-            end_casc = []
-            for i in range(self.num_sweeps_spin.value()):
-                (
-                    _, s_min, e_min, s_max, e_max, s_q, e_q, s_casc, e_casc
-                ) = self.sweep_rows[i]
-                start_sweeps.append((int(s_min.value()), int(s_max.value())))
-                end_sweeps.append((int(e_min.value()), int(e_max.value())))
-                start_q_vals.append(int(s_q.value()))
-                end_q_vals.append(int(e_q.value()))
-                start_casc.append(int(s_casc.value()))
-                end_casc.append(int(e_casc.value()))
 
+    def on_generate(self):
+        filename = self.file_edit.text()
+        params = self.get_noise_params()
+        input_path = params.input_audio_path
+
+        start_sweeps = []
+        end_sweeps = []
+        start_q_vals = []
+        end_q_vals = []
+        start_casc = []
+        end_casc = []
+        for i in range(self.num_sweeps_spin.value()):
+            (
+                _, s_min, e_min, s_max, e_max, s_q, e_q, s_casc, e_casc
+            ) = self.sweep_rows[i]
+            start_sweeps.append((int(s_min.value()), int(s_max.value())))
+            end_sweeps.append((int(e_min.value()), int(e_max.value())))
+            start_q_vals.append(int(s_q.value()))
+            end_q_vals.append(int(e_q.value()))
+            start_casc.append(int(s_casc.value()))
+            end_casc.append(int(e_casc.value()))
+
+        try:
             if self.transition_check.isChecked():
                 generate_swept_notch_pink_sound_transition(
                     filename=filename,
@@ -436,10 +399,8 @@ class NoiseGeneratorDialog(QDialog):
                     end_lfo_phase_offset_deg=int(self.lfo_phase_end_spin.value()),
                     start_intra_phase_offset_deg=int(self.intra_phase_start_spin.value()),
                     end_intra_phase_offset_deg=int(self.intra_phase_end_spin.value()),
-                  
                     initial_offset=float(self.initial_offset_spin.value()),
                     duration=float(self.duration_spin.value()),
-
                     input_audio_path=input_path,
                     noise_type=self.noise_type_combo.currentText().lower(),
                     lfo_waveform=self.lfo_waveform_combo.currentText().lower(),
