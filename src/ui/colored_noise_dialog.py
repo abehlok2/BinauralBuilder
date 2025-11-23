@@ -49,7 +49,21 @@ class ColoredNoiseDialog(QDialog):
         self.exponent_spin = QDoubleSpinBox()
         self.exponent_spin.setRange(-3.0, 3.0)
         self.exponent_spin.setValue(1.0)
-        form.addRow("Exponent:", self.exponent_spin)
+        self.exponent_spin.setToolTip("Power-law exponent applied at low frequencies (e.g. 1=pink)")
+        form.addRow("Low Exponent:", self.exponent_spin)
+
+        self.high_exponent_spin = QDoubleSpinBox()
+        self.high_exponent_spin.setRange(-3.0, 3.0)
+        self.high_exponent_spin.setValue(1.0)
+        self.high_exponent_spin.setToolTip("Exponent to reach at the top of the spectrum")
+        form.addRow("High Exponent:", self.high_exponent_spin)
+
+        self.distribution_curve_spin = QDoubleSpinBox()
+        self.distribution_curve_spin.setRange(0.1, 5.0)
+        self.distribution_curve_spin.setSingleStep(0.1)
+        self.distribution_curve_spin.setValue(1.0)
+        self.distribution_curve_spin.setToolTip("Curve shaping how quickly the exponent transitions across frequencies")
+        form.addRow("Distribution Curve:", self.distribution_curve_spin)
 
         self.lowcut_spin = QDoubleSpinBox()
         self.lowcut_spin.setRange(0.0, 20000.0)
@@ -100,6 +114,8 @@ class ColoredNoiseDialog(QDialog):
             sample_rate=int(self.sample_rate_spin.value()),
             duration=float(self.duration_spin.value()),
             exponent=float(self.exponent_spin.value()),
+            high_exponent=float(self.high_exponent_spin.value()),
+            distribution_curve=float(self.distribution_curve_spin.value()),
             lowcut=lowcut,
             highcut=highcut,
             amplitude=float(self.amplitude_spin.value()),
