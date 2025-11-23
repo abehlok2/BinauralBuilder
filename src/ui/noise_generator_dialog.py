@@ -72,11 +72,11 @@ class NoiseGeneratorDialog(QDialog):
         form.addRow("Output File:", file_layout)
 
         # Duration
-        self.duration_spin = QDoubleSpinBox()
-        self.duration_spin.setRange(1.0, 100000.0)
-        self.duration_spin.setValue(60.0)
-        self.duration_spin.setToolTip("Length of the output audio in seconds")
-        form.addRow("Duration (s):", self.duration_spin)
+        self.output_duration_spin = QDoubleSpinBox()
+        self.output_duration_spin.setRange(1.0, 100000.0)
+        self.output_duration_spin.setValue(60.0)
+        self.output_duration_spin.setToolTip("Length of the output audio in seconds")
+        form.addRow("Duration (s):", self.output_duration_spin)
 
         # Sample rate
         self.sample_rate_spin = QSpinBox()
@@ -213,15 +213,15 @@ class NoiseGeneratorDialog(QDialog):
         self.initial_offset_spin.setDecimals(3)
         self.initial_offset_spin.setValue(0.0)
         self.initial_offset_spin.setToolTip("Time before transition starts")
-        self.duration_spin = QDoubleSpinBox()
-        self.duration_spin.setRange(0.0, 10000.0)
-        self.duration_spin.setDecimals(3)
-        self.duration_spin.setValue(0.0)
-        self.duration_spin.setToolTip("Duration of the transition")
+        self.transition_duration_spin = QDoubleSpinBox()
+        self.transition_duration_spin.setRange(0.0, 10000.0)
+        self.transition_duration_spin.setDecimals(3)
+        self.transition_duration_spin.setValue(0.0)
+        self.transition_duration_spin.setToolTip("Duration of the transition")
         offset_layout.addWidget(QLabel("Init:"))
         offset_layout.addWidget(self.initial_offset_spin)
         offset_layout.addWidget(QLabel("Duration:"))
-        offset_layout.addWidget(self.duration_spin)
+        offset_layout.addWidget(self.transition_duration_spin)
         form.addRow("Offset & Duration (s):", offset_layout)
 
         # Optional input file
@@ -322,7 +322,7 @@ class NoiseGeneratorDialog(QDialog):
         """Collect the current UI values into a :class:`NoiseParams`."""
         input_path = self._normalized_input_path(self.input_file_edit.text()) or ""
         params = NoiseParams(
-            duration_seconds=float(self.duration_spin.value()),
+            duration_seconds=float(self.output_duration_spin.value()),
             sample_rate=int(self.sample_rate_spin.value()),
             noise_type=self.noise_type_combo.currentText().lower(),
             lfo_waveform=self.lfo_waveform_combo.currentText().lower(),
@@ -335,7 +335,7 @@ class NoiseGeneratorDialog(QDialog):
             start_intra_phase_offset_deg=int(self.intra_phase_start_spin.value()),
             end_intra_phase_offset_deg=int(self.intra_phase_end_spin.value()),
             initial_offset=float(self.initial_offset_spin.value()),
-            duration=float(self.duration_spin.value()),
+            duration=float(self.transition_duration_spin.value()),
             input_audio_path=input_path,
         )
         sweeps = []
@@ -361,7 +361,7 @@ class NoiseGeneratorDialog(QDialog):
 
     def set_noise_params(self, params: NoiseParams) -> None:
         """Apply ``params`` to the UI widgets."""
-        self.duration_spin.setValue(params.duration_seconds)
+        self.output_duration_spin.setValue(params.duration_seconds)
         self.sample_rate_spin.setValue(params.sample_rate)
         idx = self.noise_type_combo.findText(params.noise_type.title())
         if idx != -1:
@@ -393,7 +393,7 @@ class NoiseGeneratorDialog(QDialog):
         self.intra_phase_start_spin.setValue(params.start_intra_phase_offset_deg)
         self.intra_phase_end_spin.setValue(params.end_intra_phase_offset_deg)
         self.initial_offset_spin.setValue(params.initial_offset)
-        self.duration_spin.setValue(params.duration)
+        self.transition_duration_spin.setValue(params.duration)
         self.input_file_edit.setText(params.input_audio_path or "")
 
     def on_generate(self):
@@ -422,7 +422,7 @@ class NoiseGeneratorDialog(QDialog):
             if self.transition_check.isChecked():
                 generate_swept_notch_pink_sound_transition(
                     filename=filename,
-                    duration_seconds=float(self.duration_spin.value()),
+                    duration_seconds=float(self.output_duration_spin.value()),
                     sample_rate=int(self.sample_rate_spin.value()),
                     start_lfo_freq=float(self.lfo_start_spin.value()),
                     end_lfo_freq=float(self.lfo_end_spin.value()),
@@ -437,7 +437,7 @@ class NoiseGeneratorDialog(QDialog):
                     start_intra_phase_offset_deg=int(self.intra_phase_start_spin.value()),
                     end_intra_phase_offset_deg=int(self.intra_phase_end_spin.value()),
                     initial_offset=float(self.initial_offset_spin.value()),
-                    duration=float(self.duration_spin.value()),
+                    duration=float(self.transition_duration_spin.value()),
                     input_audio_path=input_path,
                     noise_type=self.noise_type_combo.currentText().lower(),
                     lfo_waveform=self.lfo_waveform_combo.currentText().lower(),
@@ -445,7 +445,7 @@ class NoiseGeneratorDialog(QDialog):
             else:
                 generate_swept_notch_pink_sound(
                     filename=filename,
-                    duration_seconds=float(self.duration_spin.value()),
+                    duration_seconds=float(self.output_duration_spin.value()),
                     sample_rate=int(self.sample_rate_spin.value()),
                     lfo_freq=float(self.lfo_start_spin.value()),
                     filter_sweeps=start_sweeps,
