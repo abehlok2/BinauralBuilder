@@ -1045,7 +1045,10 @@ def _generate_swept_notch_arrays(
         if memory_efficient and n_jobs > 1:
             n_jobs = 1
 
-        with Parallel(n_jobs=n_jobs, backend="loky") as parallel:
+        # Use the standard multiprocessing backend (instead of loky) to avoid
+        # Windows-specific `_posixsubprocess` import errors when spawning
+        # workers from POSIX-like shells such as Git Bash.
+        with Parallel(n_jobs=n_jobs, backend="multiprocessing") as parallel:
             results = parallel(tasks)
 
         left_output, right_output = results
