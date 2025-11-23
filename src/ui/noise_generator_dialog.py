@@ -320,6 +320,7 @@ class NoiseGeneratorDialog(QDialog):
 
     def get_noise_params(self) -> NoiseParams:
         """Collect the current UI values into a :class:`NoiseParams`."""
+        input_path = self._normalized_input_path(self.input_file_edit.text()) or ""
         params = NoiseParams(
             duration_seconds=float(self.duration_spin.value()),
             sample_rate=int(self.sample_rate_spin.value()),
@@ -335,7 +336,7 @@ class NoiseGeneratorDialog(QDialog):
             end_intra_phase_offset_deg=int(self.intra_phase_end_spin.value()),
             initial_offset=float(self.initial_offset_spin.value()),
             duration=float(self.duration_spin.value()),
-            input_audio_path=self.input_file_edit.text(),
+            input_audio_path=input_path,
         )
         sweeps = []
         count = min(self.num_sweeps_spin.value(), len(self.sweep_rows))
@@ -393,11 +394,12 @@ class NoiseGeneratorDialog(QDialog):
         self.intra_phase_end_spin.setValue(params.end_intra_phase_offset_deg)
         self.initial_offset_spin.setValue(params.initial_offset)
         self.duration_spin.setValue(params.duration)
+        self.input_file_edit.setText(params.input_audio_path or "")
 
     def on_generate(self):
         filename = self.file_edit.text()
         params = self.get_noise_params()
-        input_path = params.input_audio_path
+        input_path = self._normalized_input_path(params.input_audio_path)
 
         start_sweeps = []
         end_sweeps = []
@@ -458,6 +460,16 @@ class NoiseGeneratorDialog(QDialog):
             QMessageBox.information(self, "Success", f"Generated {filename}")
         except Exception as exc:
             QMessageBox.critical(self, "Error", str(exc))
+
+    @staticmethod
+    def _normalized_input_path(input_path: str | None) -> str | None:
+        """Return ``None`` when the provided path is empty/whitespace."""
+
+        if input_path is None:
+            return None
+
+        normalized = input_path.strip()
+        return normalized or None
 
     def _generate_noise_array(self, params: NoiseParams):
         start_sweeps = []
