@@ -3,7 +3,6 @@ import numpy as np
 import numba
 import soundfile as sf
 from scipy import signal
-from joblib import Parallel, delayed
 import time
 import tempfile
 import argparse
@@ -980,6 +979,9 @@ def _generate_swept_notch_arrays(
         cascade_count = [int(cascade_count)] * len(filter_sweeps)
     else:
         cascade_count = list(cascade_count)
+
+    # Force single-threaded execution to avoid Windows multiprocessing issues.
+    n_jobs = 1
     if len(notch_q) != len(filter_sweeps) or len(cascade_count) != len(filter_sweeps):
         raise ValueError("Length of notch_q and cascade_count must match number of filter_sweeps")
 
@@ -1015,43 +1017,31 @@ def _generate_swept_notch_arrays(
         intra_phase_rad = np.deg2rad(intra_phase_offset_deg)
         right_channel_phase_offset_rad = np.deg2rad(lfo_phase_offset_deg)
 
-        tasks = [
-            delayed(apply_deep_swept_notches)(
-                input_signal,
-                sample_rate,
-                lfo_freq,
-                filter_sweeps,
-                notch_q,
-                cascade_count,
-                0,
-                intra_phase_rad,
-                lfo_waveform,
-                use_memmap=memory_efficient,
-            ),
-            delayed(apply_deep_swept_notches)(
-                input_signal,
-                sample_rate,
-                lfo_freq,
-                filter_sweeps,
-                notch_q,
-                cascade_count,
-                right_channel_phase_offset_rad,
-                intra_phase_rad,
-                lfo_waveform,
-                use_memmap=memory_efficient,
-            ),
-        ]
+        left_output = apply_deep_swept_notches(
+            input_signal,
+            sample_rate,
+            lfo_freq,
+            filter_sweeps,
+            notch_q,
+            cascade_count,
+            0,
+            intra_phase_rad,
+            lfo_waveform,
+            use_memmap=memory_efficient,
+        )
 
-        if memory_efficient and n_jobs > 1:
-            n_jobs = 1
-
-        # Use the standard multiprocessing backend (instead of loky) to avoid
-        # Windows-specific `_posixsubprocess` import errors when spawning
-        # workers from POSIX-like shells such as Git Bash.
-        with Parallel(n_jobs=n_jobs, backend="multiprocessing") as parallel:
-            results = parallel(tasks)
-
-        left_output, right_output = results
+        right_output = apply_deep_swept_notches(
+            input_signal,
+            sample_rate,
+            lfo_freq,
+            filter_sweeps,
+            notch_q,
+            cascade_count,
+            right_channel_phase_offset_rad,
+            intra_phase_rad,
+            lfo_waveform,
+            use_memmap=memory_efficient,
+        )
 
         if memory_efficient and isinstance(left_output, np.memmap):
             rms_left = _compute_rms_memmap(left_output)
