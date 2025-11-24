@@ -47,6 +47,7 @@ from src.utils.noise_file import (
     load_noise_params,
     NOISE_FILE_EXTENSION,
 )
+from src.utils.colored_noise import DEFAULT_COLOR_PRESETS
 from .colored_noise_dialog import ColoredNoiseDialog
 
 
@@ -87,15 +88,7 @@ class NoiseGeneratorDialog(QDialog):
 
         # Noise type
         self.noise_type_combo = QComboBox()
-        self.noise_type_combo.addItems([
-            "Pink",
-            "Brown",
-            "Green",
-            "Deep Brown",
-            "Purple",
-            "Red",
-            "Blue",
-        ])
+        self.noise_type_combo.addItems(list(DEFAULT_COLOR_PRESETS.keys()))
         self.noise_type_combo.setToolTip("Base noise colour to generate")
         form.addRow("Noise Type:", self.noise_type_combo)
 
