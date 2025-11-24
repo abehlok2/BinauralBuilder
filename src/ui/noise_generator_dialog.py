@@ -1,3 +1,5 @@
+from typing import Optional
+
 from PyQt5.QtWidgets import (
     QDialog,
     QVBoxLayout,
@@ -47,7 +49,7 @@ from src.utils.noise_file import (
     load_noise_params,
     NOISE_FILE_EXTENSION,
 )
-from src.utils.colored_noise import DEFAULT_COLOR_PRESETS
+from src.utils.colored_noise import DEFAULT_COLOR_PRESETS, load_custom_color_presets
 from .colored_noise_dialog import ColoredNoiseDialog
 
 
@@ -88,7 +90,6 @@ class NoiseGeneratorDialog(QDialog):
 
         # Noise type
         self.noise_type_combo = QComboBox()
-        self.noise_type_combo.addItems(list(DEFAULT_COLOR_PRESETS.keys()))
         self.noise_type_combo.setToolTip("Base noise colour to generate")
         form.addRow("Noise Type:", self.noise_type_combo)
 
@@ -258,6 +259,8 @@ class NoiseGeneratorDialog(QDialog):
         if not QT_MULTIMEDIA_AVAILABLE:
             self.test_btn.setEnabled(False)
 
+        self._refresh_noise_types()
+
     def load_settings(self) -> None:
         """Load noise generator settings from a ``.noise`` file."""
         path, _ = QFileDialog.getOpenFileName(
@@ -296,6 +299,23 @@ class NoiseGeneratorDialog(QDialog):
     def open_colored_noise_dialog(self) -> None:
         dialog = ColoredNoiseDialog(self)
         dialog.exec_()
+        self._refresh_noise_types(selected=dialog.color_combo.currentText())
+
+    def _refresh_noise_types(self, *, selected: Optional[str] = None) -> None:
+        current = selected or self.noise_type_combo.currentText()
+        custom_colors = load_custom_color_presets()
+
+        self.noise_type_combo.blockSignals(True)
+        self.noise_type_combo.clear()
+        for name in sorted(DEFAULT_COLOR_PRESETS):
+            self.noise_type_combo.addItem(name)
+        for name in sorted(custom_colors):
+            self.noise_type_combo.addItem(name)
+
+        if self.noise_type_combo.count():
+            idx = self.noise_type_combo.findText(current)
+            self.noise_type_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        self.noise_type_combo.blockSignals(False)
 
     def update_sweep_visibility(self, count):
         for i, (row_widget, *_rest) in enumerate(self.sweep_rows):
