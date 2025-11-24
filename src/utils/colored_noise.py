@@ -1,8 +1,10 @@
 """Colored noise generation and spectrogram visualization utilities."""
 
-from dataclasses import dataclass
-from typing import Optional
+from dataclasses import asdict, dataclass
+from pathlib import Path
+from typing import Dict, Optional
 
+import json
 import numpy as np
 from scipy.signal import butter, lfilter, spectrogram
 import matplotlib.pyplot as plt
@@ -106,6 +108,67 @@ class ColoredNoiseGenerator:
         return noise
 
 
+# ---------------------------------------------------------------------------
+# Preset helpers
+# ---------------------------------------------------------------------------
+
+COLOR_PRESET_FILE = Path.home() / ".binauralbuilder" / "colored_noise_presets.json"
+
+
+def _color_preset(name: str, **params) -> Dict[str, object]:
+    return {"name": name, "params": params}
+
+
+DEFAULT_COLOR_PRESETS = {
+    preset["name"]: preset["params"]
+    for preset in (
+        _color_preset("Pink", exponent=1.0, high_exponent=1.0),
+        _color_preset("Brown", exponent=2.0, high_exponent=2.0),
+        _color_preset("Green", exponent=0.0, high_exponent=0.0, lowcut=100.0, highcut=8000.0),
+        _color_preset("Blue", exponent=-1.0, high_exponent=-1.0),
+        _color_preset("Purple", exponent=-2.0, high_exponent=-2.0),
+        _color_preset("Red", exponent=2.0, high_exponent=1.5),
+        _color_preset("Deep Brown", exponent=2.5, high_exponent=2.0),
+        _color_preset("White", exponent=0.0, high_exponent=0.0),
+    )
+}
+
+
+def save_custom_color_presets(presets: Dict[str, Dict[str, object]]) -> None:
+    """Persist user-defined color presets to disk."""
+
+    COLOR_PRESET_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with open(COLOR_PRESET_FILE, "w", encoding="utf-8") as fh:
+        json.dump(presets, fh, indent=2)
+
+
+def load_custom_color_presets() -> Dict[str, Dict[str, object]]:
+    """Load user-defined color presets from disk if available."""
+
+    if not COLOR_PRESET_FILE.is_file():
+        return {}
+    with open(COLOR_PRESET_FILE, "r", encoding="utf-8") as fh:
+        data = json.load(fh)
+    return {k: dict(v) for k, v in data.items() if isinstance(v, dict)}
+
+
+def generator_to_preset(generator: ColoredNoiseGenerator) -> Dict[str, object]:
+    """Convert a :class:`ColoredNoiseGenerator` into a serializable dict."""
+
+    preset = asdict(generator)
+    return preset
+
+
+def apply_preset_to_generator(generator: ColoredNoiseGenerator, preset: Dict[str, object]) -> ColoredNoiseGenerator:
+    """Return a new generator with attributes populated from ``preset``."""
+
+    kwargs = {**asdict(generator)}
+    for key, value in preset.items():
+        if key in kwargs:
+            kwargs[key] = value
+    return ColoredNoiseGenerator(**kwargs)
+
+
 def plot_spectrogram(noise: np.ndarray, sample_rate: int, cmap: str = "viridis") -> None:
     """Display an interactive heatmap spectrogram of ``noise``.
 
@@ -137,4 +200,13 @@ def plot_spectrogram(noise: np.ndarray, sample_rate: int, cmap: str = "viridis")
     plt.pause(0.001)
 
 
-__all__ = ["ColoredNoiseGenerator", "plot_spectrogram"]
+__all__ = [
+    "apply_preset_to_generator",
+    "COLOR_PRESET_FILE",
+    "ColoredNoiseGenerator",
+    "DEFAULT_COLOR_PRESETS",
+    "generator_to_preset",
+    "load_custom_color_presets",
+    "plot_spectrogram",
+    "save_custom_color_presets",
+]
