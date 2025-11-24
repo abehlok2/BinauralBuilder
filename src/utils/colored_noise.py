@@ -115,6 +115,17 @@ class ColoredNoiseGenerator:
 COLOR_PRESET_FILE = Path.home() / ".binauralbuilder" / "colored_noise_presets.json"
 
 
+PRESET_FIELDS = {
+    "exponent",
+    "high_exponent",
+    "distribution_curve",
+    "lowcut",
+    "highcut",
+    "amplitude",
+    "seed",
+}
+
+
 def _color_preset(name: str, **params) -> Dict[str, object]:
     return {"name": name, "params": params}
 
@@ -155,8 +166,7 @@ def load_custom_color_presets() -> Dict[str, Dict[str, object]]:
 def generator_to_preset(generator: ColoredNoiseGenerator) -> Dict[str, object]:
     """Convert a :class:`ColoredNoiseGenerator` into a serializable dict."""
 
-    preset = asdict(generator)
-    return preset
+    return {key: getattr(generator, key) for key in PRESET_FIELDS}
 
 
 def apply_preset_to_generator(generator: ColoredNoiseGenerator, preset: Dict[str, object]) -> ColoredNoiseGenerator:
@@ -164,7 +174,7 @@ def apply_preset_to_generator(generator: ColoredNoiseGenerator, preset: Dict[str
 
     kwargs = {**asdict(generator)}
     for key, value in preset.items():
-        if key in kwargs:
+        if key in PRESET_FIELDS:
             kwargs[key] = value
     return ColoredNoiseGenerator(**kwargs)
 

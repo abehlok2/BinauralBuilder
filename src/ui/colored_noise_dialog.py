@@ -1,39 +1,18 @@
 from typing import Optional
 
 from PyQt5.QtWidgets import (
+    QComboBox,
     QDialog,
-    QVBoxLayout,
+    QDoubleSpinBox,
     QFormLayout,
     QHBoxLayout,
-    QLabel,
-    QLineEdit,
-    QPushButton,
-    QDoubleSpinBox,
-    QSpinBox,
-    QFileDialog,
-    QMessageBox,
-    QComboBox,
     QInputDialog,
+    QLabel,
+    QMessageBox,
+    QPushButton,
+    QSpinBox,
+    QVBoxLayout,
 )
-from PyQt5.QtCore import QBuffer, QIODevice
-try:
-    from PyQt5.QtMultimedia import (
-        QAudioOutput,
-        QAudioFormat,
-        QAudioDeviceInfo,
-        QAudio,
-    )
-    QT_MULTIMEDIA_AVAILABLE = True
-except Exception as e:  # noqa: PIE786 - broad for missing backends
-    print(
-        "WARNING: PyQt5.QtMultimedia could not be imported.\n"
-        "ColoredNoiseDialog will have audio preview disabled.\n"
-        f"Original error: {e}"
-    )
-    QT_MULTIMEDIA_AVAILABLE = False
-
-import soundfile as sf
-import numpy as np
 
 from src.utils.colored_noise import (
     DEFAULT_COLOR_PRESETS,
@@ -41,17 +20,16 @@ from src.utils.colored_noise import (
     apply_preset_to_generator,
     generator_to_preset,
     load_custom_color_presets,
-    plot_spectrogram,
     save_custom_color_presets,
 )
 
 
 class ColoredNoiseDialog(QDialog):
-    """Dialog for generating customizable colored noise."""
+    """Dialog for configuring customizable colored noise presets."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Colored Noise Generator")
+        self.setWindowTitle("Colored Noise Presets")
         self.resize(400, 0)
 
         layout = QVBoxLayout(self)
@@ -70,24 +48,6 @@ class ColoredNoiseDialog(QDialog):
         color_layout.addWidget(self.save_color_btn)
         color_layout.addWidget(self.delete_color_btn)
         form.addRow("Noise Color:", color_layout)
-
-        file_layout = QHBoxLayout()
-        self.file_edit = QLineEdit("colored_noise.wav")
-        browse_btn = QPushButton("Browse")
-        browse_btn.clicked.connect(self.browse_file)
-        file_layout.addWidget(self.file_edit, 1)
-        file_layout.addWidget(browse_btn)
-        form.addRow("Output File:", file_layout)
-
-        self.duration_spin = QDoubleSpinBox()
-        self.duration_spin.setRange(0.1, 3600.0)
-        self.duration_spin.setValue(60.0)
-        form.addRow("Duration (s):", self.duration_spin)
-
-        self.sample_rate_spin = QSpinBox()
-        self.sample_rate_spin.setRange(8000, 192000)
-        self.sample_rate_spin.setValue(44100)
-        form.addRow("Sample Rate:", self.sample_rate_spin)
 
         self.exponent_spin = QDoubleSpinBox()
         self.exponent_spin.setRange(-3.0, 3.0)
@@ -131,37 +91,13 @@ class ColoredNoiseDialog(QDialog):
         layout.addLayout(form)
 
         button_layout = QHBoxLayout()
-        self.spectro_btn = QPushButton("Spectrogram")
-        self.spectro_btn.clicked.connect(self.on_spectrogram)
-        self.test_btn = QPushButton("Test")
-        self.test_btn.clicked.connect(self.on_test)
-        self.stop_btn = QPushButton("Stop")
-        self.stop_btn.clicked.connect(self.on_stop)
-        self.stop_btn.setEnabled(False)
-        self.generate_btn = QPushButton("Generate")
-        self.generate_btn.clicked.connect(self.on_generate)
         close_btn = QPushButton("Close")
         close_btn.clicked.connect(self.reject)
-        button_layout.addWidget(self.spectro_btn)
-        button_layout.addWidget(self.test_btn)
-        button_layout.addWidget(self.stop_btn)
         button_layout.addStretch(1)
         button_layout.addWidget(close_btn)
-        button_layout.addWidget(self.generate_btn)
         layout.addLayout(button_layout)
 
-        self.audio_output = None
-        self.audio_buffer = None
-
-        if not QT_MULTIMEDIA_AVAILABLE:
-            self.test_btn.setEnabled(False)
-
         self._refresh_color_presets()
-
-    def browse_file(self) -> None:
-        path, _ = QFileDialog.getSaveFileName(self, "Save Audio", "", "WAV Files (*.wav)")
-        if path:
-            self.file_edit.setText(path)
 
     def _collect_params(self) -> ColoredNoiseGenerator:
         lowcut = self.lowcut_spin.value() or None
@@ -169,8 +105,6 @@ class ColoredNoiseDialog(QDialog):
         seed_val = self.seed_spin.value()
         seed = seed_val if seed_val != -1 else None
         return ColoredNoiseGenerator(
-            sample_rate=int(self.sample_rate_spin.value()),
-            duration=float(self.duration_spin.value()),
             exponent=float(self.exponent_spin.value()),
             high_exponent=float(self.high_exponent_spin.value()),
             distribution_curve=float(self.distribution_curve_spin.value()),
@@ -210,8 +144,6 @@ class ColoredNoiseDialog(QDialog):
 
     def _apply_preset(self, preset: dict) -> None:
         gen = apply_preset_to_generator(self._collect_params(), preset)
-        self.sample_rate_spin.setValue(int(gen.sample_rate))
-        self.duration_spin.setValue(float(gen.duration))
         self.exponent_spin.setValue(float(gen.exponent))
         self.high_exponent_spin.setValue(float(gen.high_exponent or 0.0))
         self.distribution_curve_spin.setValue(float(gen.distribution_curve))
@@ -262,74 +194,3 @@ class ColoredNoiseDialog(QDialog):
         self._custom_presets.pop(name, None)
         save_custom_color_presets(self._custom_presets)
         self._refresh_color_presets()
-
-    def on_generate(self) -> None:
-        try:
-            gen = self._collect_params()
-            noise = gen.generate()
-            sf.write(self.file_edit.text() or "colored_noise.wav", noise, gen.sample_rate)
-            QMessageBox.information(self, "Success", f"Generated {self.file_edit.text()}")
-        except Exception as exc:
-            QMessageBox.critical(self, "Error", str(exc))
-
-    def on_spectrogram(self) -> None:
-        try:
-            gen = self._collect_params()
-            noise = gen.generate()
-            plot_spectrogram(noise, gen.sample_rate)
-        except Exception as exc:
-            QMessageBox.critical(self, "Error", str(exc))
-
-    def on_test(self) -> None:
-        if not QT_MULTIMEDIA_AVAILABLE:
-            QMessageBox.critical(
-                self,
-                "PyQt5 Multimedia Missing",
-                "PyQt5.QtMultimedia is required for audio preview, but it could not be loaded.",
-            )
-            return
-        try:
-            gen = self._collect_params()
-            gen.duration = min(gen.duration, 10.0)
-            noise = gen.generate()
-            audio_int16 = (np.clip(noise, -1.0, 1.0) * 32767).astype(np.int16)
-            audio_bytes = audio_int16.tobytes()
-
-            fmt = QAudioFormat()
-            fmt.setCodec("audio/pcm")
-            fmt.setSampleRate(int(gen.sample_rate))
-            fmt.setSampleSize(16)
-            fmt.setChannelCount(1)
-            fmt.setByteOrder(QAudioFormat.LittleEndian)
-            fmt.setSampleType(QAudioFormat.SignedInt)
-
-            device_info = QAudioDeviceInfo.defaultOutputDevice()
-            if not device_info.isFormatSupported(fmt):
-                QMessageBox.warning(self, "Noise Test", "Default output device does not support the required format")
-                return
-
-            if self.audio_output:
-                self.on_stop()
-
-            self.audio_output = QAudioOutput(fmt, self)
-            self.audio_output.stateChanged.connect(self.on_audio_state_changed)
-            self.audio_buffer = QBuffer()
-            self.audio_buffer.setData(audio_bytes)
-            self.audio_buffer.open(QIODevice.ReadOnly)
-            self.audio_output.start(self.audio_buffer)
-            self.stop_btn.setEnabled(True)
-        except Exception as exc:
-            QMessageBox.critical(self, "Error", str(exc))
-
-    def on_stop(self) -> None:
-        if self.audio_output:
-            self.audio_output.stop()
-            self.audio_output = None
-        if self.audio_buffer:
-            self.audio_buffer.close()
-            self.audio_buffer = None
-        self.stop_btn.setEnabled(False)
-
-    def on_audio_state_changed(self, state) -> None:
-        if state in (QAudio.IdleState, QAudio.StoppedState):
-            self.on_stop()
