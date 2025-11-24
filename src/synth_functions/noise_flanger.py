@@ -334,6 +334,50 @@ def generate_brown_noise_samples(n_samples):
     return (brown / max_abs).astype(np.float32)
 
 
+def _generate_colored_noise_from_presets(n_samples: int, sample_rate: int, noise_type: str):
+    """Return colored noise from presets when available.
+
+    This allows custom colours defined in :mod:`src.utils.colored_noise` to be
+    used seamlessly by the main noise generator dialog. When no matching
+    preset is found (or dependencies are unavailable), ``None`` is returned so
+    the caller can fall back to built-in options.
+    """
+
+    try:
+        from src.utils.colored_noise import (
+            DEFAULT_COLOR_PRESETS,
+            ColoredNoiseGenerator,
+            apply_preset_to_generator,
+            load_custom_color_presets,
+        )
+    except Exception:
+        return None
+
+    presets = {name.lower(): params for name, params in DEFAULT_COLOR_PRESETS.items()}
+    for name, preset in load_custom_color_presets().items():
+        presets[name.lower()] = preset
+
+    preset = presets.get(noise_type.lower())
+    if preset is None:
+        return None
+
+    generator = apply_preset_to_generator(
+        ColoredNoiseGenerator(
+            sample_rate=sample_rate,
+            duration=float(n_samples) / float(sample_rate),
+        ),
+        preset,
+    )
+    noise = generator.generate()
+
+    target = int(n_samples)
+    if noise.size < target:
+        noise = np.pad(noise, (0, target - noise.size))
+    elif noise.size > target:
+        noise = noise[:target]
+    return noise.astype(np.float32, copy=False)
+
+
 def generate_noise_samples(n_samples, noise_type, sample_rate=DEFAULT_SAMPLE_RATE):
     nt = noise_type.lower()
     if nt == "pink":
@@ -348,6 +392,9 @@ def generate_noise_samples(n_samples, noise_type, sample_rate=DEFAULT_SAMPLE_RAT
         return purple_noise(n_samples).astype(np.float32)
     if nt == "green":
         return green_noise(n_samples, fs=sample_rate).astype(np.float32)
+    colored = _generate_colored_noise_from_presets(n_samples, sample_rate, nt)
+    if colored is not None:
+        return colored
     return np.random.randn(n_samples).astype(np.float32)
 
 
