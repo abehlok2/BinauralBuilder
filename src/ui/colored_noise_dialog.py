@@ -11,8 +11,25 @@ from PyQt5.QtWidgets import (
     QFileDialog,
     QMessageBox,
 )
+from PyQt5.QtCore import QBuffer, QIODevice
+try:
+    from PyQt5.QtMultimedia import (
+        QAudioOutput,
+        QAudioFormat,
+        QAudioDeviceInfo,
+        QAudio,
+    )
+    QT_MULTIMEDIA_AVAILABLE = True
+except Exception as e:  # noqa: PIE786 - broad for missing backends
+    print(
+        "WARNING: PyQt5.QtMultimedia could not be imported.\n"
+        "ColoredNoiseDialog will have audio preview disabled.\n"
+        f"Original error: {e}"
+    )
+    QT_MULTIMEDIA_AVAILABLE = False
 
 import soundfile as sf
+import numpy as np
 
 from src.utils.colored_noise import ColoredNoiseGenerator, plot_spectrogram
 
@@ -90,15 +107,28 @@ class ColoredNoiseDialog(QDialog):
         button_layout = QHBoxLayout()
         self.spectro_btn = QPushButton("Spectrogram")
         self.spectro_btn.clicked.connect(self.on_spectrogram)
+        self.test_btn = QPushButton("Test")
+        self.test_btn.clicked.connect(self.on_test)
+        self.stop_btn = QPushButton("Stop")
+        self.stop_btn.clicked.connect(self.on_stop)
+        self.stop_btn.setEnabled(False)
         self.generate_btn = QPushButton("Generate")
         self.generate_btn.clicked.connect(self.on_generate)
         close_btn = QPushButton("Close")
         close_btn.clicked.connect(self.reject)
         button_layout.addWidget(self.spectro_btn)
+        button_layout.addWidget(self.test_btn)
+        button_layout.addWidget(self.stop_btn)
         button_layout.addStretch(1)
         button_layout.addWidget(close_btn)
         button_layout.addWidget(self.generate_btn)
         layout.addLayout(button_layout)
+
+        self.audio_output = None
+        self.audio_buffer = None
+
+        if not QT_MULTIMEDIA_AVAILABLE:
+            self.test_btn.setEnabled(False)
 
     def browse_file(self) -> None:
         path, _ = QFileDialog.getSaveFileName(self, "Save Audio", "", "WAV Files (*.wav)")
@@ -138,3 +168,57 @@ class ColoredNoiseDialog(QDialog):
             plot_spectrogram(noise, gen.sample_rate)
         except Exception as exc:
             QMessageBox.critical(self, "Error", str(exc))
+
+    def on_test(self) -> None:
+        if not QT_MULTIMEDIA_AVAILABLE:
+            QMessageBox.critical(
+                self,
+                "PyQt5 Multimedia Missing",
+                "PyQt5.QtMultimedia is required for audio preview, but it could not be loaded.",
+            )
+            return
+        try:
+            gen = self._collect_params()
+            gen.duration = min(gen.duration, 10.0)
+            noise = gen.generate()
+            audio_int16 = (np.clip(noise, -1.0, 1.0) * 32767).astype(np.int16)
+            audio_bytes = audio_int16.tobytes()
+
+            fmt = QAudioFormat()
+            fmt.setCodec("audio/pcm")
+            fmt.setSampleRate(int(gen.sample_rate))
+            fmt.setSampleSize(16)
+            fmt.setChannelCount(1)
+            fmt.setByteOrder(QAudioFormat.LittleEndian)
+            fmt.setSampleType(QAudioFormat.SignedInt)
+
+            device_info = QAudioDeviceInfo.defaultOutputDevice()
+            if not device_info.isFormatSupported(fmt):
+                QMessageBox.warning(self, "Noise Test", "Default output device does not support the required format")
+                return
+
+            if self.audio_output:
+                self.on_stop()
+
+            self.audio_output = QAudioOutput(fmt, self)
+            self.audio_output.stateChanged.connect(self.on_audio_state_changed)
+            self.audio_buffer = QBuffer()
+            self.audio_buffer.setData(audio_bytes)
+            self.audio_buffer.open(QIODevice.ReadOnly)
+            self.audio_output.start(self.audio_buffer)
+            self.stop_btn.setEnabled(True)
+        except Exception as exc:
+            QMessageBox.critical(self, "Error", str(exc))
+
+    def on_stop(self) -> None:
+        if self.audio_output:
+            self.audio_output.stop()
+            self.audio_output = None
+        if self.audio_buffer:
+            self.audio_buffer.close()
+            self.audio_buffer = None
+        self.stop_btn.setEnabled(False)
+
+    def on_audio_state_changed(self, state) -> None:
+        if state in (QAudio.IdleState, QAudio.StoppedState):
+            self.on_stop()
