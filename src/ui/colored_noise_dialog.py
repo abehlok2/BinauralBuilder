@@ -1,3 +1,5 @@
+from typing import Optional
+
 from PyQt5.QtWidgets import (
     QDialog,
     QVBoxLayout,
@@ -10,6 +12,8 @@ from PyQt5.QtWidgets import (
     QSpinBox,
     QFileDialog,
     QMessageBox,
+    QComboBox,
+    QInputDialog,
 )
 from PyQt5.QtCore import QBuffer, QIODevice
 try:
@@ -31,7 +35,15 @@ except Exception as e:  # noqa: PIE786 - broad for missing backends
 import soundfile as sf
 import numpy as np
 
-from src.utils.colored_noise import ColoredNoiseGenerator, plot_spectrogram
+from src.utils.colored_noise import (
+    DEFAULT_COLOR_PRESETS,
+    ColoredNoiseGenerator,
+    apply_preset_to_generator,
+    generator_to_preset,
+    load_custom_color_presets,
+    plot_spectrogram,
+    save_custom_color_presets,
+)
 
 
 class ColoredNoiseDialog(QDialog):
@@ -44,6 +56,20 @@ class ColoredNoiseDialog(QDialog):
 
         layout = QVBoxLayout(self)
         form = QFormLayout()
+
+        self._custom_presets = load_custom_color_presets()
+
+        color_layout = QHBoxLayout()
+        self.color_combo = QComboBox()
+        self.save_color_btn = QPushButton("Save Color")
+        self.delete_color_btn = QPushButton("Delete Color")
+        self.save_color_btn.clicked.connect(self.on_save_color)
+        self.delete_color_btn.clicked.connect(self.on_delete_color)
+        self.color_combo.currentTextChanged.connect(self.on_color_selected)
+        color_layout.addWidget(self.color_combo, 1)
+        color_layout.addWidget(self.save_color_btn)
+        color_layout.addWidget(self.delete_color_btn)
+        form.addRow("Noise Color:", color_layout)
 
         file_layout = QHBoxLayout()
         self.file_edit = QLineEdit("colored_noise.wav")
@@ -130,6 +156,8 @@ class ColoredNoiseDialog(QDialog):
         if not QT_MULTIMEDIA_AVAILABLE:
             self.test_btn.setEnabled(False)
 
+        self._refresh_color_presets()
+
     def browse_file(self) -> None:
         path, _ = QFileDialog.getSaveFileName(self, "Save Audio", "", "WAV Files (*.wav)")
         if path:
@@ -151,6 +179,89 @@ class ColoredNoiseDialog(QDialog):
             amplitude=float(self.amplitude_spin.value()),
             seed=seed,
         )
+
+    # ------------------------------------------------------------------
+    # Preset handling
+    # ------------------------------------------------------------------
+    def _refresh_color_presets(self, *, selected: Optional[str] = None) -> None:
+        current = selected or self.color_combo.currentText()
+        self.color_combo.blockSignals(True)
+        self.color_combo.clear()
+        for name in sorted(DEFAULT_COLOR_PRESETS):
+            self.color_combo.addItem(name)
+        for name in sorted(self._custom_presets):
+            self.color_combo.addItem(name)
+        if self.color_combo.count():
+            idx = self.color_combo.findText(current)
+            self.color_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        self.color_combo.blockSignals(False)
+        self.on_color_selected(self.color_combo.currentText())
+
+    def on_color_selected(self, name: str) -> None:
+        preset = self._get_preset(name)
+        if preset is not None:
+            self._apply_preset(preset)
+        self.delete_color_btn.setEnabled(name in self._custom_presets)
+
+    def _get_preset(self, name: str) -> dict | None:
+        if name in self._custom_presets:
+            return self._custom_presets[name]
+        return DEFAULT_COLOR_PRESETS.get(name)
+
+    def _apply_preset(self, preset: dict) -> None:
+        gen = apply_preset_to_generator(self._collect_params(), preset)
+        self.sample_rate_spin.setValue(int(gen.sample_rate))
+        self.duration_spin.setValue(float(gen.duration))
+        self.exponent_spin.setValue(float(gen.exponent))
+        self.high_exponent_spin.setValue(float(gen.high_exponent or 0.0))
+        self.distribution_curve_spin.setValue(float(gen.distribution_curve))
+        self.lowcut_spin.setValue(float(gen.lowcut or 0.0))
+        self.highcut_spin.setValue(float(gen.highcut or 0.0))
+        self.amplitude_spin.setValue(float(gen.amplitude))
+        self.seed_spin.setValue(int(gen.seed) if gen.seed is not None else -1)
+
+    def on_save_color(self) -> None:
+        name, ok = QInputDialog.getText(self, "Save Noise Color", "Name for this color:")
+        if not ok:
+            return
+        name = name.strip()
+        if not name:
+            QMessageBox.warning(self, "Invalid Name", "Please enter a non-empty name for the color.")
+            return
+        if name in DEFAULT_COLOR_PRESETS:
+            QMessageBox.warning(
+                self,
+                "Reserved Name",
+                "That name is reserved for a built-in color. Please choose another.",
+            )
+            return
+        if name in self._custom_presets:
+            overwrite = QMessageBox.question(
+                self,
+                "Overwrite Color",
+                f"A custom color named '{name}' already exists. Overwrite it?",
+            )
+            if overwrite != QMessageBox.Yes:
+                return
+        params = generator_to_preset(self._collect_params())
+        self._custom_presets[name] = params
+        save_custom_color_presets(self._custom_presets)
+        self._refresh_color_presets(selected=name)
+
+    def on_delete_color(self) -> None:
+        name = self.color_combo.currentText()
+        if name not in self._custom_presets:
+            return
+        confirm = QMessageBox.question(
+            self,
+            "Delete Noise Color",
+            f"Remove the custom noise color '{name}'?",
+        )
+        if confirm != QMessageBox.Yes:
+            return
+        self._custom_presets.pop(name, None)
+        save_custom_color_presets(self._custom_presets)
+        self._refresh_color_presets()
 
     def on_generate(self) -> None:
         try:
