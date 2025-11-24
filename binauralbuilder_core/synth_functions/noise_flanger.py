@@ -356,21 +356,45 @@ def _generate_colored_noise_from_presets(n_samples: int, sample_rate: int, noise
     if preset is None:
         return None
 
-    generator = apply_preset_to_generator(
-        ColoredNoiseGenerator(
-            sample_rate=sample_rate,
-            duration=float(n_samples) / float(sample_rate),
-        ),
-        preset,
-    )
-    noise = generator.generate()
-
     target = int(n_samples)
-    if noise.size < target:
-        noise = np.pad(noise, (0, target - noise.size))
-    elif noise.size > target:
-        noise = noise[:target]
-    return noise.astype(np.float32, copy=False)
+
+    # The FFT-based generator can require a large amount of contiguous
+    # memory for long durations (e.g., 1+ hour files). To avoid
+    # allocation failures, generate the colored noise in smaller chunks
+    # and stitch them together.
+    chunk_samples = int(min(max(sample_rate * 60, sample_rate), target))
+
+    # Preserve a deterministic seed on the first chunk only; subsequent
+    # chunks inherit the updated RNG state to avoid repeating the exact
+    # same segment over and over when a seed is provided.
+    base_seed = preset.get("seed") if isinstance(preset, dict) else None
+    chunks = []
+    remaining = target
+    first_chunk = True
+
+    while remaining > 0:
+        current = min(chunk_samples, remaining)
+        generator = apply_preset_to_generator(
+            ColoredNoiseGenerator(
+                sample_rate=sample_rate,
+                duration=float(current) / float(sample_rate),
+            ),
+            preset,
+        )
+        generator.seed = base_seed if first_chunk else None
+        first_chunk = False
+
+        chunk = generator.generate()
+        if chunk.size < current:
+            chunk = np.pad(chunk, (0, current - chunk.size))
+        elif chunk.size > current:
+            chunk = chunk[:current]
+        chunks.append(chunk.astype(np.float32, copy=False))
+        remaining -= current
+
+    if len(chunks) == 1:
+        return chunks[0]
+    return np.concatenate(chunks).astype(np.float32, copy=False)
 
 
 def generate_noise_samples(n_samples, noise_type, sample_rate=DEFAULT_SAMPLE_RATE):
