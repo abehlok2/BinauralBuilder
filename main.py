@@ -5,6 +5,7 @@ import soundfile as sf
 import os
 import copy  # For deep copying voice data
 import traceback  # For error reporting
+from collections import OrderedDict
 
 from PyQt5.QtWidgets import (
     QApplication,
@@ -114,10 +115,18 @@ _patch_qmessagebox()
 
 # Attempt to import VoiceEditorDialog. Handle if ui/voice_editor_dialog.py is not found.
 try:
-    from src.ui.voice_editor_dialog import VoiceEditorDialog
+    from src.ui.voice_editor_dialog import VoiceEditorDialog, get_default_params_for_function
+    from src.ui.voice_detail_display_dialog import get_default_display_flag
     VOICE_EDITOR_DIALOG_AVAILABLE = True
 except ImportError:
     VOICE_EDITOR_DIALOG_AVAILABLE = False
+
+    def get_default_params_for_function(func_name_from_combo: str, is_transition_mode: bool):
+        return OrderedDict()
+
+    def get_default_display_flag(param_name: str) -> bool:
+        return True
+
     # Create a dummy VoiceEditorDialog if the real one is not available
     # This allows the main application to run, but voice editing will be non-functional.
     class VoiceEditorDialog(QDialog):
@@ -1178,18 +1187,34 @@ class TrackEditorApp(QMainWindow):
             voice_data = self.track_data["steps"][selected_step_idx]["voices"][selected_voice_idx]
             func_name = voice_data.get('synth_function_name', 'N/A')
             self.voice_details_groupbox.setTitle(f"Details: Step {selected_step_idx+1}, Voice {selected_voice_idx+1} ({func_name})")
-            params = voice_data.get("params", {})
+            params = voice_data.get("params", {}) or {}
             details = f"Function: {func_name}\n"
             details += f"Transition: {'Yes' if voice_data.get('is_transition', False) else 'No'}\n"
             desc = voice_data.get('description', '')
             if desc:
                 details += f"Description: {desc}\n"
             details += "Parameters:\n"
-            if params:
-                for key, value in sorted(params.items()):
-                    if isinstance(value, float): details += f"  {key}: {value:.4g}\n"
-                    else: details += f"  {key}: {value}\n"
-            else: details += "  (No parameters defined)\n"
+            display_prefs = getattr(self.prefs, "voice_detail_display", {}) if hasattr(self, "prefs") else {}
+            func_display = display_prefs.get(func_name, {}) if isinstance(display_prefs, dict) else {}
+            default_params = get_default_params_for_function(func_name, voice_data.get('is_transition', False))
+            all_param_names = sorted(set(default_params.keys()) | set(params.keys()))
+            shown_any = False
+            for key in all_param_names:
+                cfg = func_display.get(key, {}) if isinstance(func_display, dict) else {}
+                display_flag = cfg.get("display", get_default_display_flag(key)) if isinstance(cfg, dict) else get_default_display_flag(key)
+                if not display_flag:
+                    continue
+                value = params.get(key, cfg.get("default", default_params.get(key))) if isinstance(cfg, dict) else params.get(key, default_params.get(key))
+                suffix = ""
+                if key not in params:
+                    suffix = " (default)"
+                if isinstance(value, float):
+                    details += f"  {key}: {value:.4g}{suffix}\n"
+                else:
+                    details += f"  {key}: {value}{suffix}\n"
+                shown_any = True
+            if not shown_any:
+                details += "  (No parameters selected for display)\n"
             env_data = voice_data.get("volume_envelope")
             if env_data and isinstance(env_data, dict):
                 env_type = env_data.get('type', 'N/A')
