@@ -8,6 +8,7 @@ import copy
 import inspect # Needed to inspect function parameters for GUI
 import os # Needed for path checks in main example
 import traceback # For detailed error printing
+import time
 import importlib
 import pkgutil
 from src.utils.noise_file import load_noise_params
@@ -1238,6 +1239,8 @@ def generate_audio(track_data, output_filename=None, target_level=0.25, progress
             return False
 
 
+    start_time = time.time()
+
     print(f"\n--- Starting WAV Generation ---")
     print(f"Sample Rate: {sample_rate} Hz")
     print(f"Crossfade Duration: {crossfade_duration} s (curve: {crossfade_curve})")
@@ -1285,6 +1288,8 @@ def generate_audio(track_data, output_filename=None, target_level=0.25, progress
     success = _write_audio_file(track_int16, sample_rate, output_filename)
     if success:
         print(f"--- Audio Generation Complete ---")
+        total_time = time.time() - start_time
+        print(f"Total generation time: {total_time:.2f} seconds")
     return success
 
 
