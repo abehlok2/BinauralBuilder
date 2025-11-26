@@ -26,6 +26,9 @@ from PyQt5.QtWidgets import (
     QWidget,
     QDoubleSpinBox,
     QComboBox,
+    QSplitter,
+    QFormLayout,
+    QStyle,
 )
 
 from src.audio.session_engine import SessionAssembler
@@ -123,6 +126,7 @@ class SessionBuilderWindow(QMainWindow):
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Session Builder")
+        self.resize(1000, 700)
 
         self._session = session or Session()
         self._binaural_catalog = dict(binaural_catalog or {})
@@ -145,10 +149,10 @@ class SessionBuilderWindow(QMainWindow):
     # UI creation helpers
     # ------------------------------------------------------------------
     def _init_actions(self) -> None:
-        save_action = QAction("Save Session", self)
+        save_action = QAction(self.style().standardIcon(QStyle.SP_DialogSaveButton), "Save Session", self)
         save_action.setShortcut("Ctrl+S")
         save_action.triggered.connect(self._save_session)
-        load_action = QAction("Load Session", self)
+        load_action = QAction(self.style().standardIcon(QStyle.SP_DialogOpenButton), "Load Session", self)
         load_action.setShortcut("Ctrl+O")
         load_action.triggered.connect(self._load_session_from_file)
         self.addAction(save_action)
@@ -156,141 +160,175 @@ class SessionBuilderWindow(QMainWindow):
 
     def _init_ui(self) -> None:
         central = QWidget(self)
-        layout = QVBoxLayout(central)
+        self.setCentralWidget(central)
+        main_layout = QVBoxLayout(central)
 
-        session_group = QGroupBox("Session Settings", central)
+        # Top controls: Session Settings & Playback
+        top_layout = QHBoxLayout()
+        
+        session_group = QGroupBox("Session Settings")
         session_group.setToolTip("Configure global session playback and export options.")
         session_layout = QGridLayout(session_group)
-
-        self.crossfade_slider = QSlider(Qt.Horizontal, session_group)
+        
+        self.crossfade_slider = QSlider(Qt.Horizontal)
         self.crossfade_slider.setRange(0, 300)
         self.crossfade_slider.setToolTip("Global crossfade duration applied between steps (seconds).")
-        self.crossfade_spin = QDoubleSpinBox(session_group)
+        
+        self.crossfade_spin = QDoubleSpinBox()
         self.crossfade_spin.setDecimals(2)
         self.crossfade_spin.setRange(0.0, 30.0)
         self.crossfade_spin.setSuffix(" s")
         self.crossfade_spin.setSingleStep(0.1)
         self.crossfade_spin.setToolTip("Precise crossfade duration in seconds.")
-        self.crossfade_curve_combo = QComboBox(session_group)
+        
+        self.crossfade_curve_combo = QComboBox()
         self.crossfade_curve_combo.addItems(["linear", "equal_power"])
         self.crossfade_curve_combo.setToolTip("Choose crossfade curve applied between steps.")
 
-        self.normalization_slider = QSlider(Qt.Horizontal, session_group)
+        self.normalization_slider = QSlider(Qt.Horizontal)
         self.normalization_slider.setRange(0, 75)
         self.normalization_slider.setToolTip("Target normalization ceiling for rendered audio (0.00 – 0.75).")
-        self.normalization_label = QLabel("0.00", session_group)
+        
+        self.normalization_label = QLabel("0.00")
         self.normalization_label.setToolTip("Current normalization ceiling applied during rendering.")
 
-        session_layout.addWidget(QLabel("Crossfade Duration:"), 0, 0)
+        session_layout.addWidget(QLabel("Crossfade:"), 0, 0)
         session_layout.addWidget(self.crossfade_slider, 0, 1)
         session_layout.addWidget(self.crossfade_spin, 0, 2)
-        session_layout.addWidget(QLabel("Crossfade Curve:"), 1, 0)
+        
+        session_layout.addWidget(QLabel("Curve:"), 1, 0)
         session_layout.addWidget(self.crossfade_curve_combo, 1, 1, 1, 2)
-        session_layout.addWidget(QLabel("Normalization Target:"), 2, 0)
+        
+        session_layout.addWidget(QLabel("Normalize:"), 2, 0)
         session_layout.addWidget(self.normalization_slider, 2, 1)
         session_layout.addWidget(self.normalization_label, 2, 2)
+        
+        top_layout.addWidget(session_group)
 
-        layout.addWidget(session_group)
+        # Playback Controls
+        playback_group = QGroupBox("Playback & Export")
+        playback_layout = QVBoxLayout(playback_group)
+        
+        self.preview_btn = QPushButton(self.style().standardIcon(QStyle.SP_MediaPlay), "Preview Stream")
+        self.preview_btn.setToolTip("Render the current session and stream audio preview.")
+        self.stop_btn = QPushButton(self.style().standardIcon(QStyle.SP_MediaStop), "Stop")
+        self.stop_btn.setToolTip("Stop streaming playback.")
+        self.export_btn = QPushButton(self.style().standardIcon(QStyle.SP_DialogSaveButton), "Export Session")
+        self.export_btn.setToolTip("Render the session to an audio file.")
+        
+        playback_layout.addWidget(self.preview_btn)
+        playback_layout.addWidget(self.stop_btn)
+        playback_layout.addWidget(self.export_btn)
+        playback_layout.addStretch()
+        
+        top_layout.addWidget(playback_group)
+        main_layout.addLayout(top_layout)
 
-        step_group = QGroupBox("Session Steps", central)
+        # Splitter for Steps List and Step Details
+        splitter = QSplitter(Qt.Horizontal)
+        main_layout.addWidget(splitter, 1)
+
+        # Left: Steps List
+        step_group = QGroupBox("Session Steps")
         step_group.setToolTip("Timeline of session steps. Select a row to edit details below.")
         step_layout = QVBoxLayout(step_group)
 
         self.step_model = SessionStepModel(self._session.steps, self._binaural_catalog)
-        self.step_table = QTableView(step_group)
+        self.step_table = QTableView()
         self.step_table.setModel(self.step_model)
         self.step_table.setSelectionBehavior(QTableView.SelectRows)
         self.step_table.setSelectionMode(QTableView.SingleSelection)
         self.step_table.horizontalHeader().setStretchLastSection(True)
         self.step_table.setToolTip("List of steps with their duration and presets.")
-
         step_layout.addWidget(self.step_table)
 
         step_buttons = QHBoxLayout()
-        self.add_step_btn = QPushButton("Add Step", step_group)
-        self.add_step_btn.setToolTip("Insert a new step using the selected presets.")
-        self.remove_step_btn = QPushButton("Remove Step", step_group)
-        self.remove_step_btn.setToolTip("Remove the currently selected step from the session.")
-        self.move_up_btn = QPushButton("Move Up", step_group)
-        self.move_up_btn.setToolTip("Move the selected step earlier in the timeline.")
-        self.move_down_btn = QPushButton("Move Down", step_group)
-        self.move_down_btn.setToolTip("Move the selected step later in the timeline.")
+        self.add_step_btn = QPushButton(self.style().standardIcon(QStyle.SP_FileDialogNewFolder), "Add")
+        self.add_step_btn.setToolTip("Insert a new step.")
+        self.remove_step_btn = QPushButton(self.style().standardIcon(QStyle.SP_TrashIcon), "Remove")
+        self.remove_step_btn.setToolTip("Remove selected step.")
+        self.move_up_btn = QPushButton(self.style().standardIcon(QStyle.SP_ArrowUp), "Up")
+        self.move_up_btn.setToolTip("Move step earlier.")
+        self.move_down_btn = QPushButton(self.style().standardIcon(QStyle.SP_ArrowDown), "Down")
+        self.move_down_btn.setToolTip("Move step later.")
+        
         step_buttons.addWidget(self.add_step_btn)
         step_buttons.addWidget(self.remove_step_btn)
         step_buttons.addWidget(self.move_up_btn)
         step_buttons.addWidget(self.move_down_btn)
         step_layout.addLayout(step_buttons)
+        
+        splitter.addWidget(step_group)
 
-        layout.addWidget(step_group)
-
-        editor_group = QGroupBox("Step Details", central)
+        # Right: Step Details
+        editor_group = QGroupBox("Step Details")
         editor_group.setToolTip("Edit parameters for the selected step.")
-        editor_layout = QGridLayout(editor_group)
+        editor_layout = QFormLayout(editor_group)
+        editor_layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
 
-        self.preset_combo = QComboBox(editor_group)
+        self.preset_combo = QComboBox()
         self.preset_combo.setToolTip("Select the binaural preset used for this step.")
-        self.noise_combo = QComboBox(editor_group)
+        
+        self.noise_combo = QComboBox()
         self.noise_combo.setToolTip("Optional noise preset blended with the step.")
-        self.duration_spin = QDoubleSpinBox(editor_group)
+        
+        self.duration_spin = QDoubleSpinBox()
         self.duration_spin.setDecimals(2)
         self.duration_spin.setRange(1.0, 7200.0)
         self.duration_spin.setSuffix(" s")
         self.duration_spin.setSingleStep(1.0)
         self.duration_spin.setToolTip("Duration of the current step in seconds.")
-        self.step_crossfade_slider = QSlider(Qt.Horizontal, editor_group)
+        
+        # Crossfade composite widget
+        cf_widget = QWidget()
+        cf_layout = QHBoxLayout(cf_widget)
+        cf_layout.setContentsMargins(0,0,0,0)
+        self.step_crossfade_slider = QSlider(Qt.Horizontal)
         self.step_crossfade_slider.setRange(0, 300)
         self.step_crossfade_slider.setToolTip("Crossfade duration for this step (seconds).")
-        self.step_crossfade_spin = QDoubleSpinBox(editor_group)
+        self.step_crossfade_spin = QDoubleSpinBox()
         self.step_crossfade_spin.setDecimals(2)
         self.step_crossfade_spin.setRange(0.0, 30.0)
         self.step_crossfade_spin.setSuffix(" s")
         self.step_crossfade_spin.setSingleStep(0.1)
         self.step_crossfade_spin.setToolTip("Precise crossfade override for this step.")
-        self.step_crossfade_curve_combo = QComboBox(editor_group)
+        cf_layout.addWidget(self.step_crossfade_slider)
+        cf_layout.addWidget(self.step_crossfade_spin)
+        
+        self.step_crossfade_curve_combo = QComboBox()
         self.step_crossfade_curve_combo.addItems(["Use Session", "linear", "equal_power"])
         self.step_crossfade_curve_combo.setToolTip("Override the crossfade curve for this step.")
-        self.warmup_edit = QLineEdit(editor_group)
+        
+        # Warmup composite widget
+        warmup_widget = QWidget()
+        warmup_layout = QHBoxLayout(warmup_widget)
+        warmup_layout.setContentsMargins(0,0,0,0)
+        self.warmup_edit = QLineEdit()
         self.warmup_edit.setToolTip("Optional warmup audio file path used before the step starts.")
-        self.warmup_btn = QPushButton("Browse", editor_group)
+        self.warmup_btn = QPushButton(self.style().standardIcon(QStyle.SP_DialogOpenButton), "Browse")
         self.warmup_btn.setToolTip("Choose a warmup audio file from disk.")
-        self.description_edit = QTextEdit(editor_group)
+        warmup_layout.addWidget(self.warmup_edit)
+        warmup_layout.addWidget(self.warmup_btn)
+        
+        self.description_edit = QTextEdit()
+        self.description_edit.setMaximumHeight(100)
         self.description_edit.setToolTip("Notes about the intention or feel of the step.")
 
-        editor_layout.addWidget(QLabel("Binaural Preset:"), 0, 0)
-        editor_layout.addWidget(self.preset_combo, 0, 1, 1, 2)
-        editor_layout.addWidget(QLabel("Noise Preset:"), 1, 0)
-        editor_layout.addWidget(self.noise_combo, 1, 1, 1, 2)
-        editor_layout.addWidget(QLabel("Duration:"), 2, 0)
-        editor_layout.addWidget(self.duration_spin, 2, 1, 1, 2)
-        editor_layout.addWidget(QLabel("Step Crossfade:"), 3, 0)
-        editor_layout.addWidget(self.step_crossfade_slider, 3, 1)
-        editor_layout.addWidget(self.step_crossfade_spin, 3, 2)
-        editor_layout.addWidget(QLabel("Step Curve:"), 4, 0)
-        editor_layout.addWidget(self.step_crossfade_curve_combo, 4, 1, 1, 2)
-        editor_layout.addWidget(QLabel("Warmup Audio:"), 5, 0)
-        editor_layout.addWidget(self.warmup_edit, 5, 1)
-        editor_layout.addWidget(self.warmup_btn, 5, 2)
-        editor_layout.addWidget(QLabel("Description:"), 6, 0)
-        editor_layout.addWidget(self.description_edit, 6, 1, 1, 2)
+        editor_layout.addRow("Binaural Preset:", self.preset_combo)
+        editor_layout.addRow("Noise Preset:", self.noise_combo)
+        editor_layout.addRow("Duration:", self.duration_spin)
+        editor_layout.addRow("Step Crossfade:", cf_widget)
+        editor_layout.addRow("Step Curve:", self.step_crossfade_curve_combo)
+        editor_layout.addRow("Warmup Audio:", warmup_widget)
+        editor_layout.addRow("Description:", self.description_edit)
 
-        layout.addWidget(editor_group)
-
-        controls_layout = QHBoxLayout()
-        self.preview_btn = QPushButton("Preview Stream", central)
-        self.preview_btn.setToolTip("Render the current session and stream audio preview.")
-        self.stop_btn = QPushButton("Stop", central)
-        self.stop_btn.setToolTip("Stop streaming playback.")
-        self.export_btn = QPushButton("Export Session", central)
-        self.export_btn.setToolTip("Render the session to an audio file.")
-        controls_layout.addWidget(self.preview_btn)
-        controls_layout.addWidget(self.stop_btn)
-        controls_layout.addWidget(self.export_btn)
-        layout.addLayout(controls_layout)
+        splitter.addWidget(editor_group)
+        
+        # Set initial splitter sizes (approx 40% list, 60% details)
+        splitter.setSizes([400, 600])
 
         self.status_label = QLabel("Ready", central)
-        layout.addWidget(self.status_label)
-
-        self.setCentralWidget(central)
+        main_layout.addWidget(self.status_label)
 
         self._populate_presets()
         self._bind_signals()

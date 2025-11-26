@@ -33,6 +33,7 @@ from PyQt5.QtWidgets import (
     QAbstractItemView,
     QAction,
     QProgressBar,
+    QStyle,
 )
 
 from PyQt5.QtCore import Qt, pyqtSlot, QTimer, QBuffer, QIODevice, QItemSelectionModel
@@ -229,6 +230,8 @@ class TrackEditorApp(QMainWindow):
     def __init__(self, prefs: Preferences = None):
         super().__init__()
         self.prefs: Preferences = prefs or load_settings()
+        if not self.prefs.theme:
+            self.prefs.theme = "Modern Dark"
         self.apply_preferences()
         self.setWindowTitle("Binaural Track Editor (PyQt5)")
         self.setMinimumSize(950, 600)
@@ -321,23 +324,23 @@ class TrackEditorApp(QMainWindow):
         menubar = self.menuBar()
         file_menu = menubar.addMenu("File")
 
-        new_act = QAction("New", self)
+        new_act = QAction(self.style().standardIcon(QStyle.SP_FileIcon), "New", self)
         new_act.triggered.connect(self.new_file)
         file_menu.addAction(new_act)
 
-        open_act = QAction("Open", self)
+        open_act = QAction(self.style().standardIcon(QStyle.SP_DialogOpenButton), "Open", self)
         open_act.triggered.connect(self.load_json)
         file_menu.addAction(open_act)
 
-        save_act = QAction("Save", self)
+        save_act = QAction(self.style().standardIcon(QStyle.SP_DialogSaveButton), "Save", self)
         save_act.triggered.connect(self.save_json)
         file_menu.addAction(save_act)
 
-        save_as_act = QAction("Save As", self)
+        save_as_act = QAction(self.style().standardIcon(QStyle.SP_DialogSaveButton), "Save As", self)
         save_as_act.triggered.connect(self.save_json_as)
         file_menu.addAction(save_as_act)
 
-        pref_act = QAction("Preferences", self)
+        pref_act = QAction(self.style().standardIcon(QStyle.SP_FileDialogDetailedView), "Preferences", self)
         pref_act.triggered.connect(self.open_preferences)
         file_menu.addAction(pref_act)
 
@@ -353,12 +356,12 @@ class TrackEditorApp(QMainWindow):
             theme_menu.addAction(act)
 
         edit_menu = menubar.addMenu("Edit")
-        self.undo_act = QAction("Undo", self)
+        self.undo_act = QAction(self.style().standardIcon(QStyle.SP_ArrowBack), "Undo", self)
         self.undo_act.setShortcut("Ctrl+Z")
         self.undo_act.triggered.connect(self.undo)
         edit_menu.addAction(self.undo_act)
 
-        self.redo_act = QAction("Redo", self)
+        self.redo_act = QAction(self.style().standardIcon(QStyle.SP_ArrowForward), "Redo", self)
         self.redo_act.setShortcut("Ctrl+Y")
         self.redo_act.triggered.connect(self.redo)
         edit_menu.addAction(self.redo_act)
@@ -456,6 +459,41 @@ class TrackEditorApp(QMainWindow):
         self.setCentralWidget(central_widget)
         main_layout = QVBoxLayout(central_widget)
 
+        # --- Toolbar for Tools ---
+        toolbar = self.addToolBar("Tools")
+        toolbar.setMovable(False)
+        toolbar.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        
+        noise_act = QAction(self.style().standardIcon(QStyle.SP_MediaVolume), "Noise Gen", self)
+        noise_act.setStatusTip("Open Noise Generator")
+        noise_act.triggered.connect(self.open_noise_generator)
+        toolbar.addAction(noise_act)
+
+        freq_act = QAction(self.style().standardIcon(QStyle.SP_MediaPlay), "Freq Tester", self)
+        freq_act.setStatusTip("Open Frequency Tester")
+        freq_act.triggered.connect(self.open_frequency_tester)
+        toolbar.addAction(freq_act)
+
+        bin_act = QAction(self.style().standardIcon(QStyle.SP_ComputerIcon), "Binaural Enc", self)
+        bin_act.setStatusTip("Open Binaural Encoder")
+        bin_act.triggered.connect(self.open_binaural_encoder)
+        toolbar.addAction(bin_act)
+
+        thresh_act = QAction(self.style().standardIcon(QStyle.SP_FileDialogContentsView), "Thresholder", self)
+        thresh_act.setStatusTip("Open Audio Thresholder")
+        thresh_act.triggered.connect(self.open_audio_thresholder)
+        toolbar.addAction(thresh_act)
+
+        self.sub_act = QAction(self.style().standardIcon(QStyle.SP_MessageBoxInformation), "Subliminal", self)
+        self.sub_act.setStatusTip("Add Subliminal Voice")
+        self.sub_act.triggered.connect(self.open_subliminal_dialog)
+        toolbar.addAction(self.sub_act)
+
+        timeline_act = QAction(self.style().standardIcon(QStyle.SP_FileDialogListView), "Timeline", self)
+        timeline_act.setStatusTip("View Timeline Visualizer")
+        timeline_act.triggered.connect(self.open_timeline_visualizer)
+        toolbar.addAction(timeline_act)
+
         # --- Control Frame (Collapsible) ---
         control_groupbox = CollapsibleBox("Controls")
         control_layout = QHBoxLayout()
@@ -467,74 +505,49 @@ class TrackEditorApp(QMainWindow):
         vertical_splitter.addWidget(control_groupbox)
         main_layout.addWidget(vertical_splitter, 1)
 
-        # Tool Buttons (Noise Generator, Frequency Tester, Subliminal Voice)
-        tools_groupbox = QGroupBox("Tools")
-        tools_layout = QHBoxLayout()
-        tools_groupbox.setLayout(tools_layout)
-        tools_left_layout = QVBoxLayout()
-        tools_right_layout = QVBoxLayout()
-        tools_layout.addLayout(tools_left_layout)
-        tools_layout.addLayout(tools_right_layout)
-
-        self.open_noise_button = QPushButton("Open Noise Generator")
-        self.open_noise_button.clicked.connect(self.open_noise_generator)
-        tools_left_layout.addWidget(self.open_noise_button)
-
-        self.open_freq_tester_button = QPushButton("Frequency Tester")
-        self.open_freq_tester_button.clicked.connect(self.open_frequency_tester)
-        tools_left_layout.addWidget(self.open_freq_tester_button)
-
-        self.open_binaural_button = QPushButton("Binaural Encoder")
-        self.open_binaural_button.clicked.connect(self.open_binaural_encoder)
-        tools_left_layout.addWidget(self.open_binaural_button)
-
-        self.open_thresholder_button = QPushButton("Audio Thresholder")
-        self.open_thresholder_button.clicked.connect(self.open_audio_thresholder)
-        tools_left_layout.addWidget(self.open_thresholder_button)
-
-        self.open_subliminal_button = QPushButton("Add Subliminal Voice")
-        self.open_subliminal_button.clicked.connect(self.open_subliminal_dialog)
-        tools_left_layout.addWidget(self.open_subliminal_button)
-
-        self.open_timeline_button = QPushButton("View Timeline")
-        self.open_timeline_button.clicked.connect(self.open_timeline_visualizer)
-        tools_left_layout.addWidget(self.open_timeline_button)
-        tools_left_layout.addStretch(1)
-
-        self.new_file_button = QPushButton("New File")
+        # File Operations Group
+        file_ops_group = QGroupBox("File Operations")
+        file_ops_layout = QVBoxLayout(file_ops_group)
+        
+        self.new_file_button = QPushButton(self.style().standardIcon(QStyle.SP_FileIcon), "New File")
         self.new_file_button.clicked.connect(self.new_file)
-        tools_right_layout.addWidget(self.new_file_button)
+        file_ops_layout.addWidget(self.new_file_button)
 
-        self.save_button = QPushButton("Save")
+        self.save_button = QPushButton(self.style().standardIcon(QStyle.SP_DialogSaveButton), "Save")
         self.save_button.clicked.connect(self.save_json)
-        tools_right_layout.addWidget(self.save_button)
+        file_ops_layout.addWidget(self.save_button)
 
-        self.save_as_button = QPushButton("Save As")
+        self.save_as_button = QPushButton(self.style().standardIcon(QStyle.SP_DialogSaveButton), "Save As")
         self.save_as_button.clicked.connect(self.save_json_as)
-        tools_right_layout.addWidget(self.save_as_button)
+        file_ops_layout.addWidget(self.save_as_button)
 
-        self.load_button = QPushButton("Load File")
+        self.load_button = QPushButton(self.style().standardIcon(QStyle.SP_DialogOpenButton), "Load File")
         self.load_button.clicked.connect(self.load_json)
-        tools_right_layout.addWidget(self.load_button)
-        tools_right_layout.addStretch(1)
-        control_layout.addWidget(tools_groupbox)
+        file_ops_layout.addWidget(self.load_button)
+        
+        file_ops_layout.addStretch(1)
+        control_layout.addWidget(file_ops_group)
 
         # Global Settings
         globals_groupbox = QGroupBox("Global Settings")
         globals_layout = QGridLayout()
         globals_groupbox.setLayout(globals_layout)
+        
         globals_layout.addWidget(QLabel("Sample Rate:"), 0, 0)
         self.sr_entry = QLineEdit(str(DEFAULT_SAMPLE_RATE))
         self.sr_entry.setValidator(self.int_validator_positive)
-        self.sr_entry.setMaximumWidth(80)
+        self.sr_entry.setToolTip("Audio sample rate (Hz)")
         globals_layout.addWidget(self.sr_entry, 0, 1)
+        
         globals_layout.addWidget(QLabel("Crossfade (s):"), 1, 0)
         self.cf_entry = QLineEdit(str(DEFAULT_CROSSFADE))
         self.cf_entry.setValidator(self.double_validator_non_negative)
-        self.cf_entry.setMaximumWidth(80)
+        self.cf_entry.setToolTip("Default crossfade duration between steps")
         globals_layout.addWidget(self.cf_entry, 1, 1)
+        
         globals_layout.addWidget(QLabel("Output File:"), 2, 0)
         self.outfile_entry = QLineEdit("my_track.wav")
+        self.outfile_entry.setToolTip("Filename for the generated audio")
         globals_layout.addWidget(self.outfile_entry, 2, 1)
         self.browse_outfile_button = QPushButton("Browse...")
         self.browse_outfile_button.clicked.connect(self.browse_outfile)
@@ -542,6 +555,7 @@ class TrackEditorApp(QMainWindow):
 
         globals_layout.addWidget(QLabel("Noise Preset:"), 3, 0)
         self.noise_file_entry = QLineEdit()
+        self.noise_file_entry.setToolTip("Path to background noise preset")
         globals_layout.addWidget(self.noise_file_entry, 3, 1)
         self.browse_noise_button = QPushButton("Browse...")
         self.browse_noise_button.clicked.connect(self.browse_noise_file)
@@ -550,26 +564,28 @@ class TrackEditorApp(QMainWindow):
         globals_layout.addWidget(QLabel("Noise Amp:"), 4, 0)
         self.noise_amp_entry = QLineEdit("0.0")
         self.noise_amp_entry.setValidator(self.double_validator)
-        self.noise_amp_entry.setMaximumWidth(80)
+        self.noise_amp_entry.setToolTip("Amplitude adjustment for background noise")
         globals_layout.addWidget(self.noise_amp_entry, 4, 1)
 
+        # Add a spacer to the right to prevent text fields from stretching too far
         globals_layout.setColumnStretch(1, 1)
-        control_layout.addWidget(globals_groupbox, 1)
-        control_layout.addStretch(1)
+        globals_layout.setColumnStretch(3, 1)
+        control_layout.addWidget(globals_groupbox, 2)
 
         # Generate Button
         generate_frame = QWidget()
-        generate_layout = QHBoxLayout(generate_frame)
+        generate_layout = QVBoxLayout(generate_frame)
         generate_layout.addStretch(1)
-        self.generate_button = QPushButton("Generate Audio")
-        self.generate_button.setStyleSheet("QPushButton { background-color: #0078D7; color: white; padding: 8px; font-weight: bold; border-radius: 3px; } QPushButton:hover { background-color: #005A9E; } QPushButton:pressed { background-color: #003C6A; } QPushButton:disabled { background-color: #AAAAAA; color: #666666; }")
-        self.generate_button.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Expanding)
+        
+        self.generate_button = QPushButton(self.style().standardIcon(QStyle.SP_MediaPlay), "Generate Audio")
+        self.generate_button.setMinimumHeight(40)
+        self.generate_button.setToolTip("Generate audio for the entire track")
         self.generate_button.clicked.connect(self.generate_audio_action)
         generate_layout.addWidget(self.generate_button)
 
-        self.generate_selected_button = QPushButton("Generate Selected Steps")
-        self.generate_selected_button.setStyleSheet(self.generate_button.styleSheet())
-        self.generate_selected_button.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Expanding)
+        self.generate_selected_button = QPushButton(self.style().standardIcon(QStyle.SP_MediaSkipForward), "Generate Selected")
+        self.generate_selected_button.setMinimumHeight(40)
+        self.generate_selected_button.setToolTip("Generate audio for selected steps only")
         self.generate_selected_button.clicked.connect(self.generate_selected_audio_action)
         generate_layout.addWidget(self.generate_selected_button)
 
@@ -578,14 +594,12 @@ class TrackEditorApp(QMainWindow):
         self.generate_progress_bar.setValue(0)
         self.generate_progress_bar.setVisible(False)
         generate_layout.addWidget(self.generate_progress_bar)
-        generate_layout.setContentsMargins(0,0,0,0)
+        
         control_layout.addWidget(generate_frame)
 
         # --- Main Paned Window (Splitter) ---
         main_splitter = QSplitter(Qt.Horizontal)
         vertical_splitter.addWidget(main_splitter)
-
-        # --- Steps Frame Widgets ---
         steps_outer_widget = QWidget()
         steps_outer_layout = QVBoxLayout(steps_outer_widget)
         steps_outer_layout.setContentsMargins(0,0,0,0)
@@ -861,7 +875,8 @@ class TrackEditorApp(QMainWindow):
         # actual editor will be checked when the button is pressed so that the
         # user can receive an explanatory message if the dialog failed to load.
         self.add_voice_button.setEnabled(is_single_selection)
-        self.open_subliminal_button.setEnabled(is_single_selection)
+        if hasattr(self, "sub_act"):
+            self.sub_act.setEnabled(is_single_selection)
 
         can_move_up = has_selection and min(selected_indices) > 0
         can_move_down = has_selection and max(selected_indices) < (num_steps - 1)
