@@ -111,6 +111,14 @@ class PreferencesDialog(QDialog):
         audio_group.setLayout(audio_form)
         layout.addWidget(audio_group)
 
+        voice_details_group = QGroupBox("Voice Details")
+        voice_details_layout = QVBoxLayout()
+        self.voice_detail_button = QPushButton("Configure Voice Detail Display")
+        self.voice_detail_button.clicked.connect(self.open_voice_detail_display_dialog)
+        voice_details_layout.addWidget(self.voice_detail_button)
+        voice_details_group.setLayout(voice_details_layout)
+        layout.addWidget(voice_details_group)
+
         # Buttons
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
 
@@ -188,6 +196,13 @@ class PreferencesDialog(QDialog):
                     if isinstance(v, (int, float)) and is_amp_key(k):
                         params[k] = amplitude_to_db(v)
 
+    def open_voice_detail_display_dialog(self):
+        from src.ui.voice_detail_display_dialog import VoiceDetailDisplayDialog
+
+        dialog = VoiceDetailDisplayDialog(self._prefs, self)
+        if dialog.exec_() == QDialog.Accepted:
+            self._prefs.voice_detail_display = dialog.get_settings()
+
     def get_preferences(self) -> Preferences:
         from src.utils.amp_utils import db_to_amplitude
         amp_mode = self.amp_mode_combo.currentText()
@@ -206,5 +221,6 @@ class PreferencesDialog(QDialog):
             crossfade_curve=self.crossfade_curve_combo.currentText(),
             amplitude_display_mode=amp_mode,
             apply_target_amplitude=self.apply_target_amp_chk.isChecked(),
+            voice_detail_display=getattr(self._prefs, "voice_detail_display", {}),
         )
         return p

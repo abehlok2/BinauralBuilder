@@ -18,6 +18,8 @@ class Preferences:
     apply_target_amplitude: bool = True
     # Default voice configuration used when adding new voices
     default_voice: dict = field(default_factory=dict)
+    # User-selected visibility and default values for voice detail parameters
+    voice_detail_display: dict = field(default_factory=dict)
 
 PREF_FILE = Path.home() / ".entrainment_prefs.json"
 

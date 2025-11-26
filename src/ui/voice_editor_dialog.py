@@ -2221,577 +2221,11 @@ class VoiceEditorDialog(QDialog): # Standard class name
     def _get_default_params(self, func_name_from_combo: str, is_transition_mode: bool) -> OrderedDict:
         """
         Retrieves an OrderedDict of default parameters for a given synth function.
-        Uses the internal param_definitions structure.
+        Uses the shared get_default_params_for_function helper.
         """
-        # This map should align QComboBox text with keys in param_definitions
-        internal_func_key_map = {
-            "Rhythmic Waveshaping": "rhythmic_waveshaping",
-            "Rhythmic Waveshaping Transition": "rhythmic_waveshaping_transition",
-            "Stereo AM Independent": "stereo_am_independent",
-            "Stereo AM Independent Transition": "stereo_am_independent_transition",
-            "Wave Shape Stereo AM": "wave_shape_stereo_am",
-            "Wave Shape Stereo AM Transition": "wave_shape_stereo_am_transition",
-            "Spatial Angle Modulation (SAM Engine)": "spatial_angle_modulation", # Uses Node/SAMVoice directly
-            "Spatial Angle Modulation (SAM Engine Transition)": "spatial_angle_modulation_transition",
-            "Binaural Beat": "binaural_beat",
-            "Binaural Beat Transition": "binaural_beat_transition",
-            "Monaural Beat Stereo Amps": "monaural_beat_stereo_amps",
-            "Monaural Beat Stereo Amps Transition": "monaural_beat_stereo_amps_transition",
-            "Spatial Angle Modulation (Monaural Core)": "spatial_angle_modulation_monaural_beat", # Uses monaural_beat as core
-            "Spatial Angle Modulation (Monaural Core Transition)": "spatial_angle_modulation_monaural_beat_transition",
-            "Isochronic Tone": "isochronic_tone",
-            "Isochronic Tone Transition": "isochronic_tone_transition",
-            "QAM Beat": "qam_beat", # Ensure this mapping is correct for your UIAdd commentMore actions
-            "QAM Beat Transition": "qam_beat_transition",
-            "Hybrid QAM Monaural Beat": "hybrid_qam_monaural_beat",
-            "Hybrid QAM Monaural Beat Transition": "hybrid_qam_monaural_beat_transition",
-            "Dual Pulse Binaural": "dual_pulse_binaural",
-            "Dual Pulse Binaural Transition": "dual_pulse_binaural_transition",
-            # Add other mappings if your UI names differ from these examples
-        }
-
-        base_func_key = internal_func_key_map.get(func_name_from_combo, func_name_from_combo)
+        return get_default_params_for_function(func_name_from_combo, is_transition_mode)
 
 
-        param_definitions = {
-            "rhythmic_waveshaping": { # This is an example, ensure it's correctAdd commentMore actions
-                "standard": [
-                    ('amp', 0.25), ('carrierFreq', 200), ('modFreq', 4),
-                    ('modDepth', 1.0), ('shapeAmount', 5.0), ('pan', 0)
-                ],
-                "transition": [
-                    ('amp', 0.25), ('startCarrierFreq', 200), ('endCarrierFreq', 80),
-                    ('startModFreq', 12), ('endModFreq', 7.83),
-                    ('startModDepth', 1.0), ('endModDepth', 1.0),
-                    ('startShapeAmount', 5.0), ('endShapeAmount', 5.0), ('pan', 0),
-                    ('initial_offset', 0.0), ('duration', 0.0), ('transition_curve', 'linear')
-                ]
-            },
-            "stereo_am_independent": { # This is an example, ensure it's correct
-                "standard": [
-                    ('amp', 0.25), ('carrierFreq', 200.0), ('modFreqL', 4.0),
-                    ('modDepthL', 0.8), ('modPhaseL', 0), ('modFreqR', 4.0),
-                    ('modDepthR', 0.8), ('modPhaseR', 0), ('stereo_width_hz', 0.2)
-                ],
-                "transition": [
-                    ('amp', 0.25), ('startCarrierFreq', 200), ('endCarrierFreq', 250),
-                    ('startModFreqL', 4), ('endModFreqL', 6),
-                    ('startModDepthL', 0.8), ('endModDepthL', 0.8),
-                    ('startModPhaseL', 0),
-                    ('startModFreqR', 4.1), ('endModFreqR', 5.9),
-                    ('startModDepthR', 0.8), ('endModDepthR', 0.8),
-                    ('startModPhaseR', 0),
-                    ('startStereoWidthHz', 0.2), ('endStereoWidthHz', 0.2),
-                    ('initial_offset', 0.0), ('duration', 0.0), ('transition_curve', 'linear')
-                ]
-            },
-            "wave_shape_stereo_am": { # This is an example, ensure it's correct
-                "standard": [
-                    ('amp', 0.15), ('carrierFreq', 200), ('shapeModFreq', 4),
-                    ('shapeModDepth', 0.8), ('shapeAmount', 0.5),
-                    ('stereoModFreqL', 4.1), ('stereoModDepthL', 0.8),
-                    ('stereoModPhaseL', 0), ('stereoModFreqR', 4.0),
-                    ('stereoModDepthR', 0.8), ('stereoModPhaseR', math.pi / 2)
-                ],
-                "transition": [
-                    ('amp', 0.15), ('startCarrierFreq', 200), ('endCarrierFreq', 100),
-                    ('startShapeModFreq', 4), ('endShapeModFreq', 8),
-                    ('startShapeModDepth', 0.8), ('endShapeModDepth', 0.8),
-                    ('startShapeAmount', 0.5), ('endShapeAmount', 0.5),
-                    ('startStereoModFreqL', 4.1), ('endStereoModFreqL', 6.0),
-                    ('startStereoModDepthL', 0.8), ('endStereoModDepthL', 0.8),
-                    ('startStereoModPhaseL', 0),
-                    ('startStereoModFreqR', 4.0), ('endStereoModFreqR', 6.1),
-                    ('startStereoModDepthR', 0.9), ('endStereoModDepthR', 0.9),
-                    ('startStereoModPhaseR', math.pi / 2),
-                    ('initial_offset', 0.0), ('duration', 0.0), ('transition_curve', 'linear')
-                ]
-            },
-            "spatial_angle_modulation": {
-                "standard": [
-                    ('amp', 0.7), ('carrierFreq', 440.0), ('beatFreq', 4.0),
-                    ('pathShape', 'circle'), ('pathRadius', 1.0),
-                    ('arcStartDeg', 0.0), ('arcEndDeg', 360.0),
-                    ('frame_dur_ms', 46.4), ('overlap_factor', 8)
-                ],
-                "transition": [
-                    ('amp', 0.7),
-                    ('startCarrierFreq', 440.0), ('endCarrierFreq', 440.0),
-                    ('startBeatFreq', 4.0), ('endBeatFreq', 4.0),
-                    ('startPathShape', 'circle'), ('endPathShape', 'circle'),
-                    ('startPathRadius', 1.0), ('endPathRadius', 1.0),
-                    ('startArcStartDeg', 0.0), ('endArcStartDeg', 0.0),
-                    ('startArcEndDeg', 360.0), ('endArcEndDeg', 360.0),
-                    ('frame_dur_ms', 46.4), ('overlap_factor', 8),
-                    ('initial_offset', 0.0), ('duration', 0.0), ('transition_curve', 'linear')
-                ]
-            },
-            "binaural_beat": {
-                "standard": [
-                    ('ampL', 0.5), ('ampR', 0.5),
-                    ('baseFreq', 200.0), ('beatFreq', 4.0), ('leftHigh', False),
-                    ('startPhaseL', 0.0), ('startPhaseR', 0.0),
-                    ('ampOscDepthL', 0.0), ('ampOscFreqL', 0.0), ('ampOscPhaseOffsetL', 0.0), ('ampOscDepthR', 0.0), ('ampOscFreqR', 0.0), ('ampOscPhaseOffsetR', 0.0), ('freqOscRangeL', 0.0), ('freqOscFreqL', 0.0), ('freqOscSkewL', 0.0), ('freqOscPhaseOffsetL', 0.0), ('freqOscRangeR', 0.0), ('freqOscFreqR', 0.0), ('freqOscSkewR', 0.0), ('freqOscPhaseOffsetR', 0.0), ('freqOscShape', 'sine'), ('phaseOscFreq', 0.0), ('phaseOscRange', 0.0),
-                    ('pan', 0.0), ('panRangeMin', 0.0), ('panRangeMax', 0.0), ('panType', 'linear'), ('panFreq', 0.0)
-                ],
-                "transition": [
-                    ('startAmpL', 0.5), ('endAmpL', 0.5), ('startAmpR', 0.5), ('endAmpR', 0.5),
-                    ('startBaseFreq', 200.0), ('endBaseFreq', 200.0), ('startBeatFreq', 4.0), ('endBeatFreq', 4.0), ('leftHigh', False),
-                    ('startStartPhaseL', 0.0), ('endStartPhaseL', 0.0), ('startStartPhaseR', 0.0), ('endStartPhaseR', 0.0),
-                    ('startAmpOscDepthL', 0.0), ('endAmpOscDepthL', 0.0), ('startAmpOscFreqL', 0.0), ('endAmpOscFreqL', 0.0),
-                    ('startAmpOscPhaseOffsetL', 0.0), ('endAmpOscPhaseOffsetL', 0.0), ('startAmpOscDepthR', 0.0), ('endAmpOscDepthR', 0.0),
-                    ('startAmpOscFreqR', 0.0), ('endAmpOscFreqR', 0.0), ('startAmpOscPhaseOffsetR', 0.0), ('endAmpOscPhaseOffsetR', 0.0),
-                    ('startFreqOscRangeL', 0.0), ('endFreqOscRangeL', 0.0), ('startFreqOscFreqL', 0.0), ('endFreqOscFreqL', 0.0),
-                    ('startFreqOscSkewL', 0.0), ('endFreqOscSkewL', 0.0), ('startFreqOscPhaseOffsetL', 0.0), ('endFreqOscPhaseOffsetL', 0.0),
-                    ('startFreqOscRangeR', 0.0), ('endFreqOscRangeR', 0.0), ('startFreqOscFreqR', 0.0), ('endFreqOscFreqR', 0.0),
-                    ('startFreqOscSkewR', 0.0), ('endFreqOscSkewR', 0.0), ('startFreqOscPhaseOffsetR', 0.0), ('endFreqOscPhaseOffsetR', 0.0),
-                    ('freqOscShape', 'sine'),
-                    ('startPhaseOscFreq', 0.0), ('endPhaseOscFreq', 0.0), ('startPhaseOscRange', 0.0), ('endPhaseOscRange', 0.0),
-                    ('startPan', 0.0), ('endPan', 0.0),
-                    ('startPanRangeMin', 0.0), ('endPanRangeMin', 0.0),
-                    ('startPanRangeMax', 0.0), ('endPanRangeMax', 0.0),
-                    ('startPanType', 'linear'), ('endPanType', 'linear'),
-                    ('startPanFreq', 0.0), ('endPanFreq', 0.0),
-                    ('initial_offset', 0.0), ('duration', 0.0), ('transition_curve', 'linear')
-                ]
-            },
-            "monaural_beat_stereo_amps": { # This is an example, ensure it's correct
-                "standard": [
-                    ('amp_lower_L', 0.5), ('amp_upper_L', 0.5),
-                    ('amp_lower_R', 0.5), ('amp_upper_R', 0.5),
-                    ('baseFreq', 200.0), ('beatFreq', 4.0),
-                    ('startPhaseL', 0.0), ('startPhaseR', 0.0),
-                    ('phaseOscFreq', 0.0), ('phaseOscRange', 0.0),
-                    ('ampOscDepth', 0.0), ('ampOscFreq', 0.0), ('ampOscPhaseOffset', 0.0)
-                ],
-                "transition": [
-                    ('start_amp_lower_L', 0.5), ('end_amp_lower_L', 0.5),
-                    ('start_amp_upper_L', 0.5), ('end_amp_upper_L', 0.5),
-                    ('start_amp_lower_R', 0.5), ('end_amp_lower_R', 0.5),
-                    ('start_amp_upper_R', 0.5), ('end_amp_upper_R', 0.5),
-                    ('startBaseFreq', 200.0), ('endBaseFreq', 200.0),
-                    ('startBeatFreq', 4.0), ('endBeatFreq', 4.0),
-                    ('startStartPhaseL', 0.0), ('endStartPhaseL', 0.0),
-                    ('startStartPhaseU', 0.0), ('endStartPhaseU', 0.0),
-                    ('startPhaseOscFreq', 0.0), ('endPhaseOscFreq', 0.0),
-                    ('startPhaseOscRange', 0.0), ('endPhaseOscRange', 0.0),
-                    ('startAmpOscDepth', 0.0), ('endAmpOscDepth', 0.0),
-                    ('startAmpOscFreq', 0.0), ('endAmpOscFreq', 0.0),
-                    ('startAmpOscPhaseOffset', 0.0), ('endAmpOscPhaseOffset', 0.0), ('initial_offset', 0.0), ('duration', 0.0), ('transition_curve', 'linear')
-                ]
-            },
-            "spatial_angle_modulation_monaural_beat": {
-                "standard": [
-                    ('sam_ampOscDepth', 0.0), ('sam_ampOscFreq', 0.0), ('sam_ampOscPhaseOffset', 0.0), ('amp_lower_L', 0.5), ('amp_upper_L', 0.5),
-                    ('amp_lower_R', 0.5), ('amp_upper_R', 0.5),
-                    ('baseFreq', 200.0), ('beatFreq', 4.0),
-                    ('startPhaseL', 0.0), ('startPhaseR', 0.0),
-                    ('phaseOscFreq', 0.0), ('phaseOscRange', 0.0),
-                    ('monaural_ampOscDepth', 0.0), ('monaural_ampOscFreq', 0.0),
-                    ('monaural_ampOscPhaseOffset', 0.0), ('spatialBeatFreq', 4.0), ('spatialPhaseOffset', 0.0),
-                    ('amp', 0.7), ('pathRadius', 1.0),
-                    ('frame_dur_ms', 46.4), ('overlap_factor', 8)
-                ],
-                "transition": [
-                    ('start_amp_lower_L', 0.5), ('end_amp_lower_L', 0.5),
-                    ('start_amp_upper_L', 0.5), ('end_amp_upper_L', 0.5),
-                    ('start_amp_lower_R', 0.5), ('end_amp_lower_R', 0.5),
-                    ('start_amp_upper_R', 0.5), ('end_amp_upper_R', 0.5),
-                    ('startBaseFreq', 200.0), ('endBaseFreq', 200.0),
-                    ('startBeatFreq', 4.0), ('endBeatFreq', 4.0),
-                    ('startStartPhaseL_monaural', 0.0), ('endStartPhaseL_monaural', 0.0),
-                    ('startStartPhaseU_monaural', 0.0), ('endStartPhaseU_monaural', 0.0),
-                    ('startPhaseOscFreq_monaural', 0.0), ('endPhaseOscFreq_monaural', 0.0),
-                    ('startPhaseOscRange_monaural', 0.0), ('endPhaseOscRange_monaural', 0.0),
-                    ('startAmpOscDepth_monaural', 0.0), ('endAmpOscDepth_monaural', 0.0),
-                    ('startAmpOscFreq_monaural', 0.0), ('endAmpOscFreq_monaural', 0.0),
-                    ('startAmpOscPhaseOffset_monaural', 0.0), ('endAmpOscPhaseOffset_monaural', 0.0), ('start_sam_ampOscDepth', 0.0), ('end_sam_ampOscDepth', 0.0),
-                    ('start_sam_ampOscFreq', 0.0), ('end_sam_ampOscFreq', 0.0),
-                    ('start_sam_ampOscPhaseOffset', 0.0), ('end_sam_ampOscPhaseOffset', 0.0), ('startSpatialBeatFreq', 4.0), ('endSpatialBeatFreq', 4.0),
-                    ('startSpatialPhaseOffset', 0.0), ('endSpatialPhaseOffset', 0.0),
-                    ('startPathRadius', 1.0), ('endPathRadius', 1.0),
-                    ('startAmp', 0.7), ('endAmp', 0.7),
-                    ('frame_dur_ms', 46.4), ('overlap_factor', 8),
-                    ('initial_offset', 0.0), ('duration', 0.0), ('transition_curve', 'linear')
-                ]
-            },
-            "noise_generator": {
-                "standard": [
-                    ('noise_type', 'pink'),
-                    ('lfo_waveform', 'sine'),
-                    ('lfo_freq', 1.0 / 12.0),
-                    ('sweeps', [{'min': 1000, 'max': 10000, 'q': 25.0, 'cascade': 10}]),
-                    ('notch_q', None),
-                    ('cascade_count', None),
-                    ('lfo_phase_offset_deg', 90.0),
-                    ('intra_phase_offset_deg', 0.0),
-                    ('input_audio_path', ''),
-                    ('amp', 0.25),
-                    ('amp_left', None),
-                    ('amp_right', None),
-                    ('fade_in', 0.0),
-                    ('fade_out', 0.0),
-                    ('amp_envelope', []),
-                    ('memory_efficient', False),
-                    ('n_jobs', 1),
-                    ('static_notches', []),
-                ],
-                "transition": [
-                    ('noise_type', 'pink'),
-                    ('lfo_waveform', 'sine'),
-                    ('start_lfo_freq', 1.0 / 12.0),
-                    ('end_lfo_freq', 1.0 / 12.0),
-                    ('sweeps', [{
-                        'start_min': 1000,
-                        'start_max': 10000,
-                        'end_min': 1000,
-                        'end_max': 10000,
-                        'start_q': 25.0,
-                        'end_q': 25.0,
-                        'start_casc': 10,
-                        'end_casc': 10,
-                    }]),
-                    ('start_notch_q', None),
-                    ('end_notch_q', None),
-                    ('start_cascade_count', None),
-                    ('end_cascade_count', None),
-                    ('start_lfo_phase_offset_deg', 90.0),
-                    ('end_lfo_phase_offset_deg', 90.0),
-                    ('start_intra_phase_offset_deg', 0.0),
-                    ('end_intra_phase_offset_deg', 0.0),
-                    ('initial_offset', 0.0),
-                    ('duration', 0.0),
-                    ('curve', 'linear'),
-                    ('input_audio_path', ''),
-                    ('start_amp', 0.25),
-                    ('end_amp', None),
-                    ('start_amp_left', None),
-                    ('end_amp_left', None),
-                    ('start_amp_right', None),
-                    ('end_amp_right', None),
-                    ('fade_in', 0.0),
-                    ('fade_out', 0.0),
-                    ('amp_envelope', []),
-                    ('memory_efficient', False),
-                    ('n_jobs', 1),
-                    ('static_notches', []),
-                ]
-            },
-            "isochronic_tone": {
-                "standard": [
-                    ('ampL', 0.5), ('ampR', 0.5),
-                    ('baseFreq', 200.0), ('beatFreq', 4.0), ('forceMono', False),
-                    ('startPhaseL', 0.0), ('startPhaseR', 0.0),
-                    ('ampOscDepthL', 0.0), ('ampOscFreqL', 0.0), ('ampOscPhaseOffsetL', 0.0), ('ampOscDepthR', 0.0), ('ampOscFreqR', 0.0), ('ampOscPhaseOffsetR', 0.0), ('freqOscRangeL', 0.0), ('freqOscFreqL', 0.0), ('freqOscSkewL', 0.0), ('freqOscPhaseOffsetL', 0.0), ('freqOscRangeR', 0.0), ('freqOscFreqR', 0.0), ('freqOscSkewR', 0.0), ('freqOscPhaseOffsetR', 0.0), ('phaseOscFreq', 0.0), ('phaseOscRange', 0.0), ('rampPercent', 0.2), ('gapPercent', 0.15),
-                    ('harmonicSuppression', False), ('pan', 0.0), ('panRangeMin', 0.0), ('panRangeMax', 0.0), ('panType', 'linear'), ('panFreq', 0.0)
-                ],
-                "transition": [
-                    ('startAmpL', 0.5), ('endAmpL', 0.5), ('startAmpR', 0.5), ('endAmpR', 0.5),
-                    ('startBaseFreq', 200.0), ('endBaseFreq', 200.0), ('startBeatFreq', 4.0), ('endBeatFreq', 4.0),
-                    ('startForceMono', 0.0), ('endForceMono', 0.0),
-                    ('startStartPhaseL', 0.0), ('endStartPhaseL', 0.0), ('startStartPhaseR', 0.0), ('endStartPhaseR', 0.0),
-                    ('startAmpOscDepthL', 0.0), ('endAmpOscDepthL', 0.0), ('startAmpOscFreqL', 0.0), ('endAmpOscFreqL', 0.0), ('startAmpOscPhaseOffsetL', 0.0), ('endAmpOscPhaseOffsetL', 0.0), ('startAmpOscDepthR', 0.0), ('endAmpOscDepthR', 0.0), ('startAmpOscFreqR', 0.0), ('endAmpOscFreqR', 0.0), ('startAmpOscPhaseOffsetR', 0.0), ('endAmpOscPhaseOffsetR', 0.0), ('startFreqOscRangeL', 0.0), ('endFreqOscRangeL', 0.0), ('startFreqOscFreqL', 0.0), ('endFreqOscFreqL', 0.0), ('startFreqOscSkewL', 0.0), ('endFreqOscSkewL', 0.0), ('startFreqOscPhaseOffsetL', 0.0), ('endFreqOscPhaseOffsetL', 0.0), ('startFreqOscRangeR', 0.0), ('endFreqOscRangeR', 0.0), ('startFreqOscFreqR', 0.0), ('endFreqOscFreqR', 0.0), ('startFreqOscSkewR', 0.0), ('endFreqOscSkewR', 0.0), ('startFreqOscPhaseOffsetR', 0.0), ('endFreqOscPhaseOffsetR', 0.0), ('startPhaseOscFreq', 0.0), ('endPhaseOscFreq', 0.0), ('startPhaseOscRange', 0.0), ('endPhaseOscRange', 0.0), ('startRampPercent', 0.2), ('endRampPercent', 0.2), ('startGapPercent', 0.15), ('endGapPercent', 0.15),
-                    ('startHarmonicSuppression', False), ('endHarmonicSuppression', False), ('startPan', 0.0), ('endPan', 0.0),
-                    ('startPanRangeMin', 0.0), ('endPanRangeMin', 0.0),
-                    ('startPanRangeMax', 0.0), ('endPanRangeMax', 0.0),
-                    ('startPanType', 'linear'), ('endPanType', 'linear'),
-                    ('startPanFreq', 0.0), ('endPanFreq', 0.0),
-                    ('initial_offset', 0.0), ('duration', 0.0), ('transition_curve', 'linear')
-                ]
-            },
-            "dual_pulse_binaural": {
-                "standard": [
-                    ('ampL', 0.5), ('ampR', 0.5),
-                    ('baseFreq', 200.0), ('beatFreq', 4.0), ('leftHigh', False),
-                    ('startPhaseL', 0.0), ('startPhaseR', 0.0),
-                    ('ampOscDepthL', 0.0), ('ampOscFreqL', 0.0), ('ampOscPhaseOffsetL', 0.0), ('ampOscSkewL', 0.0),
-                    ('ampOscDepthR', 0.0), ('ampOscFreqR', 0.0), ('ampOscPhaseOffsetR', 0.0), ('ampOscSkewR', 0.0),
-                    ('freqOscRangeL', 0.0), ('freqOscFreqL', 0.0), ('freqOscSkewL', 0.0), ('freqOscPhaseOffsetL', 0.0),
-                    ('freqOscRangeR', 0.0), ('freqOscFreqR', 0.0), ('freqOscSkewR', 0.0), ('freqOscPhaseOffsetR', 0.0),
-                    ('freqOscShape', 'sine'), ('phaseOscFreq', 0.0), ('phaseOscRange', 0.0),
-                    ('pulseRate', 0.0), ('pulseRateL', 0.0), ('pulseRateR', 0.0),
-                    ('rampPercent', 0.2), ('rampPercentL', 0.2), ('rampPercentR', 0.2),
-                    ('gapPercent', 0.15), ('gapPercentL', 0.15), ('gapPercentR', 0.15),
-                    ('pulsePhaseOffset', 0.0), ('pulsePhaseOffsetL', 0.0), ('pulsePhaseOffsetR', 0.0),
-                    ('pulseDepth', 1.0), ('pulseDepthL', 1.0), ('pulseDepthR', 1.0),
-                    ('pulseShape', 'trapezoid'), ('pulseShapeL', 'trapezoid'), ('pulseShapeR', 'trapezoid'),
-                    ('harmonicSuppression', False), ('forceMono', False),
-                    ('pan', 0.0), ('panRangeMin', 0.0), ('panRangeMax', 0.0), ('panType', 'linear'), ('panFreq', 0.0)
-                ],
-                "transition": [
-                    ('startAmpL', 0.5), ('endAmpL', 0.5), ('startAmpR', 0.5), ('endAmpR', 0.5),
-                    ('startBaseFreq', 200.0), ('endBaseFreq', 200.0),
-                    ('startBeatFreq', 4.0), ('endBeatFreq', 4.0),
-                    ('leftHigh', False),
-                    ('startStartPhaseL', 0.0), ('endStartPhaseL', 0.0),
-                    ('startStartPhaseR', 0.0), ('endStartPhaseR', 0.0),
-                    ('startAmpOscDepthL', 0.0), ('endAmpOscDepthL', 0.0),
-                    ('startAmpOscFreqL', 0.0), ('endAmpOscFreqL', 0.0),
-                    ('startAmpOscPhaseOffsetL', 0.0), ('endAmpOscPhaseOffsetL', 0.0),
-                    ('startAmpOscSkewL', 0.0), ('endAmpOscSkewL', 0.0),
-                    ('startAmpOscDepthR', 0.0), ('endAmpOscDepthR', 0.0),
-                    ('startAmpOscFreqR', 0.0), ('endAmpOscFreqR', 0.0),
-                    ('startAmpOscPhaseOffsetR', 0.0), ('endAmpOscPhaseOffsetR', 0.0),
-                    ('startAmpOscSkewR', 0.0), ('endAmpOscSkewR', 0.0),
-                    ('startFreqOscRangeL', 0.0), ('endFreqOscRangeL', 0.0),
-                    ('startFreqOscFreqL', 0.0), ('endFreqOscFreqL', 0.0),
-                    ('startFreqOscSkewL', 0.0), ('endFreqOscSkewL', 0.0),
-                    ('startFreqOscPhaseOffsetL', 0.0), ('endFreqOscPhaseOffsetL', 0.0),
-                    ('startFreqOscRangeR', 0.0), ('endFreqOscRangeR', 0.0),
-                    ('startFreqOscFreqR', 0.0), ('endFreqOscFreqR', 0.0),
-                    ('startFreqOscSkewR', 0.0), ('endFreqOscSkewR', 0.0),
-                    ('startFreqOscPhaseOffsetR', 0.0), ('endFreqOscPhaseOffsetR', 0.0),
-                    ('freqOscShape', 'sine'),
-                    ('startPhaseOscFreq', 0.0), ('endPhaseOscFreq', 0.0),
-                    ('startPhaseOscRange', 0.0), ('endPhaseOscRange', 0.0),
-                    ('startPulseRate', 0.0), ('endPulseRate', 0.0),
-                    ('startPulseRateL', 0.0), ('endPulseRateL', 0.0),
-                    ('startPulseRateR', 0.0), ('endPulseRateR', 0.0),
-                    ('startRampPercent', 0.2), ('endRampPercent', 0.2),
-                    ('startRampPercentL', 0.2), ('endRampPercentL', 0.2),
-                    ('startRampPercentR', 0.2), ('endRampPercentR', 0.2),
-                    ('startGapPercent', 0.15), ('endGapPercent', 0.15),
-                    ('startGapPercentL', 0.15), ('endGapPercentL', 0.15),
-                    ('startGapPercentR', 0.15), ('endGapPercentR', 0.15),
-                    ('startPulsePhaseOffset', 0.0), ('endPulsePhaseOffset', 0.0),
-                    ('startPulsePhaseOffsetL', 0.0), ('endPulsePhaseOffsetL', 0.0),
-                    ('startPulsePhaseOffsetR', 0.0), ('endPulsePhaseOffsetR', 0.0),
-                    ('startPulseDepth', 1.0), ('endPulseDepth', 1.0),
-                    ('startPulseDepthL', 1.0), ('endPulseDepthL', 1.0),
-                    ('startPulseDepthR', 1.0), ('endPulseDepthR', 1.0),
-                    ('startPulseShape', 'trapezoid'), ('endPulseShape', 'trapezoid'),
-                    ('startPulseShapeL', 'trapezoid'), ('endPulseShapeL', 'trapezoid'),
-                    ('startPulseShapeR', 'trapezoid'), ('endPulseShapeR', 'trapezoid'),
-                    ('startHarmonicSuppression', False), ('endHarmonicSuppression', False),
-                    ('startForceMono', False), ('endForceMono', False),
-                    ('startPan', 0.0), ('endPan', 0.0),
-                    ('startPanRangeMin', 0.0), ('endPanRangeMin', 0.0),
-                    ('startPanRangeMax', 0.0), ('endPanRangeMax', 0.0),
-                    ('startPanType', 'linear'), ('endPanType', 'linear'),
-                    ('startPanFreq', 0.0), ('endPanFreq', 0.0),
-                    ('initial_offset', 0.0), ('duration', 0.0), ('transition_curve', 'linear')
-                ]
-            },
-            "qam_beat": { # CORRECTED AND COMPLETED for qam_beat based on qam_beat.py
-                "standard": [
-                    ('ampL', 0.5), ('ampR', 0.5),
-                    ('baseFreqL', 200.0), ('baseFreqR', 204.0),
-                    ('qamAmFreqL', 4.0), ('qamAmDepthL', 0.5), ('qamAmPhaseOffsetL', 0.0),
-                    ('qamAmFreqR', 4.0), ('qamAmDepthR', 0.5), ('qamAmPhaseOffsetR', 0.0),
-                    ('qamAm2FreqL', 0.0), ('qamAm2DepthL', 0.0), ('qamAm2PhaseOffsetL', 0.0),
-                    ('qamAm2FreqR', 0.0), ('qamAm2DepthR', 0.0), ('qamAm2PhaseOffsetR', 0.0),
-                    ('modShapeL', 1.0), ('modShapeR', 1.0),
-                    ('crossModDepth', 0.0), ('crossModDelay', 0.0),
-                    ('harmonicDepth', 0.0), ('harmonicRatio', 2.0),
-                    ('subHarmonicFreq', 0.0), ('subHarmonicDepth', 0.0),
-                    ('startPhaseL', 0.0), ('startPhaseR', 0.0),
-                    ('phaseOscFreq', 0.0), ('phaseOscRange', 0.0), ('phaseOscPhaseOffset', 0.0),
-                    ('beatingSidebands', False), ('sidebandOffset', 1.0), ('sidebandDepth', 0.1),
-                    ('attackTime', 0.0), ('releaseTime', 0.0)
-                ],
-                "transition": [
-                    ('startAmpL', 0.5), ('endAmpL', 0.5),
-                    ('startAmpR', 0.5), ('endAmpR', 0.5),
-                    ('startBaseFreqL', 200.0), ('endBaseFreqL', 200.0),
-                    ('startBaseFreqR', 204.0), ('endBaseFreqR', 204.0),
-                    ('startQamAmFreqL', 4.0), ('endQamAmFreqL', 4.0),
-                    ('startQamAmDepthL', 0.5), ('endQamAmDepthL', 0.5),
-                    ('startQamAmPhaseOffsetL', 0.0), ('endQamAmPhaseOffsetL', 0.0),
-                    ('startQamAmFreqR', 4.0), ('endQamAmFreqR', 4.0),
-                    ('startQamAmDepthR', 0.5), ('endQamAmDepthR', 0.5),
-                    ('startQamAmPhaseOffsetR', 0.0), ('endQamAmPhaseOffsetR', 0.0),
-                    ('startQamAm2FreqL', 0.0), ('endQamAm2FreqL', 0.0),
-                    ('startQamAm2DepthL', 0.0), ('endQamAm2DepthL', 0.0),
-                    ('startQamAm2PhaseOffsetL', 0.0), ('endQamAm2PhaseOffsetL', 0.0),
-                    ('startQamAm2FreqR', 0.0), ('endQamAm2FreqR', 0.0),
-                    ('startQamAm2DepthR', 0.0), ('endQamAm2DepthR', 0.0),
-                    ('startQamAm2PhaseOffsetR', 0.0), ('endQamAm2PhaseOffsetR', 0.0),
-                    ('startModShapeL', 1.0), ('endModShapeL', 1.0),
-                    ('startModShapeR', 1.0), ('endModShapeR', 1.0),
-                    ('startCrossModDepth', 0.0), ('endCrossModDepth', 0.0),
-                    ('startHarmonicDepth', 0.0), ('endHarmonicDepth', 0.0),
-                    ('startSubHarmonicFreq', 0.0), ('endSubHarmonicFreq', 0.0),
-                    ('startSubHarmonicDepth', 0.0), ('endSubHarmonicDepth', 0.0),
-                    ('startStartPhaseL', 0.0), ('endStartPhaseL', 0.0), # Corresponds to 'startPhaseL' in qam_beat
-                    ('startStartPhaseR', 0.0), ('endStartPhaseR', 0.0), # Corresponds to 'startPhaseR' in qam_beat
-                    ('startPhaseOscFreq', 0.0), ('endPhaseOscFreq', 0.0),
-                    ('startPhaseOscRange', 0.0), ('endPhaseOscRange', 0.0),
-                    # Static parameters for transition mode (values are fixed, not interpolated)
-                    ('crossModDelay', 0.0),
-                    ('harmonicRatio', 2.0),
-                    ('phaseOscPhaseOffset', 0.0),
-                    ('beatingSidebands', False),
-                    ('sidebandOffset', 1.0),
-                    ('sidebandDepth', 0.1),
-                    ('attackTime', 0.0),
-                    ('releaseTime', 0.0),
-                    ('initial_offset', 0.0), ('duration', 0.0), ('transition_curve', 'linear')
-                ]
-            },
-            "hybrid_qam_monaural_beat": { # This is an example, ensure it's correct
-                "standard": [
-                    ('ampL', 0.5), ('ampR', 0.5),
-                    ('qamCarrierFreqL', 100.0), ('qamAmFreqL', 4.0), ('qamAmDepthL', 0.5),
-                    ('qamAmPhaseOffsetL', 0.0), ('qamStartPhaseL', 0.0),
-                    ('monoCarrierFreqR', 100.0), ('monoBeatFreqInChannelR', 4.0),
-                    ('monoAmDepthR', 0.0), ('monoAmFreqR', 0.0), ('monoAmPhaseOffsetR', 0.0),
-                    ('monoFmRangeR', 0.0), ('monoFmFreqR', 0.0), ('monoFmPhaseOffsetR', 0.0),
-                    ('monoStartPhaseR_Tone1', 0.0), ('monoStartPhaseR_Tone2', 0.0),
-                    ('monoPhaseOscFreqR', 0.0), ('monoPhaseOscRangeR', 0.0), ('monoPhaseOscPhaseOffsetR', 0.0)
-                ],
-                "transition": [ 
-                    ('startAmpL', 0.5), ('endAmpL', 0.5),
-                    ('startAmpR', 0.5), ('endAmpR', 0.5),
-                    ('startQamCarrierFreqL', 100.0), ('endQamCarrierFreqL', 100.0),
-                    ('startQamAmFreqL', 4.0), ('endQamAmFreqL', 4.0),
-                    ('startQamAmDepthL', 0.5), ('endQamAmDepthL', 0.5),
-                    ('startQamAmPhaseOffsetL', 0.0), ('endQamAmPhaseOffsetL', 0.0),
-                    ('startQamStartPhaseL', 0.0), ('endQamStartPhaseL', 0.0),
-                    ('startMonoCarrierFreqR', 100.0), ('endMonoCarrierFreqR', 100.0),
-                    ('startMonoBeatFreqInChannelR', 4.0), ('endMonoBeatFreqInChannelR', 4.0),
-                    ('startMonoAmDepthR', 0.0), ('endMonoAmDepthR', 0.0),
-                    ('startMonoAmFreqR', 0.0), ('endMonoAmFreqR', 0.0),
-                    ('startMonoAmPhaseOffsetR', 0.0), ('endMonoAmPhaseOffsetR', 0.0),
-                    ('startMonoFmRangeR', 0.0), ('endMonoFmRangeR', 0.0),
-                    ('startMonoFmFreqR', 0.0), ('endMonoFmFreqR', 0.0),
-                    ('startMonoFmPhaseOffsetR', 0.0), ('endMonoFmPhaseOffsetR', 0.0),
-                    ('startMonoStartPhaseR_Tone1', 0.0), ('endMonoStartPhaseR_Tone1', 0.0),
-                    ('startMonoStartPhaseR_Tone2', 0.0), ('endMonoStartPhaseR_Tone2', 0.0),
-                    ('startMonoPhaseOscFreqR', 0.0), ('endMonoPhaseOscFreqR', 0.0),
-                    ('startMonoPhaseOscRangeR', 0.0), ('endMonoPhaseOscRangeR', 0.0),
-                    ('startMonoPhaseOscPhaseOffsetR', 0.0), ('endMonoPhaseOscPhaseOffsetR', 0.0),
-                    ('initial_offset', 0.0), ('duration', 0.0), ('transition_curve', 'linear')
-                ]
-            }
-        }
-        # --- End of param_definitions ---
-
-        ordered_params = OrderedDict()
-        definition_set = param_definitions.get(base_func_key)
-        
-        # If func_name_from_combo itself is a transition func (e.g. "binaural_beat_transition")
-        # then is_transition_mode might be overridden by this fact.
-        # The self.transition_check usually dictates the mode.
-        effective_func_name_for_lookup = func_name_from_combo # The name from combo
-        effective_is_transition = is_transition_mode
-
-        # If the selected combo item ALREADY implies transition (e.g., "func_transition")
-        # then we should look for its base definition and use "transition" params.
-        if effective_func_name_for_lookup.endswith("_transition"):
-            potential_base_key = effective_func_name_for_lookup[:-len("_transition")]
-            if potential_base_key in param_definitions:
-                definition_set = param_definitions.get(potential_base_key)
-                effective_is_transition = True # Force transition mode if function name implies it
-            else: # No base key found, try the full name if it exists
-                definition_set = param_definitions.get(effective_func_name_for_lookup)
-        else: # Not a name ending with _transition
-            definition_set = param_definitions.get(effective_func_name_for_lookup)
-
-
-        if not definition_set:
-            print(f"Warning: No parameter definitions found for function '{effective_func_name_for_lookup}' (derived from combo '{func_name_from_combo}').")
-            # Try to get params by direct introspection as a fallback
-            if hasattr(sound_creator, 'get_synth_params'):
-                 raw_params = sound_creator.get_synth_params(effective_func_name_for_lookup) # This gets signature defaults
-                 for name, default_val in raw_params.items():
-                     if default_val == inspect.Parameter.empty: # No default in signature
-                         # Try a sensible default based on type hint or name
-                         if any(s in name.lower() for s in ['freq','rate']): default_val = 440.0
-                         elif any(s in name.lower() for s in ['amp','depth','gain','level']): default_val = 0.5
-                         elif any(s in name.lower() for s in ['pan']): default_val = 0.0
-                         elif 'bool' in name.lower() or 'enable' in name.lower(): default_val = False
-                         else: default_val = 0 # Generic numeric default
-                     ordered_params[name] = default_val
-                 if ordered_params:
-                     print(f"Note: Using introspected params for '{effective_func_name_for_lookup}' as fallback.")
-                     return ordered_params
-
-            return ordered_params # Return empty if no definition and no introspection fallback
-
-        selected_mode_key = "transition" if effective_is_transition else "standard"
-        params_list = definition_set.get(selected_mode_key)
-        
-        if not params_list: # Fallback if specific mode (e.g. "transition") is missing for a base key
-            if selected_mode_key == "transition" and "standard" in definition_set:
-                print(f"Warning: No 'transition' parameters for '{base_func_key}'. Using 'standard' parameters instead even if transition is checked.")
-                params_list = definition_set.get("standard")
-            if not params_list:
-                print(f"Warning: No parameters found for '{base_func_key}' in mode '{selected_mode_key}'.")
-                return ordered_params
-
-        for name, default_val in params_list:
-            if 'stability' in name.lower() and 'spatial' not in name.lower():
-                continue
-            ordered_params[name] = default_val
-
-        flange_defaults = [
-            ('flangeEnable', False),
-            ('flangeDelayMs', 1.2),
-            ('flangeDepthMs', 0.6),
-            ('flangeRateHz', 0.12),
-            ('flangeShape', 'sine'),
-            ('flangeFeedback', 0.5),
-            ('flangeMix', 0.3),
-            ('flangeLoopLpfHz', 7000.0),
-            ('flangeLoopHpfHz', 0.0),
-            ('flangeStereoMode', 0),
-            ('flangeSpreadDeg', 0.0),
-            ('flangeDelayLaw', 0),
-            ('flangeInterp', 0),
-            ('flangeMinDelayMs', 0.25),
-            ('flangeMaxDelayMs', 8.0),
-            ('flangeDezipperDelayMs', 30.0),
-            ('flangeDezipperDepthMs', 30.0),
-            ('flangeDezipperRateMs', 200.0),
-            ('flangeDezipperFeedbackMs', 30.0),
-            ('flangeDezipperWetMs', 40.0),
-            ('flangeDezipperFilterMs', 60.0),
-            ('flangeLoudnessMode', 1),
-            ('flangeLoudnessTcMs', 80.0),
-            ('flangeLoudnessMinGain', 0.5),
-            ('flangeLoudnessMaxGain', 2.0),
-        ]
-        if effective_is_transition:
-            for fname, fdefault in flange_defaults:
-                start_name = 'start' + fname[0].upper() + fname[1:]
-                end_name = 'end' + fname[0].upper() + fname[1:]
-                if fname not in ordered_params:
-                    ordered_params[fname] = fdefault
-                if start_name not in ordered_params:
-                    ordered_params[start_name] = fdefault
-                if end_name not in ordered_params:
-                    ordered_params[end_name] = fdefault
-        else:
-            for fname, fdefault in flange_defaults:
-                if fname not in ordered_params:
-                    ordered_params[fname] = fdefault
-
-        spatial_defaults = [
-            ('spatialEnable', False),
-            ('spatialUseItdIld', 1),
-            ('spatialDecoder', 'itd_head'),
-            ('spatialEarAngleDeg', 30.0),
-            ('spatialHeadRadiusM', 0.0875),
-            ('spatialItdScale', 1.0),
-            ('spatialIldMaxDb', 3.0),
-            ('spatialIldXoverHz', 700.0),
-            ('spatialRefDistanceM', 1.0),
-            ('spatialRolloff', 1.0),
-            ('spatialHfRollDbPerM', 0.0),
-            ('spatialMinDistanceM', 0.1),
-            ('spatialMaxDegPerS', 90.0),
-            ('spatialMaxDelayStepSamples', 0.02),
-            ('spatialDezipperThetaMs', 25.0),
-            ('spatialDezipperDistMs', 60.0),
-            ('spatialTrajectory', []),
-        ]
-        for fname, fdefault in spatial_defaults:
-            if fname not in ordered_params:
-                ordered_params[fname] = fdefault
-
-        return ordered_params
-
-    @pyqtSlot()
     def save_voice(self):
         new_synth_params = {}
         error_occurred = False
@@ -3008,3 +2442,324 @@ class VoiceEditorDialog(QDialog): # Standard class name
         self.transition_check.setChecked(preset.is_transition)
         self.populate_parameters()
         self._populate_envelope_controls()
+
+
+def get_default_params_for_function(func_name_from_combo: str, is_transition_mode: bool) -> OrderedDict:
+    """
+    Shared helper that returns the default parameter OrderedDict for a synth function.
+    Extracted from :meth:`VoiceEditorDialog._get_default_params` for reuse in other dialogs.
+    """
+    # This map should align QComboBox text with keys in param_definitions
+    internal_func_key_map = {
+        "Rhythmic Waveshaping": "rhythmic_waveshaping",
+        "Rhythmic Waveshaping Transition": "rhythmic_waveshaping_transition",
+        "Stereo AM Independent": "stereo_am_independent",
+        "Stereo AM Independent Transition": "stereo_am_independent_transition",
+        "Wave Shape Stereo AM": "wave_shape_stereo_am",
+        "Wave Shape Stereo AM Transition": "wave_shape_stereo_am_transition",
+        "Spatial Angle Modulation (SAM Engine)": "spatial_angle_modulation", # Uses Node/SAMVoice directly
+        "Spatial Angle Modulation (SAM Engine Transition)": "spatial_angle_modulation_transition",
+        "Binaural Beat": "binaural_beat",
+        "Binaural Beat Transition": "binaural_beat_transition",
+        "Monaural Beat Stereo Amps": "monaural_beat_stereo_amps",
+        "Monaural Beat Stereo Amps Transition": "monaural_beat_stereo_amps_transition",
+        "Spatial Angle Modulation (Monaural Core)": "spatial_angle_modulation_monaural_beat", # Uses monaural_beat as core
+        "Spatial Angle Modulation (Monaural Core Transition)": "spatial_angle_modulation_monaural_beat_transition",
+        "Isochronic Tone": "isochronic_tone",
+        "Isochronic Tone Transition": "isochronic_tone_transition",
+        "QAM Beat": "qam_beat", # Ensure this mapping is correct for your UIAdd commentMore actions
+        "QAM Beat Transition": "qam_beat_transition",
+        "Hybrid QAM Monaural Beat": "hybrid_qam_monaural_beat",
+        "Hybrid QAM Monaural Beat Transition": "hybrid_qam_monaural_beat_transition",
+        "Dual Pulse Binaural": "dual_pulse_binaural",
+        "Dual Pulse Binaural Transition": "dual_pulse_binaural_transition",
+        # Add other mappings if your UI names differ from these examples
+    }
+
+    base_func_key = internal_func_key_map.get(func_name_from_combo, func_name_from_combo)
+
+
+    param_definitions = {
+        "rhythmic_waveshaping": { # This is an example, ensure it's correctAdd commentMore actions
+            "standard": [
+                ('amp', 0.25), ('carrierFreq', 200), ('modFreq', 4),
+                ('modDepth', 1.0), ('shapeAmount', 5.0), ('pan', 0)
+            ],
+            "transition": [
+                ('amp', 0.25), ('startCarrierFreq', 200), ('endCarrierFreq', 80),
+                ('startModFreq', 12), ('endModFreq', 7.83),
+                ('startModDepth', 1.0), ('endModDepth', 1.0),
+                ('startShapeAmount', 5.0), ('endShapeAmount', 5.0), ('pan', 0),
+                ('initial_offset', 0.0), ('duration', 0.0), ('transition_curve', 'linear')
+            ]
+        },
+        "stereo_am_independent": { # This is an example, ensure it's correct
+            "standard": [
+                ('amp', 0.25), ('carrierFreq', 200.0), ('modFreqL', 4.0),
+                ('modDepthL', 0.8), ('modPhaseL', 0), ('modFreqR', 4.0),
+                ('modDepthR', 0.8), ('modPhaseR', 0), ('stereo_width_hz', 0.2)
+            ],
+            "transition": [
+                ('amp', 0.25), ('startCarrierFreq', 200), ('endCarrierFreq', 250),
+                ('startModFreqL', 4), ('endModFreqL', 6),
+                ('startModDepthL', 0.8), ('endModDepthL', 0.8),
+                ('startModPhaseL', 0),
+                ('startModFreqR', 4.1), ('endModFreqR', 5.9),
+                ('startModDepthR', 0.8), ('endModDepthR', 0.8),
+                ('startModPhaseR', 0),
+                ('startStereoWidthHz', 0.2), ('endStereoWidthHz', 0.2),
+                ('initial_offset', 0.0), ('duration', 0.0), ('transition_curve', 'linear')
+            ]
+        },
+        "wave_shape_stereo_am": { # This is an example, ensure it's correct
+            "standard": [
+                ('amp', 0.15), ('carrierFreq', 200), ('shapeModFreq', 4),
+                ('shapeModDepth', 0.8), ('shapeAmount', 0.5),
+                ('stereoModFreqL', 4.1), ('stereoModDepthL', 0.8),
+                ('stereoModPhaseL', 0), ('stereoModFreqR', 4.0),
+                ('stereoModDepthR', 0.8), ('stereoModPhaseR', math.pi / 2)
+            ],
+            "transition": [
+                ('amp', 0.15), ('startCarrierFreq', 200), ('endCarrierFreq', 100),
+                ('startShapeModFreq', 4), ('endShapeModFreq', 8),
+                ('startShapeModDepth', 0.8), ('endShapeModDepth', 0.8),
+                ('startShapeAmount', 0.5), ('endShapeAmount', 0.5),
+                ('startStereoModFreqL', 4.1), ('endStereoModFreqL', 6.0),
+                ('startStereoModDepthL', 0.8), ('endStereoModDepthL', 0.8),
+                ('startStereoModPhaseL', 0),
+                ('startStereoModFreqR', 4.0), ('endStereoModFreqR', 6.1),
+                ('startStereoModDepthR', 0.9), ('endStereoModDepthR', 0.9),
+                ('startStereoModPhaseR', math.pi / 2),
+                ('initial_offset', 0.0), ('duration', 0.0), ('transition_curve', 'linear')
+            ]
+        },
+        "spatial_angle_modulation": {
+            "standard": [
+                ('amp', 0.7), ('carrierFreq', 440.0), ('beatFreq', 4.0),
+                ('pathShape', 'circle'), ('pathRadius', 1.0),
+                ('arcStartDeg', 0.0), ('arcEndDeg', 360.0),
+                ('frame_dur_ms', 46.4), ('overlap_factor', 8)
+            ],
+            "transition": [
+                ('amp', 0.7),
+                ('startCarrierFreq', 440.0), ('endCarrierFreq', 440.0),
+                ('startBeatFreq', 4.0), ('endBeatFreq', 4.0),
+                ('startPathShape', 'circle'), ('endPathShape', 'circle'),
+                ('startPathRadius', 1.0), ('endPathRadius', 1.0),
+                ('startArcStartDeg', 0.0), ('endArcStartDeg', 0.0),
+                ('startArcEndDeg', 360.0), ('endArcEndDeg', 360.0),
+                ('frame_dur_ms', 46.4), ('overlap_factor', 8),
+                ('initial_offset', 0.0), ('duration', 0.0), ('transition_curve', 'linear')
+            ]
+        },
+        "binaural_beat": {
+            "standard": [
+                ('ampL', 0.5), ('ampR', 0.5),
+                ('baseFreq', 200.0), ('beatFreq', 4.0), ('leftHigh', False),
+                ('startPhaseL', 0.0), ('startPhaseR', 0.0),
+                ('ampOscDepthL', 0.0), ('ampOscFreqL', 0.0), ('ampOscPhaseOffsetL', 0.0), ('ampOscDepthR', 0.0), ('ampOscFreqR', 0.0), ('ampOscPhaseOffsetR', 0.0), ('freqOscRangeL', 0.0), ('freqOscFreqL', 0.0), ('freqOscSkewL', 0.0), ('freqOscPhaseOffsetL', 0.0), ('freqOscRangeR', 0.0), ('freqOscFreqR', 0.0), ('freqOscSkewR', 0.0), ('freqOscPhaseOffsetR', 0.0), ('freqOscShape', 'sine'), ('phaseOscFreq', 0.0), ('phaseOscRange', 0.0),
+                ('pan', 0.0), ('panRangeMin', 0.0), ('panRangeMax', 0.0), ('panType', 'linear'), ('panFreq', 0.0)
+            ],
+            "transition": [
+                ('startAmpL', 0.5), ('endAmpL', 0.5), ('startAmpR', 0.5), ('endAmpR', 0.5),
+                ('startBaseFreq', 200.0), ('endBaseFreq', 200.0), ('startBeatFreq', 4.0), ('endBeatFreq', 4.0), ('leftHigh', False),
+                ('startStartPhaseL', 0.0), ('endStartPhaseL', 0.0), ('startStartPhaseR', 0.0), ('endStartPhaseR', 0.0),
+                ('startAmpOscDepthL', 0.0), ('endAmpOscDepthL', 0.0), ('startAmpOscFreqL', 0.0), ('endAmpOscFreqL', 0.0),
+                ('startAmpOscPhaseOffsetL', 0.0), ('endAmpOscPhaseOffsetL', 0.0), ('startAmpOscDepthR', 0.0), ('endAmpOscDepthR', 0.0),
+                ('startAmpOscFreqR', 0.0), ('endAmpOscFreqR', 0.0), ('startAmpOscPhaseOffsetR', 0.0), ('endAmpOscPhaseOffsetR', 0.0),
+                ('startFreqOscRangeL', 0.0), ('endFreqOscRangeL', 0.0), ('startFreqOscFreqL', 0.0), ('endFreqOscFreqL', 0.0),
+                ('startFreqOscSkewL', 0.0), ('endFreqOscSkewL', 0.0), ('startFreqOscPhaseOffsetL', 0.0), ('endFreqOscPhaseOffsetL', 0.0),
+                ('startFreqOscRangeR', 0.0), ('endFreqOscRangeR', 0.0), ('startFreqOscFreqR', 0.0), ('endFreqOscFreqR', 0.0),
+                ('startFreqOscSkewR', 0.0), ('endFreqOscSkewR', 0.0), ('startFreqOscPhaseOffsetR', 0.0), ('endFreqOscPhaseOffsetR', 0.0),
+                ('freqOscShape', 'sine'),
+                ('startPhaseOscFreq', 0.0), ('endPhaseOscFreq', 0.0), ('startPhaseOscRange', 0.0), ('endPhaseOscRange', 0.0),
+                ('startPan', 0.0), ('endPan', 0.0),
+                ('startPanRangeMin', 0.0), ('endPanRangeMin', 0.0),
+                ('startPanRangeMax', 0.0), ('endPanRangeMax', 0.0),
+                ('startPanType', 'linear'), ('endPanType', 'linear'),
+                ('startPanFreq', 0.0), ('endPanFreq', 0.0),
+                ('initial_offset', 0.0), ('duration', 0.0), ('transition_curve', 'linear')
+            ]
+        },
+        "monaural_beat_stereo_amps": { # This is an example, ensure it's correct
+            "standard": [
+                ('amp_lower_L', 0.5), ('amp_upper_L', 0.5),
+                ('amp_lower_R', 0.5), ('amp_upper_R', 0.5),
+                ('baseFreq', 200.0), ('beatFreq', 4.0),
+                ('startPhaseL', 0.0), ('startPhaseR', 0.0),
+                ('phaseOscFreq', 0.0), ('phaseOscRange', 0.0),
+                ('ampOscDepth', 0.0), ('ampOscFreq', 0.0), ('ampOscPhaseOffset', 0.0)
+            ],
+            "transition": [
+                ('start_amp_lower_L', 0.5), ('end_amp_lower_L', 0.5),
+                ('start_amp_upper_L', 0.5), ('end_amp_upper_L', 0.5),
+                ('start_amp_lower_R', 0.5), ('end_amp_lower_R', 0.5),
+                ('start_amp_upper_R', 0.5), ('end_amp_upper_R', 0.5),
+                ('start_baseFreq', 200.0), ('end_baseFreq', 200.0),
+                ('start_beatFreq', 4.0), ('end_beatFreq', 4.0),
+                ('start_startPhaseL', 0.0), ('end_startPhaseL', 0.0),
+                ('start_startPhaseR', 0.0), ('end_startPhaseR', 0.0),
+                ('start_phaseOscFreq', 0.0), ('end_phaseOscFreq', 0.0),
+                ('start_phaseOscRange', 0.0), ('end_phaseOscRange', 0.0),
+                ('start_ampOscDepth', 0.0), ('end_ampOscDepth', 0.0),
+                ('start_ampOscFreq', 0.0), ('end_ampOscFreq', 0.0),
+                ('start_ampOscPhaseOffset', 0.0), ('end_ampOscPhaseOffset', 0.0),
+                ('initial_offset', 0.0), ('duration', 0.0), ('transition_curve', 'linear')
+            ]
+        },
+        "isochronic_tone": { # Example for an isochronic tone (non-transition)
+            "standard": [
+                ('amp', 0.5), ('pulseFreq', 4.0), ('carrierFreq', 200.0),
+                ('dutyCycle', 0.5), ('phaseOffset', 0.0),
+                ('pulseType', 'sine'), ('pulseDepth', 1.0)
+            ],
+            "transition": [
+                ('amp', 0.5), ('startPulseFreq', 4.0), ('endPulseFreq', 4.0),
+                ('startCarrierFreq', 200.0), ('endCarrierFreq', 200.0),
+                ('startDutyCycle', 0.5), ('endDutyCycle', 0.5),
+                ('startPhaseOffset', 0.0), ('endPhaseOffset', 0.0),
+                ('startPulseType', 'sine'), ('endPulseType', 'sine'),
+                ('startPulseDepth', 1.0), ('endPulseDepth', 1.0),
+                ('initial_offset', 0.0), ('duration', 0.0), ('transition_curve', 'linear')
+            ]
+        },
+        "qam_beat": { # CORRECTED AND COMPLETED for qam_beat based on qam_beat.py
+            "standard": [
+                ('ampL', 0.5), ('ampR', 0.5),
+                ('baseFreqL', 200.0), ('baseFreqR', 204.0),
+                ('qamAmFreqL', 4.0), ('qamAmDepthL', 0.5), ('qamAmPhaseOffsetL', 0.0),
+                ('qamAmFreqR', 4.0), ('qamAmDepthR', 0.5), ('qamAmPhaseOffsetR', 0.0),
+                ('qamAm2FreqL', 0.0), ('qamAm2DepthL', 0.0), ('qamAm2PhaseOffsetL', 0.0),
+                ('qamAm2FreqR', 0.0), ('qamAm2DepthR', 0.0), ('qamAm2PhaseOffsetR', 0.0),
+                ('modShapeL', 1.0), ('modShapeR', 1.0),
+                ('crossModDepth', 0.0), ('crossModDelay', 0.0),
+                ('harmonicDepth', 0.0), ('harmonicRatio', 2.0),
+                ('subHarmonicFreq', 0.0), ('subHarmonicDepth', 0.0),
+                ('startPhaseL', 0.0), ('startPhaseR', 0.0),
+                ('phaseOscFreq', 0.0), ('phaseOscRange', 0.0), ('phaseOscPhaseOffset', 0.0),
+                ('beatingSidebands', False), ('sidebandOffset', 1.0), ('sidebandDepth', 0.1),
+                ('attackTime', 0.0), ('releaseTime', 0.0)
+            ],
+            "transition": [
+                ('startAmpL', 0.5), ('endAmpL', 0.5),
+                ('startAmpR', 0.5), ('endAmpR', 0.5),
+                ('startBaseFreqL', 200.0), ('endBaseFreqL', 200.0),
+                ('startBaseFreqR', 204.0), ('endBaseFreqR', 204.0),
+                ('startQamAmFreqL', 4.0), ('endQamAmFreqL', 4.0),
+                ('startQamAmDepthL', 0.5), ('endQamAmDepthL', 0.5),
+                ('startQamAmPhaseOffsetL', 0.0), ('endQamAmPhaseOffsetL', 0.0),
+                ('startQamAmFreqR', 4.0), ('endQamAmFreqR', 4.0),
+                ('startQamAmDepthR', 0.5), ('endQamAmDepthR', 0.5),
+                ('startQamAmPhaseOffsetR', 0.0), ('endQamAmPhaseOffsetR', 0.0),
+                ('startQamAm2FreqL', 0.0), ('endQamAm2FreqL', 0.0),
+                ('startQamAm2DepthL', 0.0), ('endQamAm2DepthL', 0.0),
+                ('startQamAm2PhaseOffsetL', 0.0), ('endQamAm2PhaseOffsetL', 0.0),
+                ('startQamAm2FreqR', 0.0), ('endQamAm2FreqR', 0.0),
+                ('startQamAm2DepthR', 0.0), ('endQamAm2DepthR', 0.0),
+                ('startQamAm2PhaseOffsetR', 0.0), ('endQamAm2PhaseOffsetR', 0.0),
+                ('startModShapeL', 1.0), ('endModShapeL', 1.0),
+                ('startModShapeR', 1.0), ('endModShapeR', 1.0),
+                ('startCrossModDepth', 0.0), ('endCrossModDepth', 0.0),
+                ('startHarmonicDepth', 0.0), ('endHarmonicDepth', 0.0),
+                ('startSubHarmonicFreq', 0.0), ('endSubHarmonicFreq', 0.0),
+                ('startSubHarmonicDepth', 0.0), ('endSubHarmonicDepth', 0.0),
+                ('startStartPhaseL', 0.0), ('endStartPhaseL', 0.0), # Corresponds to 'startPhaseL' in qam_beat
+                ('startStartPhaseR', 0.0), ('endStartPhaseR', 0.0), # Corresponds to 'startPhaseR' in qam_beat
+                ('startPhaseOscFreq', 0.0), ('endPhaseOscFreq', 0.0),
+                ('startPhaseOscRange', 0.0), ('endPhaseOscRange', 0.0),
+                # Static parameters for transition mode (values are fixed, not interpolated)
+                ('crossModDelay', 0.0),
+                ('harmonicRatio', 2.0),
+                ('phaseOscPhaseOffset', 0.0),
+                ('beatingSidebands', False),
+                ('sidebandOffset', 1.0),
+                ('sidebandDepth', 0.1),
+                ('attackTime', 0.0),
+                ('releaseTime', 0.0),
+                ('initial_offset', 0.0), ('duration', 0.0), ('transition_curve', 'linear')
+            ]
+        },
+        "hybrid_qam_monaural_beat": { # This is an example, ensure it's correct
+            "standard": [
+                ('ampL', 0.5), ('ampR', 0.5),
+                ('qamCarrierFreqL', 100.0), ('qamAmFreqL', 4.0), ('qamAmDepthL', 0.5),
+                ('qamAmPhaseOffsetL', 0.0), ('qamStartPhaseL', 0.0),
+                ('monoCarrierFreqR', 100.0), ('monoBeatFreqInChannelR', 4.0),
+                ('monoAmDepthR', 0.0), ('monoAmFreqR', 0.0), ('monoAmPhaseOffsetR', 0.0),
+                ('monoFmRangeR', 0.0), ('monoFmFreqR', 0.0), ('monoFmPhaseOffsetR', 0.0),
+                ('monoStartPhaseR_Tone1', 0.0), ('monoStartPhaseR_Tone2', 0.0),
+                ('monoPhaseOscFreqR', 0.0), ('monoPhaseOscRangeR', 0.0), ('monoPhaseOscPhaseOffsetR', 0.0)
+            ],
+            "transition": [
+                ('startAmpL', 0.5), ('endAmpL', 0.5),
+                ('startAmpR', 0.5), ('endAmpR', 0.5),
+                ('startQamCarrierFreqL', 100.0), ('endQamCarrierFreqL', 100.0),
+                ('startQamAmFreqL', 4.0), ('endQamAmFreqL', 4.0),
+                ('startQamAmDepthL', 0.5), ('endQamAmDepthL', 0.5),
+                ('startQamAmPhaseOffsetL', 0.0), ('endQamAmPhaseOffsetL', 0.0),
+                ('startQamStartPhaseL', 0.0), ('endQamStartPhaseL', 0.0),
+                ('startMonoCarrierFreqR', 100.0), ('endMonoCarrierFreqR', 100.0),
+                ('startMonoBeatFreqInChannelR', 4.0), ('endMonoBeatFreqInChannelR', 4.0),
+                ('startMonoAmDepthR', 0.0), ('endMonoAmDepthR', 0.0),
+                ('startMonoAmFreqR', 0.0), ('endMonoAmFreqR', 0.0),
+                ('startMonoAmPhaseOffsetR', 0.0), ('endMonoAmPhaseOffsetR', 0.0),
+                ('startMonoFmRangeR', 0.0), ('endMonoFmRangeR', 0.0),
+                ('startMonoFmFreqR', 0.0), ('endMonoFmFreqR', 0.0),
+                ('startMonoFmPhaseOffsetR', 0.0), ('endMonoFmPhaseOffsetR', 0.0),
+                ('startMonoStartPhaseR_Tone1', 0.0), ('endMonoStartPhaseR_Tone1', 0.0),
+                ('startMonoStartPhaseR_Tone2', 0.0), ('endMonoStartPhaseR_Tone2', 0.0),
+                ('startMonoPhaseOscFreqR', 0.0), ('endMonoPhaseOscFreqR', 0.0),
+                ('startMonoPhaseOscRangeR', 0.0), ('endMonoPhaseOscRangeR', 0.0),
+                ('startMonoPhaseOscPhaseOffsetR', 0.0), ('endMonoPhaseOscPhaseOffsetR', 0.0),
+                ('initial_offset', 0.0), ('duration', 0.0), ('transition_curve', 'linear')
+            ]
+        }
+    }
+    # --- End of param_definitions ---
+
+    ordered_params = OrderedDict()
+    definition_set = param_definitions.get(base_func_key)
+
+    # If func_name_from_combo itself is a transition func (e.g. "binaural_beat_transition")
+    # then is_transition_mode might be overridden by this fact.
+    # The self.transition_check usually dictates the mode.
+    effective_func_name_for_lookup = func_name_from_combo # The name from combo
+    effective_is_transition = is_transition_mode
+
+    # If the selected combo item ALREADY implies transition (e.g., "func_transition")
+    # then we should look for its base definition and use "transition" params.
+    if effective_func_name_for_lookup.endswith("_transition"):
+        potential_base_key = effective_func_name_for_lookup[:-len("_transition")]
+        if potential_base_key in param_definitions:
+            definition_set = param_definitions.get(potential_base_key)
+            effective_is_transition = True # Force transition mode if function name implies it
+        else: # No base key found, try the full name if it exists
+            definition_set = param_definitions.get(effective_func_name_for_lookup)
+    else: # Not a name ending with _transition
+        definition_set = param_definitions.get(effective_func_name_for_lookup)
+
+
+    if not definition_set:
+        print(f"Warning: No parameter definitions found for function '{effective_func_name_for_lookup}' (derived from combo '{func_name_from_combo}').")
+        # Try to get params by direct introspection as a fallback
+        if hasattr(sound_creator, 'get_synth_params'):
+             raw_params = sound_creator.get_synth_params(effective_func_name_for_lookup) # This gets signature defaults
+             ordered_params = OrderedDict(raw_params)
+        return ordered_params
+
+    # Choose param set based on transition mode
+    selected_mode_key = "transition" if effective_is_transition else "standard"
+    if selected_mode_key not in definition_set:
+        # Fallback: If transition requested but not available, use standard
+        if selected_mode_key == "transition" and "transition" not in definition_set:
+            print(f"Warning: No 'transition' parameters for '{base_func_key}'. Using 'standard' parameters instead even if transition is checked.")
+            selected_mode_key = "standard"
+        else:
+            print(f"Warning: No parameters found for '{base_func_key}' in mode '{selected_mode_key}'.")
+            return ordered_params
+
+    # Create OrderedDict for selected mode
+    for name, default_val in definition_set[selected_mode_key]:
+        ordered_params[name] = default_val
+
+    return ordered_params
