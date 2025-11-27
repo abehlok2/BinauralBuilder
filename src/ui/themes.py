@@ -73,7 +73,7 @@ QPushButton {
 QPushButton:hover {
     background-color: rgba(0, 255, 136, 0.4);
     border: 1px solid #00ffcc;
-    box-shadow: 0 0 10px rgba(0, 255, 136, 0.6);
+
 }
 
 QPushButton:pressed {
@@ -124,7 +124,7 @@ QGroupBox {
     padding-top: 8px;
     padding-left: 8px;
     padding-right: 8px;
-    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
+
 }
 QGroupBox::title {
     subcontrol-origin: margin;

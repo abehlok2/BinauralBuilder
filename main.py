@@ -74,6 +74,7 @@ from src.utils.voice_file import (
     load_voice_preset_list,
     VOICES_FILE_EXTENSION,
 )
+from src.ui.html_delegate import HTMLDelegate
 
 # Disable Windows action sounds by overriding QMessageBox helpers
 def _silent_message_box(parent, title, text, buttons=QMessageBox.Ok, default_button=QMessageBox.NoButton):
@@ -193,7 +194,7 @@ QGroupBox {
     border-radius: 8px;
     margin-top: 12px;
     padding: 8px;
-    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
+
 }
 QGroupBox::title {
     subcontrol-origin: margin;
@@ -622,11 +623,14 @@ class TrackEditorApp(QMainWindow):
         self.steps_tree = QTreeView()
         self.steps_tree.setModel(self.step_model)
         self.steps_tree.setRootIsDecorated(False)
-        self.steps_tree.setUniformRowHeights(True)
+        self.steps_tree.setModel(self.step_model)
+        self.steps_tree.setRootIsDecorated(False)
+        self.steps_tree.setUniformRowHeights(False)
         self.steps_tree.setColumnWidth(0, 80)
         self.steps_tree.setColumnWidth(1, 150)
         self.steps_tree.setColumnWidth(2, 60)
         self.steps_tree.header().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.steps_tree.setItemDelegate(HTMLDelegate(self.steps_tree))
         self.steps_tree.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.steps_tree.setEditTriggers(
             QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed
@@ -738,15 +742,19 @@ class TrackEditorApp(QMainWindow):
         self.voices_tree = QTreeView()
         self.voices_tree.setModel(self.voice_model)
         self.voices_tree.setRootIsDecorated(False)
-        self.voices_tree.setUniformRowHeights(True)
-        self.voices_tree.setColumnWidth(0, 220)
+        self.voices_tree.setModel(self.voice_model)
+        self.voices_tree.setRootIsDecorated(False)
+        self.voices_tree.setUniformRowHeights(False)
+        self.voices_tree.setColumnWidth(0, 140)
         self.voices_tree.setColumnWidth(1, 100)
         self.voices_tree.setColumnWidth(2, 80)
         self.voices_tree.setColumnWidth(3, 80)
         self.voices_tree.setColumnWidth(4, 80)
         self.voices_tree.setColumnWidth(5, 80)
         self.voices_tree.setColumnWidth(6, 150)
+        self.voices_tree.setColumnWidth(6, 150)
         self.voices_tree.header().setStretchLastSection(True)
+        self.voices_tree.setItemDelegate(HTMLDelegate(self.voices_tree))
         self.voices_tree.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.voices_tree.setEditTriggers(
             QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed
@@ -833,6 +841,7 @@ class TrackEditorApp(QMainWindow):
             "FadeIn",
             "FadeOut",
         ])
+        self.clips_tree.setItemDelegate(HTMLDelegate(self.clips_tree))
         self.clips_tree.setSelectionMode(QTreeWidget.ExtendedSelection)
         self.clips_tree.itemSelectionChanged.connect(self.on_clip_select)
         self.clips_tree.itemChanged.connect(self.on_clip_item_changed)
@@ -1188,46 +1197,363 @@ class TrackEditorApp(QMainWindow):
             func_name = voice_data.get('synth_function_name', 'N/A')
             self.voice_details_groupbox.setTitle(f"Details: Step {selected_step_idx+1}, Voice {selected_voice_idx+1} ({func_name})")
             params = voice_data.get("params", {}) or {}
-            details = f"Function: {func_name}\n"
-            details += f"Transition: {'Yes' if voice_data.get('is_transition', False) else 'No'}\n"
+            
+            # Build HTML content
+            html = f"""
+            <style>
+                h3 {{ margin-bottom: 5px; color: #81A1C1; }}
+                h4 {{ margin-bottom: 5px; margin-top: 10px; color: #88C0D0; }}
+                p {{ margin: 2px 0; }}
+                table {{ border-collapse: collapse; width: 100%; }}
+                td {{ padding: 2px 5px; }}
+                .key {{ font-weight: bold; color: #D8DEE9; }}
+                .val {{ color: #ECEFF4; }}
+                .default {{ color: #4C566A; font-style: italic; }}
+            </style>
+            <h3>Function: {func_name}</h3>
+            <p><b>Transition:</b> {'Yes' if voice_data.get('is_transition', False) else 'No'}</p>
+            """
+            
             desc = voice_data.get('description', '')
             if desc:
-                details += f"Description: {desc}\n"
-            details += "Parameters:\n"
+                html += f"<p><b>Description:</b> {desc}</p>"
+            
+            html += "<h4>Parameters:</h4><table>"
+            
             display_prefs = getattr(self.prefs, "voice_detail_display", {}) if hasattr(self, "prefs") else {}
             func_display = display_prefs.get(func_name, {}) if isinstance(display_prefs, dict) else {}
             default_params = get_default_params_for_function(func_name, voice_data.get('is_transition', False))
             all_param_names = sorted(set(default_params.keys()) | set(params.keys()))
+            
             shown_any = False
             for key in all_param_names:
                 cfg = func_display.get(key, {}) if isinstance(func_display, dict) else {}
                 display_flag = cfg.get("display", get_default_display_flag(key)) if isinstance(cfg, dict) else get_default_display_flag(key)
                 if not display_flag:
                     continue
+                
                 value = params.get(key, cfg.get("default", default_params.get(key))) if isinstance(cfg, dict) else params.get(key, default_params.get(key))
-                suffix = ""
-                if key not in params:
-                    suffix = " (default)"
-                if isinstance(value, float):
-                    details += f"  {key}: {value:.4g}{suffix}\n"
-                else:
-                    details += f"  {key}: {value}{suffix}\n"
+                
+                is_default = key not in params
+                val_str = f"{value:.4g}" if isinstance(value, float) else str(value)
+                val_class = "val default" if is_default else "val"
+                suffix = " (default)" if is_default else ""
+                
+                html += f"<tr><td class='key'>{key}:</td><td class='{val_class}'>{val_str}{suffix}</td></tr>"
                 shown_any = True
+            
             if not shown_any:
-                details += "  (No parameters selected for display)\n"
+                html += "<tr><td colspan='2' class='default'>(No parameters selected for display)</td></tr>"
+            
+            html += "</table>"
+            
             env_data = voice_data.get("volume_envelope")
             if env_data and isinstance(env_data, dict):
                 env_type = env_data.get('type', 'N/A')
-                details += f"\nEnvelope Type: {env_type}\n"
+                html += f"<h4>Envelope:</h4><p><b>Type:</b> {env_type}</p>"
                 env_params = env_data.get('params', {})
                 if env_params:
-                    details += "  Envelope Params:\n"
+                    html += "<table>"
                     for key, value in sorted(env_params.items()):
-                        if isinstance(value, float): details += f"    {key}: {value:.4g}\n"
-                        else: details += f"    {key}: {value}\n"
-                else: details += "  (No envelope parameters defined)\n"
-            else: details += "\nEnvelope Type: None\n"
-            self.voice_details_text.setPlainText(details)
+                        val_str = f"{value:.4g}" if isinstance(value, float) else str(value)
+                        html += f"<tr><td class='key'>{key}:</td><td class='val'>{val_str}</td></tr>"
+                    html += "</table>"
+                else:
+                    html += "<p class='default'>(No envelope parameters defined)</p>"
+            else:
+                html += "<h4>Envelope:</h4><p>None</p>"
+            
+            self.voice_details_text.setHtml(html)
+        except (IndexError, KeyError) as e:
+            print(f"Error accessing voice data for details: Step {selected_step_idx}, Voice {selected_voice_idx}. Error: {e}")
+        except Exception as e:
+            print(f"Unexpected error updating voice details: {e}")
+            traceback.print_exc()
+
+    def _update_clip_actions_state(self):
+        selected_items = self.clips_tree.selectedItems()
+        has_selection = len(selected_items) > 0
+        is_single = len(selected_items) == 1
+        self.edit_clip_button.setEnabled(is_single)
+        self.remove_clip_button.setEnabled(has_selection)
+        self.play_clip_button.setEnabled(is_single or self.is_clip_playing)
+
+    @pyqtSlot()
+    def on_clip_select(self):
+        self._update_clip_actions_state()
+
+    # --- Internal Data Handling ---
+    def _update_global_settings_from_ui(self):
+        try:
+            sr_str = self.sr_entry.text()
+            cf_str = self.cf_entry.text()
+            outfile = self.outfile_entry.text().strip()
+            noise_file = self.noise_file_entry.text().strip()
+            noise_amp_str = self.noise_amp_entry.text()
+            if not sr_str: raise ValueError("Sample rate cannot be empty.")
+            sr = int(sr_str)
+            if sr <= 0: raise ValueError("Sample rate must be positive.")
+            self.track_data["global_settings"]["sample_rate"] = sr
+            if not cf_str: raise ValueError("Crossfade duration cannot be empty.")
+            cf_str_safe = cf_str.replace(',', '.')
+            cf = float(cf_str_safe)
+            if cf < 0: raise ValueError("Crossfade duration cannot be negative.")
+            self.track_data["global_settings"]["crossfade_duration"] = cf
+            # Ensure step start times reflect any change in crossfade duration
+            self._recalculate_step_start_times()
+            if not outfile: raise ValueError("Output filename cannot be empty.")
+            if any(c in outfile for c in '<>:"/\\|?*'):
+                raise ValueError("Output filename contains invalid characters.")
+            self.track_data["global_settings"]["output_filename"] = outfile
+
+            self.track_data.setdefault(
+                "background_noise",
+                {
+                    "file_path": "",
+                    "amp": 0.0,
+                    "pan": 0.0,
+                    "start_time": 0.0,
+                    "fade_in": 0.0,
+                    "fade_out": 0.0,
+                    "amp_envelope": [],
+                },
+            )
+            self.track_data["background_noise"]["file_path"] = noise_file
+            try:
+                noise_amp = float(noise_amp_str) if noise_amp_str else 0.0
+            except ValueError:
+                raise ValueError("Invalid noise amplitude")
+            self.track_data["background_noise"]["amp"] = noise_amp
+            # Noise pan parameter removed from UI; value remains unchanged
+        except ValueError as e:
+            QMessageBox.critical(self, "Input Error", f"Invalid global settings:\n{e}")
+            return False
+        except Exception as e:
+            QMessageBox.critical(self, "Input Error", f"Unexpected error reading global settings:\n{e}")
+            return False
+        return True
+
+    def _update_ui_from_global_settings(self):
+        settings = self.track_data.get("global_settings", {})
+        self.sr_entry.setText(str(settings.get("sample_rate", DEFAULT_SAMPLE_RATE)))
+        self.cf_entry.setText(str(settings.get("crossfade_duration", DEFAULT_CROSSFADE)))
+        self.outfile_entry.setText(settings.get("output_filename", "my_track.wav"))
+        noise = self.track_data.get("background_noise", {})
+        self.noise_file_entry.setText(noise.get("file_path", ""))
+        self.noise_amp_entry.setText(str(noise.get("amp", 0.0)))
+
+    def _recalculate_step_start_times(self):
+        crossfade = float(self.track_data.get("global_settings", {}).get("crossfade_duration", 0.0))
+        current_time = 0.0
+        for step in self.track_data.get("steps", []):
+            step["start"] = current_time
+            advance = float(step.get("duration", 0.0))
+            if crossfade > 0.0:
+                advance = max(0.0, advance - crossfade)
+            current_time += advance
+
+    def _update_total_duration_label(self):
+        total = 0.0
+        for step in self.track_data.get("steps", []):
+            try:
+                total += float(step.get("duration", 0.0))
+            except (TypeError, ValueError):
+                continue
+        self.total_duration_label.setText(f"Total Duration: {total:.2f} s")
+
+    # --- UI Refresh Functions ---
+    def refresh_steps_tree(self):
+        self._steps_tree_updating = True
+        current_row = self.get_selected_step_index()
+        selected_rows = self.get_selected_step_indices()
+        self._recalculate_step_start_times()
+        self.step_model.refresh(self.track_data.get("steps", []))
+        sel_model = self.steps_tree.selectionModel()
+        sel_model.clearSelection()
+        for row in selected_rows:
+            if 0 <= row < self.step_model.rowCount():
+                idx = self.step_model.index(row, 0)
+                sel_model.select(idx, QItemSelectionModel.Select | QItemSelectionModel.Rows)
+        if current_row is not None and 0 <= current_row < self.step_model.rowCount():
+            idx = self.step_model.index(current_row, 0)
+            self.steps_tree.setCurrentIndex(idx)
+            self.steps_tree.scrollTo(idx, QAbstractItemView.PositionAtCenter)
+        self.on_step_select()
+        self._update_total_duration_label()
+        self._steps_tree_updating = False
+
+    def refresh_voices_tree(self):
+        self._voices_tree_updating = True
+        current_row = self.get_selected_voice_index()
+        selected_rows = self.get_selected_voice_indices()
+        self.clear_voice_details()
+        selected_step_idx = self.get_selected_step_index()
+        if selected_step_idx is None or len(self.get_selected_step_indices()) != 1:
+            self.voice_model.refresh([])
+            self.voices_groupbox.setTitle("Voices for Selected Step")
+            self._update_voice_actions_state()
+            self._voices_tree_updating = False
+            return
+        self.voices_groupbox.setTitle(f"Voices for Step {selected_step_idx + 1}")
+        try:
+            step_data = self.track_data["steps"][selected_step_idx]
+            voices = step_data.get("voices", [])
+        except (IndexError, KeyError):
+            voices = []
+        self.voice_model.refresh(voices)
+        sel_model = self.voices_tree.selectionModel()
+        sel_model.clearSelection()
+        for row in selected_rows:
+            if 0 <= row < self.voice_model.rowCount():
+                idx = self.voice_model.index(row, 0)
+                sel_model.select(idx, QItemSelectionModel.Select | QItemSelectionModel.Rows)
+        if current_row is not None and 0 <= current_row < self.voice_model.rowCount():
+            idx = self.voice_model.index(current_row, 0)
+            self.voices_tree.setCurrentIndex(idx)
+            self.voices_tree.scrollTo(idx, QAbstractItemView.PositionAtCenter)
+        self.on_voice_select()
+        self._voices_tree_updating = False
+
+    def refresh_clips_tree(self):
+        self._clips_tree_updating = True
+        current_data = None
+        current_item = self.clips_tree.currentItem()
+        if current_item:
+            current_data = current_item.data(0, Qt.UserRole)
+        selected = set()
+        for item in self.clips_tree.selectedItems():
+            data = item.data(0, Qt.UserRole)
+            if data is not None:
+                selected.add(data)
+        self.clips_tree.clear()
+        clips = self.track_data.get("clips", [])
+        for i, clip in enumerate(clips):
+            item = QTreeWidgetItem(self.clips_tree)
+            item.setData(0, Qt.DisplayRole, f"<b>{os.path.basename(clip.get('file_path', ''))}</b>")
+            item.setData(0, Qt.EditRole, os.path.basename(clip.get("file_path", "")))
+            
+            item.setData(1, Qt.DisplayRole, clip.get("description", ""))
+            item.setData(1, Qt.EditRole, clip.get("description", ""))
+            
+            start = float(clip.get('start', 0.0))
+            duration = float(clip.get('duration', 0.0))
+            if duration <= 0 and clip.get('file_path'):
+                duration = self._get_clip_duration(clip['file_path'])
+                clip['duration'] = duration
+            finish = start + duration
+            
+            item.setData(2, Qt.DisplayRole, f"<font color='#88C0D0'>{start:.2f}</font>")
+            item.setData(2, Qt.EditRole, f"{start:.2f}")
+            
+            item.setData(3, Qt.DisplayRole, f"<b>{duration:.2f}</b>")
+            item.setData(3, Qt.EditRole, f"{duration:.2f}")
+            
+            item.setData(4, Qt.DisplayRole, f"{finish:.2f}")
+            item.setData(4, Qt.EditRole, f"{finish:.2f}")
+            
+            item.setData(5, Qt.DisplayRole, str(clip.get('amp', 1.0)))
+            item.setData(5, Qt.EditRole, str(clip.get('amp', 1.0)))
+            
+            item.setData(6, Qt.DisplayRole, str(clip.get('pan', 0.0)))
+            item.setData(6, Qt.EditRole, str(clip.get('pan', 0.0)))
+            
+            item.setData(7, Qt.DisplayRole, str(clip.get('fade_in', 0.0)))
+            item.setData(7, Qt.EditRole, str(clip.get('fade_in', 0.0)))
+            
+            item.setData(8, Qt.DisplayRole, str(clip.get('fade_out', 0.0)))
+            item.setData(8, Qt.EditRole, str(clip.get('fade_out', 0.0)))
+            item.setFlags(item.flags() | Qt.ItemIsEditable)
+            item.setData(0, Qt.UserRole, i)
+            if i in selected:
+                item.setSelected(True)
+                if i == current_data:
+                    self.clips_tree.setCurrentItem(item)
+        self._update_clip_actions_state()
+        self._clips_tree_updating = False
+
+    def clear_voice_details(self):
+        self.voice_details_text.clear()
+        self.voice_details_groupbox.setTitle("Selected Voice Details")
+
+    def update_voice_details(self):
+        self.clear_voice_details()
+        if len(self.get_selected_step_indices()) != 1 or len(self.get_selected_voice_indices()) != 1:
+            return
+        selected_step_idx = self.get_selected_step_index()
+        selected_voice_idx = self.get_selected_voice_index()
+        if selected_step_idx is None or selected_voice_idx is None: return
+        try:
+            voice_data = self.track_data["steps"][selected_step_idx]["voices"][selected_voice_idx]
+            func_name = voice_data.get('synth_function_name', 'N/A')
+            self.voice_details_groupbox.setTitle(f"Details: Step {selected_step_idx+1}, Voice {selected_voice_idx+1} ({func_name})")
+            params = voice_data.get("params", {}) or {}
+            
+            # Build HTML content
+            html = f"""
+            <style>
+                h3 {{ margin-bottom: 5px; color: #81A1C1; }}
+                h4 {{ margin-bottom: 5px; margin-top: 10px; color: #88C0D0; }}
+                p {{ margin: 2px 0; }}
+                table {{ border-collapse: collapse; width: 100%; }}
+                td {{ padding: 2px 5px; }}
+                .key {{ font-weight: bold; color: #D8DEE9; }}
+                .val {{ color: #ECEFF4; }}
+                .default {{ color: #4C566A; font-style: italic; }}
+            </style>
+            <h3>Function: {func_name}</h3>
+            <p><b>Transition:</b> {'Yes' if voice_data.get('is_transition', False) else 'No'}</p>
+            """
+            
+            desc = voice_data.get('description', '')
+            if desc:
+                html += f"<p><b>Description:</b> {desc}</p>"
+            
+            html += "<h4>Parameters:</h4><table>"
+            
+            display_prefs = getattr(self.prefs, "voice_detail_display", {}) if hasattr(self, "prefs") else {}
+            func_display = display_prefs.get(func_name, {}) if isinstance(display_prefs, dict) else {}
+            default_params = get_default_params_for_function(func_name, voice_data.get('is_transition', False))
+            all_param_names = sorted(set(default_params.keys()) | set(params.keys()))
+            
+            shown_any = False
+            for key in all_param_names:
+                cfg = func_display.get(key, {}) if isinstance(func_display, dict) else {}
+                display_flag = cfg.get("display", get_default_display_flag(key)) if isinstance(cfg, dict) else get_default_display_flag(key)
+                if not display_flag:
+                    continue
+                
+                value = params.get(key, cfg.get("default", default_params.get(key))) if isinstance(cfg, dict) else params.get(key, default_params.get(key))
+                
+                is_default = key not in params
+                val_str = f"{value:.4g}" if isinstance(value, float) else str(value)
+                val_class = "val default" if is_default else "val"
+                suffix = " (default)" if is_default else ""
+                
+                html += f"<tr><td class='key'>{key}:</td><td class='{val_class}'>{val_str}{suffix}</td></tr>"
+                shown_any = True
+            
+            if not shown_any:
+                html += "<tr><td colspan='2' class='default'>(No parameters selected for display)</td></tr>"
+            
+            html += "</table>"
+            
+            env_data = voice_data.get("volume_envelope")
+            if env_data and isinstance(env_data, dict):
+                env_type = env_data.get('type', 'N/A')
+                html += f"<h4>Envelope:</h4><p><b>Type:</b> {env_type}</p>"
+                env_params = env_data.get('params', {})
+                if env_params:
+                    html += "<table>"
+                    for key, value in sorted(env_params.items()):
+                        val_str = f"{value:.4g}" if isinstance(value, float) else str(value)
+                        html += f"<tr><td class='key'>{key}:</td><td class='val'>{val_str}</td></tr>"
+                    html += "</table>"
+                else:
+                    html += "<p class='default'>(No envelope parameters defined)</p>"
+            else:
+                html += "<h4>Envelope:</h4><p>None</p>"
+            
+            self.voice_details_text.setHtml(html)
         except (IndexError, KeyError) as e:
             print(f"Error accessing voice data for details: Step {selected_step_idx}, Voice {selected_voice_idx}. Error: {e}")
         except Exception as e:

@@ -8,6 +8,16 @@ class StepModel(QAbstractTableModel):
         super().__init__(parent)
         self.steps = steps if steps is not None else []
 
+from PyQt5.QtCore import QAbstractTableModel, Qt, QModelIndex
+
+class StepModel(QAbstractTableModel):
+    """Model holding a list of step dictionaries."""
+    headers = ["Duration (s)", "Description", "# Voices"]
+
+    def __init__(self, steps=None, parent=None):
+        super().__init__(parent)
+        self.steps = steps if steps is not None else []
+
     def rowCount(self, parent=QModelIndex()):
         return len(self.steps)
 
@@ -18,7 +28,18 @@ class StepModel(QAbstractTableModel):
         if not index.isValid():
             return None
         step = self.steps[index.row()]
-        if role in (Qt.DisplayRole, Qt.EditRole):
+        
+        if role == Qt.DisplayRole:
+            if index.column() == 0:
+                return f"{step.get('duration', 0.0):.2f}"
+            if index.column() == 1:
+                return step.get('description', '')
+            if index.column() == 2:
+                count = len(step.get('voices', []))
+                color = "#A3BE8C" if count > 0 else "#BF616A" # Green if voices, Red if empty
+                return f"<b><font color='{color}'>{count}</font></b>"
+        
+        elif role == Qt.EditRole:
             if index.column() == 0:
                 return f"{step.get('duration', 0.0):.2f}"
             if index.column() == 1:
@@ -126,19 +147,43 @@ class VoiceModel(QAbstractTableModel):
         if not index.isValid():
             return None
         voice = self.voices[index.row()]
-        if role in (Qt.DisplayRole, Qt.EditRole):
-            func_name = voice.get('synth_function_name', 'N/A')
-            params = voice.get('params', {})
-            is_transition = voice.get('is_transition', False)
-            description = voice.get('description', '')
+        
+        func_name = voice.get('synth_function_name', 'N/A')
+        params = voice.get('params', {})
+        is_transition = voice.get('is_transition', False)
+        description = voice.get('description', '')
+        
+        if role == Qt.DisplayRole:
+            if index.column() == 0:
+                return f"<b>{func_name}</b>"
+            if index.column() == 1:
+                carrier_val = self._get_carrier_frequency(params, is_transition)
+                return f'<font color="#88C0D0">{carrier_val}</font>'
+            if index.column() == 2:
+                beat_val = self._get_beat_frequency(params, is_transition)
+                return f'<font color="#81A1C1">{beat_val}</font>'
+            if index.column() == 3:
+                txt = "Yes" if is_transition else "No"
+                color = "#EBCB8B" if is_transition else "#4C566A" # Yellow for transition, muted for no
+                return f'<b><font color="{color}">{txt}</font></b>'
+            if index.column() == 4:
+                val = self._format_number(params.get("initial_offset", 0.0)) if is_transition else "N/A"
+                return f'<font color="#E5E9F0">{val}</font>'
+            if index.column() == 5:
+                val = self._format_number(
+                    params.get("duration", params.get("post_offset", 0.0))
+                ) if is_transition else "N/A"
+                return f'<font color="#E5E9F0">{val}</font>'
+            if index.column() == 6:
+                return f'<font color="#E5E9F0">{description}</font>'
+                
+        elif role == Qt.EditRole:
             if index.column() == 0:
                 return func_name
             if index.column() == 1:
-                carrier_val = self._get_carrier_frequency(params, is_transition)
-                return carrier_val
+                return self._get_carrier_frequency(params, is_transition)
             if index.column() == 2:
-                beat_val = self._get_beat_frequency(params, is_transition)
-                return beat_val
+                return self._get_beat_frequency(params, is_transition)
             if index.column() == 3:
                 return "Yes" if is_transition else "No"
             if index.column() == 4:
@@ -147,8 +192,6 @@ class VoiceModel(QAbstractTableModel):
                 return self._format_number(
                     params.get("duration", params.get("post_offset", 0.0))
                 ) if is_transition else "N/A"
-            if index.column() == 6:
-                return description
         return None
 
     def _format_number(self, value):
@@ -157,6 +200,7 @@ class VoiceModel(QAbstractTableModel):
             return f"{float(value):.2f}"
         except (ValueError, TypeError):
             return str(value)
+
 
     def _get_carrier_frequency(self, params, is_transition):
         """Return formatted carrier frequency for display."""

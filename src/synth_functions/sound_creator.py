@@ -328,7 +328,7 @@ def _import_module(module_name):
 def _discover_synth_modules():
     """Yield imported synth modules within ``src.synth_functions``."""
 
-    base_package_names = ["src.synth_functions", "synth_functions"]
+    base_package_names = ["src.synth_functions"]
     for base_name in base_package_names:
         package = _import_module(base_name)
         if package is None:
