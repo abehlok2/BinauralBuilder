@@ -2322,15 +2322,6 @@ def get_default_params_for_function(func_name_from_combo: str, is_transition_mod
         "subliminal_encode": "subliminal_encode",
     }
 
-    base_func_key = internal_func_key_map.get(func_name_from_combo, func_name_from_combo)
-    
-    # Fallback: if key not found, try snake_case conversion
-    if base_func_key not in internal_func_key_map and base_func_key not in param_definitions:
-         potential_key = base_func_key.lower().replace(" ", "_")
-         if potential_key in param_definitions:
-             base_func_key = potential_key
-
-
     param_definitions = {
         "rhythmic_waveshaping": { # This is an example, ensure it's correctAdd commentMore actions
             "standard": [
@@ -2878,13 +2869,21 @@ def get_default_params_for_function(func_name_from_combo: str, is_transition_mod
     }
     # --- End of param_definitions ---
 
+    base_func_key = internal_func_key_map.get(func_name_from_combo, func_name_from_combo)
+
+    # Fallback: if key not found, try snake_case conversion using known definitions
+    if base_func_key not in param_definitions:
+        potential_key = base_func_key.lower().replace(" ", "_")
+        if potential_key in param_definitions:
+            base_func_key = potential_key
+
     ordered_params = OrderedDict()
     definition_set = param_definitions.get(base_func_key)
 
     # If func_name_from_combo itself is a transition func (e.g. "binaural_beat_transition")
     # then is_transition_mode might be overridden by this fact.
     # The self.transition_check usually dictates the mode.
-    effective_func_name_for_lookup = func_name_from_combo # The name from combo
+    effective_func_name_for_lookup = base_func_key # Prefer resolved key for lookups
     effective_is_transition = is_transition_mode
 
     # If the selected combo item ALREADY implies transition (e.g., "func_transition")
