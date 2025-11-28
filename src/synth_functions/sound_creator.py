@@ -308,6 +308,7 @@ _EXCLUDED_FUNCTION_NAMES = [
     'load_track_from_json', 'save_track_to_json', 'generate_audio', 'generate_wav', 'get_synth_params',
     'trapezoid_envelope_vectorized', '_flanger_effect_stereo_continuous',
     'butter', 'lfilter', 'write', 'ensure_stereo', 'apply_filters', 'design_filter', 
+    'calculate_transition_alpha',
     # Standard library functions that might be imported
     'json', 'inspect', 'os', 'traceback', 'math', 'copy', 'pkgutil', 'importlib'
 ]

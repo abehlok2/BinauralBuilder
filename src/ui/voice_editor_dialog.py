@@ -802,8 +802,11 @@ class VoiceEditorDialog(QDialog): # Standard class name
         self.params_scroll_area = QScrollArea()
         self.params_scroll_area.setWidgetResizable(True)
         self.params_scroll_content = QWidget()
-        self.params_scroll_layout = QVBoxLayout(self.params_scroll_content)
-        self.params_scroll_layout.setAlignment(Qt.AlignTop) # Important for parameter rows
+        self.params_scroll_layout = QGridLayout(self.params_scroll_content)
+        self.params_scroll_layout.setAlignment(Qt.AlignTop)
+        # Columns: 0=Label, 1=StartVal, 2=Unit/Swap, 3=EndLabel, 4=EndVal, 5=EndUnit
+        self.params_scroll_layout.setColumnStretch(1, 2) 
+        self.params_scroll_layout.setColumnStretch(4, 2)
         self.params_scroll_area.setWidget(self.params_scroll_content)
         params_groupbox_layout.addWidget(self.params_scroll_area)
 
@@ -816,24 +819,31 @@ class VoiceEditorDialog(QDialog): # Standard class name
         h_splitter.addWidget(self.params_groupbox)
 
         # Right side: Reference Voice Viewer
-        reference_groupbox = QGroupBox("Reference Voice Details") # Changed title
+        reference_groupbox = QGroupBox("Reference Voice Details")
         reference_layout = QVBoxLayout(reference_groupbox)
-        ref_select_layout = QHBoxLayout()
-        ref_select_layout.addWidget(QLabel("Step:"))
+        
+        # Use a grid for the reference selection for better alignment
+        ref_select_grid = QGridLayout()
+        ref_select_grid.addWidget(QLabel("Step:"), 0, 0)
         self.reference_step_combo = QComboBox()
-        self.reference_step_combo.setMinimumWidth(100)
+        self.reference_step_combo.setMinimumWidth(80)
         self.reference_step_combo.currentIndexChanged.connect(self._update_reference_voice_combo)
-        ref_select_layout.addWidget(self.reference_step_combo)
-        ref_select_layout.addWidget(QLabel("Voice:"))
+        ref_select_grid.addWidget(self.reference_step_combo, 0, 1)
+        
+        ref_select_grid.addWidget(QLabel("Voice:"), 0, 2)
         self.reference_voice_combo = QComboBox()
-        self.reference_voice_combo.setMinimumWidth(150)
+        self.reference_voice_combo.setMinimumWidth(120)
+        self.reference_voice_combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.reference_voice_combo.currentIndexChanged.connect(self._update_reference_display)
-        ref_select_layout.addWidget(self.reference_voice_combo, 1) # Give voice combo more stretch
-        reference_layout.addLayout(ref_select_layout)
+        ref_select_grid.addWidget(self.reference_voice_combo, 0, 3)
+        
+        ref_select_grid.setColumnStretch(3, 1) # Voice combo stretches
+        reference_layout.addLayout(ref_select_grid)
+
         self.reference_details_text = QTextEdit()
         self.reference_details_text.setReadOnly(True)
-        self.reference_details_text.setFont(QFont("Consolas", 9)) # Good for code/data display
-        reference_layout.addWidget(self.reference_details_text, 1) # Allow text edit to stretch
+        self.reference_details_text.setFont(QFont("Consolas", 9))
+        reference_layout.addWidget(self.reference_details_text, 1)
 
         self.set_ref_end_button = QPushButton("Set Reference as End State")
         self.set_ref_end_button.setEnabled(self.transition_check.isChecked())
@@ -904,8 +914,9 @@ class VoiceEditorDialog(QDialog): # Standard class name
         
         default_params_ordered = self._get_default_params(func_name, is_transition)
 
+
         if not default_params_ordered and func_name != "Error":
-            self.params_scroll_layout.addWidget(QLabel(f"Warning: Could not determine parameters for '{func_name}'.\nEnsure it's defined in _get_default_params.", self))
+            self.params_scroll_layout.addWidget(QLabel(f"Warning: Could not determine parameters for '{func_name}'.\nEnsure it's defined in _get_default_params.", self), 0, 0, 1, 6)
             return
 
         current_saved_params = self.current_voice_data.get("params", {})
@@ -930,30 +941,38 @@ class VoiceEditorDialog(QDialog): # Standard class name
                     if ('start' + base_name) in default_params_ordered and base_name not in transition_pairs:
                         pass
 
+        current_row = 0
+
         for name in default_params_ordered.keys():
             if name in processed_names or name in processed_end_params:
-                # Skip parameters that have already been handled as part of a
-                # left/right or start/end pair.
                 continue
 
             default_value = default_params_ordered[name]
             current_value = params_to_display.get(name, default_value)
 
+            # --- Special Editors (Full Width) ---
+
             if name == 'spatialTrajectory':
-                frame = QWidget()
-                row_layout = QHBoxLayout(frame)
-                row_layout.setContentsMargins(2, 2, 2, 2)
                 param_label = QLabel('spatialTrajectory:')
-                row_layout.addWidget(param_label)
+                self.params_scroll_layout.addWidget(param_label, current_row, 0)
+                
                 summary_label = QLabel(
                     f"{len(current_value) if isinstance(current_value, list) else 0} segments"
                 )
                 edit_btn = QPushButton('Edit...')
-                row_layout.addWidget(summary_label)
-                row_layout.addWidget(edit_btn)
-                row_layout.addStretch(1)
+                
+                container = QWidget()
+                cont_layout = QHBoxLayout(container)
+                cont_layout.setContentsMargins(0,0,0,0)
+                cont_layout.addWidget(summary_label)
+                cont_layout.addWidget(edit_btn)
+                cont_layout.addStretch(1)
+                
+                self.params_scroll_layout.addWidget(container, current_row, 1, 1, 5) # Span rest of columns
+
                 value_list = current_value if isinstance(current_value, list) else []
                 self.param_widgets[name] = {'widget': summary_label, 'type': 'json', 'value': value_list}
+                
                 def _edit_traj():
                     dlg = SpatialTrajectoryDialog(self, self.param_widgets[name]['value'])
                     if dlg.exec_() == QDialog.Accepted:
@@ -962,48 +981,53 @@ class VoiceEditorDialog(QDialog): # Standard class name
                             f"{len(self.param_widgets[name]['value'])} segments"
                         )
                 edit_btn.clicked.connect(_edit_traj)
-                self.params_scroll_layout.addWidget(frame)
+                
                 processed_names.add(name)
+                current_row += 1
                 continue
 
             if name == 'sweeps':
-                frame = QWidget()
-                frame_layout = QVBoxLayout(frame)
-                frame_layout.setContentsMargins(2, 2, 2, 2)
                 label = QLabel('sweeps:')
                 label.setStyleSheet('font-weight: bold;')
+                self.params_scroll_layout.addWidget(label, current_row, 0)
+                
                 editor = NoiseSweepEditor(self, is_transition=is_transition, max_rows=4)
                 editor.set_transition_mode(is_transition)
                 editor.set_values(current_value)
-                frame_layout.addWidget(label)
-                frame_layout.addWidget(editor)
+                
+                self.params_scroll_layout.addWidget(editor, current_row, 1, 1, 5) # Span rest
+                
                 self.param_widgets[name] = {'widget': editor, 'type': 'sweep_list'}
                 tooltip = self._get_param_tooltip(func_name, name)
                 if tooltip:
                     label.setToolTip(tooltip)
                     editor.setToolTip(tooltip)
-                self.params_scroll_layout.addWidget(frame)
+                
                 processed_names.add(name)
+                current_row += 1
                 continue
 
             if name == 'static_notches':
-                frame = QWidget()
-                frame_layout = QVBoxLayout(frame)
-                frame_layout.setContentsMargins(2, 2, 2, 2)
                 label = QLabel('static_notches:')
                 label.setStyleSheet('font-weight: bold;')
+                self.params_scroll_layout.addWidget(label, current_row, 0)
+                
                 editor = StaticNotchEditor(self)
                 editor.set_values(current_value)
-                frame_layout.addWidget(label)
-                frame_layout.addWidget(editor)
+                
+                self.params_scroll_layout.addWidget(editor, current_row, 1, 1, 5) # Span rest
+                
                 self.param_widgets[name] = {'widget': editor, 'type': 'static_notch_list'}
                 tooltip = self._get_param_tooltip(func_name, name)
                 if tooltip:
                     label.setToolTip(tooltip)
                     editor.setToolTip(tooltip)
-                self.params_scroll_layout.addWidget(frame)
+                
                 processed_names.add(name)
+                current_row += 1
                 continue
+
+            # --- Standard Parameters ---
 
             display_current = current_value
             if (
@@ -1016,6 +1040,7 @@ class VoiceEditorDialog(QDialog): # Standard class name
 
             prefix, base_after = self._split_name_prefix(name)
 
+            # 1. Transition Pair (Start/End)
             if is_transition and prefix == 'start' and base_after in transition_pairs:
                 base_name_for_pair = base_after
                 end_name = transition_pairs[base_name_for_pair]['end']
@@ -1032,22 +1057,15 @@ class VoiceEditorDialog(QDialog): # Standard class name
                     ):
                         display_end = amplitude_to_db(float(end_current_value))
 
-                    frame = QWidget()
-                    row_layout = QGridLayout(frame)
-                    row_layout.setContentsMargins(2,2,2,2)
-
                     param_storage_type = 'str'
                     param_type_hint = 'any'
                     range_hint = self._get_param_range_hint(base_name_for_pair)
                     value_for_hint = default_value if default_value is not None else current_value
-                    if isinstance(value_for_hint, bool):
-                        param_type_hint = 'bool'
-                    elif isinstance(value_for_hint, int):
-                        param_type_hint = 'bool' if value_for_hint in (0, 1) else 'int'
-                    elif isinstance(value_for_hint, float):
-                        param_type_hint = 'float'
-                    elif isinstance(value_for_hint, str):
-                        param_type_hint = 'bool' if value_for_hint.lower() in ('true', 'false') else 'str'
+                    
+                    if isinstance(value_for_hint, bool): param_type_hint = 'bool'
+                    elif isinstance(value_for_hint, int): param_type_hint = 'bool' if value_for_hint in (0, 1) else 'int'
+                    elif isinstance(value_for_hint, float): param_type_hint = 'float'
+                    elif isinstance(value_for_hint, str): param_type_hint = 'bool' if value_for_hint.lower() in ('true', 'false') else 'str'
 
                     current_validator = None
                     if param_type_hint == 'int':
@@ -1057,172 +1075,63 @@ class VoiceEditorDialog(QDialog): # Standard class name
                         current_validator = QDoubleValidator(-999999.0, 999999.0, 6, self)
                         current_validator.setNotation(QDoubleValidator.StandardNotation)
                         param_storage_type = 'float'
-                    elif param_type_hint == 'bool':
-                        param_storage_type = 'bool'
                     else:
                         param_storage_type = 'str'
 
                     hint_text = f"({param_storage_type}{', ' + range_hint if range_hint else ''})"
 
+                    # Row Layout:
+                    # Col 0: Label
                     base_label = QLabel(f"{base_name_for_pair}:")
-                    row_layout.addWidget(base_label, 0, 0, Qt.AlignLeft)
+                    self.params_scroll_layout.addWidget(base_label, current_row, 0, Qt.AlignLeft)
 
-                    start_label = QLabel("Start:")
-                    row_layout.addWidget(start_label, 0, 1, Qt.AlignRight)
-                    if base_name_for_pair == 'noiseType' and param_type_hint in ('int', 'bool'):
-                        start_entry = QComboBox(); start_entry.addItems(['1', '2', '3'])
-                        val_to_set = str(int(display_start)) if isinstance(display_start, (int, float)) and int(display_start) in [1,2,3] else '1'
-                        start_entry.setCurrentText(val_to_set)
-                        start_entry.setMaximumWidth(100); row_layout.addWidget(start_entry, 0, 2, 1, 1, Qt.AlignLeft); param_storage_type = 'int'
-                    elif base_name_for_pair.endswith('FlangeShape') and param_type_hint == 'str':
-                        start_entry = QComboBox(); start_entry.addItems(['sine', 'triangle'])
-                        val_to_set = display_start if display_start in ['sine', 'triangle'] else 'sine'
-                        start_entry.setCurrentText(str(val_to_set))
-                        start_entry.setMinimumWidth(120); row_layout.addWidget(start_entry, 0, 2, 1, 2, Qt.AlignLeft); param_storage_type = 'str'
-                    elif base_name_for_pair.endswith('FlangeStereoMode') and param_type_hint in ('int', 'bool'):
-                        start_entry = QComboBox()
-                        start_entry.addItem('Linked', 0)
-                        start_entry.addItem('Spread', 1)
-                        start_entry.addItem('Mid-only', 2)
-                        start_entry.addItem('Side-only', 3)
-                        idx = start_entry.findData(int(display_start)) if isinstance(display_start, (int, float)) else 0
-                        start_entry.setCurrentIndex(idx if idx >= 0 else 0)
-                        start_entry.setMinimumWidth(120); row_layout.addWidget(start_entry, 0, 2, 1, 1, Qt.AlignLeft); param_storage_type = 'int'
-                    elif base_name_for_pair.endswith('FlangeDelayLaw') and param_type_hint in ('int', 'bool'):
-                        start_entry = QComboBox()
-                        start_entry.addItem('\u03c4-linear', 0)
-                        start_entry.addItem('1/\u03c4-linear', 1)
-                        start_entry.addItem('exp-\u03c4', 2)
-                        idx = start_entry.findData(int(display_start)) if isinstance(display_start, (int, float)) else 0
-                        start_entry.setCurrentIndex(idx if idx >= 0 else 0)
-                        start_entry.setMinimumWidth(120); row_layout.addWidget(start_entry, 0, 2, 1, 1, Qt.AlignLeft); param_storage_type = 'int'
-                    elif base_name_for_pair.endswith('FlangeInterp') and param_type_hint in ('int', 'bool'):
-                        start_entry = QComboBox()
-                        start_entry.addItem('Linear', 0)
-                        start_entry.addItem('Lagrange3', 1)
-                        idx = start_entry.findData(int(display_start)) if isinstance(display_start, (int, float)) else 0
-                        start_entry.setCurrentIndex(idx if idx >= 0 else 0)
-                        start_entry.setMinimumWidth(120); row_layout.addWidget(start_entry, 0, 2, 1, 1, Qt.AlignLeft); param_storage_type = 'int'
-                    elif base_name_for_pair.endswith('FlangeLoudnessMode') and param_type_hint in ('int', 'bool'):
-                        start_entry = QComboBox()
-                        start_entry.addItem('Off', 0)
-                        start_entry.addItem('Match Input RMS', 1)
-                        idx = start_entry.findData(int(display_start)) if isinstance(display_start, (int, float)) else 0
-                        start_entry.setCurrentIndex(idx if idx >= 0 else 0)
-                        start_entry.setMinimumWidth(120); row_layout.addWidget(start_entry, 0, 2, 1, 1, Qt.AlignLeft); param_storage_type = 'int'
-                    elif base_name_for_pair == 'pathShape' and param_type_hint == 'str' and hasattr(sound_creator, 'VALID_SAM_PATHS'):
-                        start_entry = QComboBox(); start_entry.addItems(sound_creator.VALID_SAM_PATHS)
-                        val_to_set = display_start if display_start in sound_creator.VALID_SAM_PATHS else sound_creator.VALID_SAM_PATHS[0]
-                        start_entry.setCurrentText(str(val_to_set))
-                        start_entry.setMinimumWidth(120); row_layout.addWidget(start_entry, 0, 2, 1, 2, Qt.AlignLeft); param_storage_type = 'str'
-                    elif base_name_for_pair == 'spatialDecoder' and param_type_hint == 'str':
-                        start_entry = QComboBox()
-                        start_entry.addItem('ITD Head (time-delay)', 'itd_head')
-                        start_entry.addItem('FOA Cardioid (legacy)', 'foa_cardioid')
-                        val_to_set = display_start if display_start in ['itd_head', 'foa_cardioid'] else 'itd_head'
-                        idx = start_entry.findData(val_to_set)
-                        start_entry.setCurrentIndex(idx if idx >= 0 else 0)
-                        start_entry.setMinimumWidth(120); row_layout.addWidget(start_entry, 0, 2, 1, 2, Qt.AlignLeft); param_storage_type = 'str'
-                    elif param_type_hint == 'bool':
-                        start_entry = QCheckBox()
-                        if isinstance(display_start, str):
-                            checked = display_start.strip().lower() in ('1', 'true', 'yes', 'on')
-                        else:
-                            checked = bool(display_start)
-                        start_entry.setChecked(checked)
-                        row_layout.addWidget(start_entry, 0, 2, 1, 1, Qt.AlignLeft)
-                    else:
-                        start_entry = QLineEdit(str(display_start) if display_start is not None else "")
-                        if current_validator:
-                            start_entry.setValidator(current_validator)
-                        start_entry.setMinimumWidth(self.ENTRY_WIDTH)
-                        start_entry.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-                        row_layout.addWidget(start_entry, 0, 2)
-                    self.param_widgets[name] = {'widget': start_entry, 'type': param_storage_type}
+                    # Col 1: Start Widget
+                    start_widget = self._create_param_widget(
+                        base_name_for_pair, display_start, param_type_hint, current_validator, self.ENTRY_WIDTH
+                    )
+                    self.params_scroll_layout.addWidget(start_widget, current_row, 1)
+                    self.param_widgets[name] = {'widget': start_widget, 'type': param_storage_type}
 
-                    end_label = QLabel("End:")
-                    row_layout.addWidget(end_label, 0, 3, Qt.AlignRight)
-                    if base_name_for_pair == 'noiseType' and param_type_hint in ('int', 'bool'):
-                        end_entry = QComboBox(); end_entry.addItems(['1','2','3'])
-                        val_to_set_e = str(int(display_end)) if isinstance(display_end, (int, float)) and int(display_end) in [1,2,3] else '1'
-                        end_entry.setCurrentText(val_to_set_e)
-                        end_entry.setMaximumWidth(100); row_layout.addWidget(end_entry, 0, 4, 1, 1, Qt.AlignLeft)
-                    elif base_name_for_pair.endswith('FlangeShape') and param_type_hint == 'str':
-                        end_entry = QComboBox(); end_entry.addItems(['sine','triangle'])
-                        val_to_set_e = display_end if display_end in ['sine','triangle'] else 'sine'
-                        end_entry.setCurrentText(str(val_to_set_e))
-                        end_entry.setMinimumWidth(120); row_layout.addWidget(end_entry, 0, 4, 1, 2, Qt.AlignLeft)
-                    elif base_name_for_pair.endswith('FlangeStereoMode') and param_type_hint in ('int', 'bool'):
-                        end_entry = QComboBox()
-                        end_entry.addItem('Linked',0); end_entry.addItem('Spread',1); end_entry.addItem('Mid-only',2); end_entry.addItem('Side-only',3)
-                        idx_e = end_entry.findData(int(display_end)) if isinstance(display_end,(int,float)) else 0
-                        end_entry.setCurrentIndex(idx_e if idx_e >=0 else 0)
-                        end_entry.setMinimumWidth(120); row_layout.addWidget(end_entry,0,4,1,1,Qt.AlignLeft)
-                    elif base_name_for_pair.endswith('FlangeDelayLaw') and param_type_hint in ('int', 'bool'):
-                        end_entry = QComboBox(); end_entry.addItem('\u03c4-linear',0); end_entry.addItem('1/\u03c4-linear',1); end_entry.addItem('exp-\u03c4',2)
-                        idx_e = end_entry.findData(int(display_end)) if isinstance(display_end,(int,float)) else 0
-                        end_entry.setCurrentIndex(idx_e if idx_e >=0 else 0)
-                        end_entry.setMinimumWidth(120); row_layout.addWidget(end_entry,0,4,1,1,Qt.AlignLeft)
-                    elif base_name_for_pair.endswith('FlangeInterp') and param_type_hint in ('int', 'bool'):
-                        end_entry = QComboBox(); end_entry.addItem('Linear',0); end_entry.addItem('Lagrange3',1)
-                        idx_e = end_entry.findData(int(display_end)) if isinstance(display_end,(int,float)) else 0
-                        end_entry.setCurrentIndex(idx_e if idx_e >=0 else 0)
-                        end_entry.setMinimumWidth(120); row_layout.addWidget(end_entry,0,4,1,1,Qt.AlignLeft)
-                    elif base_name_for_pair.endswith('FlangeLoudnessMode') and param_type_hint in ('int', 'bool'):
-                        end_entry = QComboBox(); end_entry.addItem('Off',0); end_entry.addItem('Match Input RMS',1)
-                        idx_e = end_entry.findData(int(display_end)) if isinstance(display_end,(int,float)) else 0
-                        end_entry.setCurrentIndex(idx_e if idx_e >=0 else 0)
-                        end_entry.setMinimumWidth(120); row_layout.addWidget(end_entry,0,4,1,1,Qt.AlignLeft)
-                    elif base_name_for_pair == 'pathShape' and param_type_hint == 'str' and hasattr(sound_creator, 'VALID_SAM_PATHS'):
-                        end_entry = QComboBox(); end_entry.addItems(sound_creator.VALID_SAM_PATHS)
-                        val_to_set_e = display_end if display_end in sound_creator.VALID_SAM_PATHS else sound_creator.VALID_SAM_PATHS[0]
-                        end_entry.setCurrentText(str(val_to_set_e))
-                        end_entry.setMinimumWidth(120); row_layout.addWidget(end_entry,0,4,1,2,Qt.AlignLeft)
-                    elif base_name_for_pair == 'spatialDecoder' and param_type_hint == 'str':
-                        end_entry = QComboBox()
-                        end_entry.addItem('ITD Head (time-delay)', 'itd_head')
-                        end_entry.addItem('FOA Cardioid (legacy)', 'foa_cardioid')
-                        val_to_set_e = display_end if display_end in ['itd_head','foa_cardioid'] else 'itd_head'
-                        idx_e = end_entry.findData(val_to_set_e)
-                        end_entry.setCurrentIndex(idx_e if idx_e >=0 else 0)
-                        end_entry.setMinimumWidth(120); row_layout.addWidget(end_entry,0,4,1,2,Qt.AlignLeft)
-                    elif param_type_hint == 'bool':
-                        end_entry = QCheckBox()
-                        if isinstance(display_end, str):
-                            checked_e = display_end.strip().lower() in ('1', 'true', 'yes', 'on')
-                        else:
-                            checked_e = bool(display_end)
-                        end_entry.setChecked(checked_e)
-                        row_layout.addWidget(end_entry, 0, 4, 1, 1, Qt.AlignLeft)
-                    else:
-                        end_entry = QLineEdit(str(display_end) if display_end is not None else "")
-                        if current_validator:
-                            end_entry.setValidator(current_validator)
-                        end_entry.setMinimumWidth(self.ENTRY_WIDTH)
-                        end_entry.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-                        row_layout.addWidget(end_entry, 0, 4)
-                    self.param_widgets[end_name] = {'widget': end_entry, 'type': param_storage_type}
+                    # Col 2: Start Label ("Start") or Hint
+                    # Actually, for transition pairs, we might want "Start" label? 
+                    # The original had "Start:" label. But in a grid, maybe we can omit it if column headers existed?
+                    # But we don't have headers. Let's put "Start" in tooltip or just rely on position.
+                    # Or we can put "Start" in Col 1 placeholder? No.
+                    # Let's put a small label in Col 1 if we want, but we are using grid.
+                    # Let's use the hint text in Col 2.
+                    # Wait, the original had "Start:" label.
+                    # Let's add "Start" label to the widget or layout?
+                    # Maybe just put the widget. The user knows left is start, right is end.
+                    
+                    # Col 2: Hint
+                    self.params_scroll_layout.addWidget(QLabel(hint_text), current_row, 2)
 
+                    # Col 3: End Label (arrow or "End")
+                    self.params_scroll_layout.addWidget(QLabel("-> End:"), current_row, 3, Qt.AlignRight)
+
+                    # Col 4: End Widget
+                    end_widget = self._create_param_widget(
+                        base_name_for_pair, display_end, param_type_hint, current_validator, self.ENTRY_WIDTH
+                    )
+                    self.params_scroll_layout.addWidget(end_widget, current_row, 4)
+                    self.param_widgets[end_name] = {'widget': end_widget, 'type': param_storage_type}
+
+                    # Col 5: Hint (End) - usually same as start, maybe empty
+                    # self.params_scroll_layout.addWidget(QLabel(hint_text), current_row, 5)
+
+                    # Tooltips
                     tooltip_base = self._get_param_tooltip(func_name, base_name_for_pair)
-                    tooltip_start = self._get_param_tooltip(func_name, name)
-                    tooltip_end = self._get_param_tooltip(func_name, end_name)
                     if tooltip_base:
                         base_label.setToolTip(tooltip_base)
-                    if tooltip_start:
-                        start_label.setToolTip(tooltip_start)
-                        start_entry.setToolTip(tooltip_start)
-                    if tooltip_end:
-                        end_label.setToolTip(tooltip_end)
-                        end_entry.setToolTip(tooltip_end)
+                        start_widget.setToolTip(tooltip_base)
+                        end_widget.setToolTip(tooltip_base)
 
-                    row_layout.addWidget(QLabel(hint_text), 0, 5, Qt.AlignLeft)
-                    row_layout.setColumnStretch(0,1); row_layout.setColumnStretch(2,1)
-                    row_layout.setColumnStretch(4,1); row_layout.setColumnStretch(5,1)
                     processed_names.add(name)
                     processed_names.add(end_name)
-                    self.params_scroll_layout.addWidget(frame)
+                    current_row += 1
                     continue
 
+            # 2. Left/Right Pair
             lr_info = self._parse_lr_suffix(base_after)
             if lr_info:
                 base_lr, left_suffix, right_suffix = lr_info
@@ -1235,78 +1144,79 @@ class VoiceEditorDialog(QDialog): # Standard class name
                     right_cur = params_to_display.get(right_name, right_def)
                     disp_left = left_cur
                     disp_right = right_cur
-                    if (
-                        isinstance(left_cur, (int, float))
-                        and getattr(self.app, "prefs", None)
-                        and getattr(self.app.prefs, "amplitude_display_mode", "absolute") == "dB"
-                        and is_amp_key(left_name)
-                    ):
+                    
+                    if (isinstance(left_cur, (int, float)) and getattr(self.app, "prefs", None) and getattr(self.app.prefs, "amplitude_display_mode", "absolute") == "dB" and is_amp_key(left_name)):
                         disp_left = amplitude_to_db(float(left_cur))
-                    if (
-                        isinstance(right_cur, (int, float))
-                        and getattr(self.app, "prefs", None)
-                        and getattr(self.app.prefs, "amplitude_display_mode", "absolute") == "dB"
-                        and is_amp_key(right_name)
-                    ):
+                    if (isinstance(right_cur, (int, float)) and getattr(self.app, "prefs", None) and getattr(self.app.prefs, "amplitude_display_mode", "absolute") == "dB" and is_amp_key(right_name)):
                         disp_right = amplitude_to_db(float(right_cur))
-
-                    frame = QWidget()
-                    row_layout = QGridLayout(frame)
-                    row_layout.setContentsMargins(2,2,2,2)
 
                     param_type_hint = 'any'
                     value_for_hint = left_def if left_def is not None else left_cur
-                    if isinstance(value_for_hint, bool):
-                        param_type_hint = 'bool'
-                    elif isinstance(value_for_hint, int):
-                        param_type_hint = 'bool' if value_for_hint in (0, 1) else 'int'
-                    elif isinstance(value_for_hint, float):
-                        param_type_hint = 'float'
-                    elif isinstance(value_for_hint, str):
-                        param_type_hint = 'bool' if value_for_hint.lower() in ('true', 'false') else 'str'
+                    if isinstance(value_for_hint, bool): param_type_hint = 'bool'
+                    elif isinstance(value_for_hint, int): param_type_hint = 'bool' if value_for_hint in (0, 1) else 'int'
+                    elif isinstance(value_for_hint, float): param_type_hint = 'float'
+                    elif isinstance(value_for_hint, str): param_type_hint = 'bool' if value_for_hint.lower() in ('true', 'false') else 'str'
 
                     param_storage_type = param_type_hint if param_type_hint in ['int','float','bool','str'] else 'str'
                     range_hint = self._get_param_range_hint(base_lr)
                     hint_text = f"({param_storage_type}{', ' + range_hint if range_hint else ''})"
 
+                    # Row 1: Left Parameter
+                    # Col 0: Label
                     base_label = QLabel(f"{left_name}:")
-                    row_layout.addWidget(base_label, 0, 0, Qt.AlignLeft)
+                    self.params_scroll_layout.addWidget(base_label, current_row, 0, Qt.AlignLeft)
 
-                    l_label = QLabel("")
-                    row_layout.addWidget(l_label, 0, 1, Qt.AlignRight)
-                    left_entry = QLineEdit(str(disp_left) if disp_left is not None else "")
-                    if param_type_hint == 'int':
-                        left_entry.setValidator(QIntValidator(-999999, 999999, self))
-                    elif param_type_hint == 'float':
-                        val = QDoubleValidator(-999999.0, 999999.0, 6, self)
-                        val.setNotation(QDoubleValidator.StandardNotation)
-                        left_entry.setValidator(val)
-                    left_entry.setMinimumWidth(self.ENTRY_WIDTH)
-                    left_entry.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-                    row_layout.addWidget(left_entry, 0, 2)
+                    # Col 1: Widget
+                    current_validator = None
+                    if param_type_hint == 'int': current_validator = QIntValidator(-999999, 999999, self)
+                    elif param_type_hint == 'float': 
+                        current_validator = QDoubleValidator(-999999.0, 999999.0, 6, self)
+                        current_validator.setNotation(QDoubleValidator.StandardNotation)
 
-                    spacer = QSpacerItem(20, 20, QSizePolicy.Expanding, QSizePolicy.Minimum)
-                    row_layout.addItem(spacer, 0, 3)
+                    left_widget = self._create_param_widget(
+                        left_name, disp_left, param_type_hint, current_validator, self.ENTRY_WIDTH
+                    )
+                    self.params_scroll_layout.addWidget(left_widget, current_row, 1)
+                    self.param_widgets[left_name] = {'widget': left_widget, 'type': param_storage_type}
+
+                    # Col 2: Swap Button (only on first row of pair)
                     swap_btn = QPushButton("Swap R/L")
                     swap_btn.clicked.connect(lambda _, ln=left_name, rn=right_name: self._swap_lr([ln, rn]))
-                    row_layout.addWidget(swap_btn, 0, 4, Qt.AlignRight)
-                    row_layout.setColumnStretch(3, 1)
-
-                    # The opposite parameter is rendered on its own line below,
-                    # so no additional field is needed next to the swap button.
-
-                    self.param_widgets[left_name] = {'widget': left_entry, 'type': param_storage_type}
-
+                    self.params_scroll_layout.addWidget(swap_btn, current_row, 2)
+                    
                     tooltip_left = self._get_param_tooltip(func_name, left_name)
                     if tooltip_left:
                         base_label.setToolTip(tooltip_left)
-                        l_label.setToolTip(tooltip_left)
-                        left_entry.setToolTip(tooltip_left)
+                        left_widget.setToolTip(tooltip_left)
 
-                    self.params_scroll_layout.addWidget(frame)
                     processed_names.add(left_name)
-                    # right_name will be handled separately on its own row
+                    current_row += 1
+
+                    # Row 2: Right Parameter
+                    # Col 0: Label
+                    r_label = QLabel(f"{right_name}:")
+                    self.params_scroll_layout.addWidget(r_label, current_row, 0, Qt.AlignLeft)
+
+                    # Col 1: Widget
+                    right_widget = self._create_param_widget(
+                        right_name, disp_right, param_type_hint, current_validator, self.ENTRY_WIDTH
+                    )
+                    self.params_scroll_layout.addWidget(right_widget, current_row, 1)
+                    self.param_widgets[right_name] = {'widget': right_widget, 'type': param_storage_type}
+
+                    # Col 2: Hint
+                    self.params_scroll_layout.addWidget(QLabel(hint_text), current_row, 2)
+
+                    tooltip_right = self._get_param_tooltip(func_name, right_name)
+                    if tooltip_right:
+                        r_label.setToolTip(tooltip_right)
+                        right_widget.setToolTip(tooltip_right)
+
+                    processed_names.add(right_name)
+                    current_row += 1
                     continue
+
+            # 3. Single Parameter
             base_name_for_pair = None
             is_pair_start = False
             if is_transition and name.startswith('start'):
@@ -1315,225 +1225,51 @@ class VoiceEditorDialog(QDialog): # Standard class name
                     base_name_for_pair = base_name_for_pair_candidate
                     is_pair_start = True
             
-            frame = QWidget()
-            row_layout = QGridLayout(frame)
-            row_layout.setContentsMargins(2,2,2,2)
-            
-            param_storage_type = 'str'
             param_type_hint = "any"
             range_hint = self._get_param_range_hint(name if not is_pair_start else base_name_for_pair)
 
             value_for_hint = default_value if default_value is not None else current_value
             if value_for_hint is not None:
-                if isinstance(value_for_hint, bool):
-                    param_type_hint = 'bool'
-                elif isinstance(value_for_hint, int):
-                    param_type_hint = 'bool' if value_for_hint in (0, 1) else 'int'
-                elif isinstance(value_for_hint, float):
-                    param_type_hint = 'float'
-                elif isinstance(value_for_hint, str):
-                    param_type_hint = 'bool' if value_for_hint.lower() in ('true', 'false') else 'str'
-            else:
-                name_lower = name.lower()
-                if 'bool' in name_lower or 'enable' in name_lower:
-                    param_type_hint = 'bool'
-                elif any(s in name_lower for s in ['freq', 'depth', 'dur', 'amp', 'pan', 'rate', 'gain', 'level', 'radius', 'width', 'ratio', 'amount', 'offset', 'range', 'interval']):
-                    param_type_hint = 'float'
-                elif any(s in name_lower for s in ['count', 'factor', 'index', 'type']):
-                    param_type_hint = 'int'
-                else:
-                    param_type_hint = 'str'
+                if isinstance(value_for_hint, bool): param_type_hint = 'bool'
+                elif isinstance(value_for_hint, int): param_type_hint = 'bool' if value_for_hint in (0, 1) else 'int'
+                elif isinstance(value_for_hint, float): param_type_hint = 'float'
+                elif isinstance(value_for_hint, str): param_type_hint = 'bool' if value_for_hint.lower() in ('true', 'false') else 'str'
 
-            if is_pair_start:
-                start_name = name
-                end_name = transition_pairs[base_name_for_pair]['end']
-                end_default_value = default_params_ordered.get(end_name, default_value)
-                end_current_value = params_to_display.get(end_name, end_default_value)
-                display_start = display_current
-                display_end = end_current_value
-                if (
-                    isinstance(end_current_value, (int, float))
-                    and getattr(self.app, "prefs", None)
-                    and getattr(self.app.prefs, "amplitude_display_mode", "absolute") == "dB"
-                    and is_amp_key(end_name)
-                ):
-                    display_end = amplitude_to_db(float(end_current_value))
+            param_storage_type = param_type_hint if param_type_hint in ['int','float','bool','str'] else 'str'
+            hint_text = f"({param_storage_type}{', ' + range_hint if range_hint else ''})"
 
-                current_validator = None # Create a new validator instance for each pair or reuse type
-                if param_type_hint == 'int':
-                    current_validator = QIntValidator(-999999, 999999, self) # New instance
-                    param_storage_type = 'int'
-                elif param_type_hint == 'float':
-                    current_validator = QDoubleValidator(-999999.0, 999999.0, 6, self) # New instance
-                    current_validator.setNotation(QDoubleValidator.StandardNotation)
-                    param_storage_type = 'float'
-                # else: validator remains None for string types
-                
-                hint_text = f"({param_storage_type}{', ' + range_hint if range_hint else ''})"
-
-                base_label = QLabel(f"{base_name_for_pair}:")
-                row_layout.addWidget(base_label, 0, 0, Qt.AlignLeft)
-
-                start_label = QLabel("Start:")
-                row_layout.addWidget(start_label, 0, 1, Qt.AlignRight)
-                start_entry = QLineEdit(str(display_start) if display_start is not None else "")
-                if current_validator: start_entry.setValidator(current_validator) # Assign directly
-                start_entry.setMinimumWidth(self.ENTRY_WIDTH)
-                start_entry.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-                row_layout.addWidget(start_entry, 0, 2)
-                self.param_widgets[start_name] = {'widget': start_entry, 'type': param_storage_type}
-
-                end_label = QLabel("End:")
-                row_layout.addWidget(end_label, 0, 3, Qt.AlignRight)
-                end_entry = QLineEdit(str(display_end) if display_end is not None else "")
-                if current_validator: end_entry.setValidator(current_validator) # Assign directly (can reuse if settings are same, or make another new one)
-                # If you need truly independent validators for start/end (e.g. different ranges), create another new one here.
-                # For simplicity, if they share the same type/range, reusing is fine.
-                end_entry.setMinimumWidth(self.ENTRY_WIDTH)
-                end_entry.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-                row_layout.addWidget(end_entry, 0, 4)
-                self.param_widgets[end_name] = {'widget': end_entry, 'type': param_storage_type}
-
-                row_layout.addWidget(QLabel(hint_text), 0, 5, Qt.AlignLeft)
-                row_layout.setColumnStretch(0,1); row_layout.setColumnStretch(2,1)
-                row_layout.setColumnStretch(4,1); row_layout.setColumnStretch(5,1)
-                processed_names.add(start_name)
-                processed_names.add(end_name)
-
-                tooltip_base = self._get_param_tooltip(func_name, base_name_for_pair)
-                tooltip_start = self._get_param_tooltip(func_name, start_name)
-                tooltip_end = self._get_param_tooltip(func_name, end_name)
-                if tooltip_base:
-                    base_label.setToolTip(tooltip_base)
-                if tooltip_start:
-                    start_label.setToolTip(tooltip_start)
-                    start_entry.setToolTip(tooltip_start)
-                if tooltip_end:
-                    end_label.setToolTip(tooltip_end)
-                    end_entry.setToolTip(tooltip_end)
-            else: # Single parameter or right side of L/R pair
-                widget = None
-                sub_label_txt = ""
-                param_label_txt = f"{name}:"
-                if lr_info and name.endswith(lr_info[2]):
-                    param_label_txt = ""
-                    sub_label_txt = "R:"
-
-                param_label = QLabel(param_label_txt)
-                row_layout.addWidget(param_label, 0, 0, Qt.AlignLeft)
-
-                sub_label = QLabel(sub_label_txt)
-                row_layout.addWidget(sub_label, 0, 1, Qt.AlignRight)
-
-                if param_type_hint == 'bool':
-                    widget = QCheckBox()
-                    if isinstance(current_value, str):
-                        checked = current_value.strip().lower() in ('1', 'true', 'yes', 'on')
-                    else:
-                        checked = bool(current_value)
-                    widget.setChecked(checked)
-                    row_layout.addWidget(widget, 0, 2, 1, 2, Qt.AlignLeft); param_storage_type = 'bool'
-                elif name == 'noiseType' and param_type_hint in ('int', 'bool'):
-                    widget = QComboBox(); widget.addItems(['1', '2', '3'])
-                    val_to_set = str(int(current_value)) if isinstance(current_value, (int, float)) and int(current_value) in [1,2,3] else '1'
-                    widget.setCurrentText(val_to_set)
-                    widget.setMaximumWidth(100); row_layout.addWidget(widget, 0, 2, 1, 1, Qt.AlignLeft); param_storage_type = 'int'
-                elif name.endswith('FlangeShape') and param_type_hint == 'str':
-                    widget = QComboBox(); widget.addItems(['sine', 'triangle'])
-                    val_to_set = current_value if current_value in ['sine', 'triangle'] else 'sine'
-                    widget.setCurrentText(str(val_to_set))
-                    widget.setMinimumWidth(120); row_layout.addWidget(widget, 0, 2, 1, 2, Qt.AlignLeft); param_storage_type = 'str'
-                elif name.endswith('FlangeStereoMode') and param_type_hint in ('int', 'bool'):
-                    widget = QComboBox()
-                    widget.addItem('Linked', 0)
-                    widget.addItem('Spread', 1)
-                    widget.addItem('Mid-only', 2)
-                    widget.addItem('Side-only', 3)
-                    idx = widget.findData(int(current_value)) if isinstance(current_value, (int, float)) else 0
-                    widget.setCurrentIndex(idx if idx >= 0 else 0)
-                    widget.setMinimumWidth(120); row_layout.addWidget(widget, 0, 2, 1, 1, Qt.AlignLeft); param_storage_type = 'int'
-                elif name.endswith('FlangeDelayLaw') and param_type_hint in ('int', 'bool'):
-                    widget = QComboBox()
-                    widget.addItem('τ-linear', 0)
-                    widget.addItem('1/τ-linear', 1)
-                    widget.addItem('exp-τ', 2)
-                    idx = widget.findData(int(current_value)) if isinstance(current_value, (int, float)) else 0
-                    widget.setCurrentIndex(idx if idx >= 0 else 0)
-                    widget.setMinimumWidth(120); row_layout.addWidget(widget, 0, 2, 1, 1, Qt.AlignLeft); param_storage_type = 'int'
-                elif name.endswith('FlangeInterp') and param_type_hint in ('int', 'bool'):
-                    widget = QComboBox()
-                    widget.addItem('Linear', 0)
-                    widget.addItem('Lagrange3', 1)
-                    idx = widget.findData(int(current_value)) if isinstance(current_value, (int, float)) else 0
-                    widget.setCurrentIndex(idx if idx >= 0 else 0)
-                    widget.setMinimumWidth(120); row_layout.addWidget(widget, 0, 2, 1, 1, Qt.AlignLeft); param_storage_type = 'int'
-                elif name.endswith('FlangeLoudnessMode') and param_type_hint in ('int', 'bool'):
-                    widget = QComboBox()
-                    widget.addItem('Off', 0)
-                    widget.addItem('Match Input RMS', 1)
-                    idx = widget.findData(int(current_value)) if isinstance(current_value, (int, float)) else 0
-                    widget.setCurrentIndex(idx if idx >= 0 else 0)
-                    widget.setMinimumWidth(120); row_layout.addWidget(widget, 0, 2, 1, 1, Qt.AlignLeft); param_storage_type = 'int'
-                elif name == 'transition_curve' and param_type_hint == 'str':
-                    widget = QComboBox();
-                    widget.addItems(['linear', 'logarithmic', 'exponential', 'Custom...'])
-                    if isinstance(current_value, str) and current_value not in ['linear', 'logarithmic', 'exponential'] and current_value:
-                        widget.insertItem(widget.count() - 1, current_value)
-                        widget.setCurrentText(current_value)
-                    else:
-                        widget.setCurrentText(str(current_value) if current_value else 'linear')
-                    widget.currentIndexChanged.connect(lambda idx, w=widget: self._handle_custom_curve(w))
-                    widget.setEditable(False)
-                    widget.setMinimumWidth(120)
-                    row_layout.addWidget(widget, 0, 2, 1, 2, Qt.AlignLeft); param_storage_type = 'str'
-                elif name == 'pathShape' and param_type_hint == 'str' and hasattr(sound_creator, 'VALID_SAM_PATHS'):
-                    widget = QComboBox(); widget.addItems(sound_creator.VALID_SAM_PATHS)
-                    val_to_set = str(current_value) if current_value in sound_creator.VALID_SAM_PATHS else sound_creator.VALID_SAM_PATHS[0]
-                    widget.setCurrentText(val_to_set)
-                    widget.setMinimumWidth(120); row_layout.addWidget(widget, 0, 2, 1, 2, Qt.AlignLeft); param_storage_type = 'str'
-                elif name == 'spatialDecoder' and param_type_hint == 'str':
-                    widget = QComboBox()
-                    widget.addItem('ITD Head (time-delay)', 'itd_head')
-                    widget.addItem('FOA Cardioid (legacy)', 'foa_cardioid')
-                    val_to_set = str(current_value) if current_value in ['itd_head', 'foa_cardioid'] else 'itd_head'
-                    idx = widget.findData(val_to_set)
-                    widget.setCurrentIndex(idx if idx >= 0 else 0)
-                    widget.setMinimumWidth(120)
-                    row_layout.addWidget(widget, 0, 2, 1, 2, Qt.AlignLeft); param_storage_type = 'str'
-                else:
-                    widget = QLineEdit(str(display_current) if display_current is not None else "")
-                    current_validator_instance = None # Create a new validator for this specific widget
-                    if param_type_hint == 'int':
-                        current_validator_instance = QIntValidator(-999999, 999999, self) # New instance
-                        param_storage_type = 'int'
-                    elif param_type_hint == 'float':
-                        current_validator_instance = QDoubleValidator(-999999.0, 999999.0, 6, self) # New instance
-                        current_validator_instance.setNotation(QDoubleValidator.StandardNotation)
-                        param_storage_type = 'float'
-                    else: param_storage_type = 'str'
-                    
-                    if current_validator_instance:
-                        widget.setValidator(current_validator_instance)  # Assign new instance directly
-                    widget.setMinimumWidth(self.ENTRY_WIDTH)
-                    widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-                    row_layout.addWidget(widget, 0, 2, 1, 1)
-
-
-                    hint_text_label = QLabel(f"({param_storage_type}{', ' + range_hint if range_hint else ''})")
-                    row_layout.addWidget(hint_text_label, 0, 3, Qt.AlignLeft)
-                    row_layout.setColumnStretch(3,1)
-
-                if widget is not None:
-                    tooltip = self._get_param_tooltip(func_name, name)
-                    if tooltip:
-                        param_label.setToolTip(tooltip)
-                        sub_label.setToolTip(tooltip)
-                        widget.setToolTip(tooltip)
-                    self.param_widgets[name] = {'widget': widget, 'type': param_storage_type}
-                    processed_names.add(name)
+            # Col 0: Label
+            label_text = f"{name}:"
+            if name == 'leftHigh':
+                label_text = "leftHigh:"
             
-            self.params_scroll_layout.addWidget(frame)
-        self.params_scroll_layout.addStretch(1)
+            base_label = QLabel(label_text)
+            self.params_scroll_layout.addWidget(base_label, current_row, 0, Qt.AlignLeft)
+
+            # Col 1: Widget
+            current_validator = None
+            if param_type_hint == 'int': current_validator = QIntValidator(-999999, 999999, self)
+            elif param_type_hint == 'float': 
+                current_validator = QDoubleValidator(-999999.0, 999999.0, 6, self)
+                current_validator.setNotation(QDoubleValidator.StandardNotation)
+
+            widget = self._create_param_widget(
+                name, display_current, param_type_hint, current_validator, self.ENTRY_WIDTH
+            )
+            self.params_scroll_layout.addWidget(widget, current_row, 1)
+            self.param_widgets[name] = {'widget': widget, 'type': param_storage_type}
+
+            # Col 2: Hint
+            self.params_scroll_layout.addWidget(QLabel(hint_text), current_row, 2)
+
+            tooltip = self._get_param_tooltip(func_name, name)
+            if tooltip:
+                base_label.setToolTip(tooltip)
+                widget.setToolTip(tooltip)
+
+            processed_names.add(name)
+            current_row += 1
+        self.params_scroll_layout.setRowStretch(current_row, 1)
 
         # Apply tooltips to flanger parameters
         for fname, tip in FLANGE_TOOLTIPS.items():
@@ -1590,6 +1326,104 @@ class VoiceEditorDialog(QDialog): # Standard class name
 
             enable_widget.stateChanged.connect(_set_spatial_enabled)
             _set_spatial_enabled(enable_widget.isChecked())
+
+    def _create_param_widget(self, base_name, value, type_hint, validator, width):
+        """Helper to create the appropriate widget for a parameter."""
+        if base_name == 'noiseType' and type_hint in ('int', 'bool'):
+            widget = QComboBox()
+            widget.addItems(['1', '2', '3'])
+            val_to_set = str(int(value)) if isinstance(value, (int, float)) and int(value) in [1, 2, 3] else '1'
+            widget.setCurrentText(val_to_set)
+            widget.setMaximumWidth(100)
+        elif base_name.endswith('FlangeShape') and type_hint == 'str':
+            widget = QComboBox()
+            widget.addItems(['sine', 'triangle'])
+            val_to_set = value if value in ['sine', 'triangle'] else 'sine'
+            widget.setCurrentText(str(val_to_set))
+            widget.setMinimumWidth(width)
+        elif base_name.endswith('FlangeStereoMode') and type_hint in ('int', 'bool'):
+            widget = QComboBox()
+            widget.addItem('Linked', 0); widget.addItem('Spread', 1); widget.addItem('Mid-only', 2); widget.addItem('Side-only', 3)
+            idx = widget.findData(int(value)) if isinstance(value, (int, float)) else 0
+            widget.setCurrentIndex(idx if idx >= 0 else 0)
+            widget.setMinimumWidth(width)
+        elif base_name.endswith('FlangeDelayLaw') and type_hint in ('int', 'bool'):
+            widget = QComboBox()
+            widget.addItem('τ-linear', 0); widget.addItem('1/τ-linear', 1); widget.addItem('exp-τ', 2)
+            idx = widget.findData(int(value)) if isinstance(value, (int, float)) else 0
+            widget.setCurrentIndex(idx if idx >= 0 else 0)
+            widget.setMinimumWidth(width)
+        elif base_name.endswith('FlangeInterp') and type_hint in ('int', 'bool'):
+            widget = QComboBox()
+            widget.addItem('Linear', 0); widget.addItem('Lagrange3', 1)
+            idx = widget.findData(int(value)) if isinstance(value, (int, float)) else 0
+            widget.setCurrentIndex(idx if idx >= 0 else 0)
+            widget.setMinimumWidth(width)
+        elif base_name.endswith('FlangeLoudnessMode') and type_hint in ('int', 'bool'):
+            widget = QComboBox()
+            widget.addItem('Off', 0); widget.addItem('Match Input RMS', 1)
+            idx = widget.findData(int(value)) if isinstance(value, (int, float)) else 0
+            widget.setCurrentIndex(idx if idx >= 0 else 0)
+            widget.setMinimumWidth(width)
+        elif base_name.endswith('freqOscShape') and type_hint == 'str':
+            widget = QComboBox()
+            widget.addItems(['sine', 'triangle'])
+            val_to_set = value if value in ['sine', 'triangle'] else 'sine'
+            widget.setCurrentText(str(val_to_set))
+            widget.setMinimumWidth(width)
+        elif base_name.endswith('panType') and type_hint == 'str':
+            widget = QComboBox()
+            widget.addItems(['linear', 'inward', 'outward'])
+            val_to_set = value if value in ['linear', 'inward', 'outward'] else 'linear'
+            widget.setCurrentText(str(val_to_set))
+            widget.setMinimumWidth(width)
+        elif base_name == 'transition_curve' and type_hint == 'str':
+            widget = QComboBox()
+            widget.addItems(['linear', 'logarithmic', 'exponential'])
+            val_to_set = value if value in ['linear', 'logarithmic', 'exponential'] else 'linear'
+            widget.setCurrentText(str(val_to_set))
+            widget.setMinimumWidth(width)
+        elif base_name.endswith('spatialDecoder') and type_hint == 'str':
+            widget = QComboBox()
+            widget.addItems(['itd_head', 'foa_cardioid'])
+            val_to_set = value if value in ['itd_head', 'foa_cardioid'] else 'itd_head'
+            widget.setCurrentText(str(val_to_set))
+            widget.setMinimumWidth(width)
+        elif base_name.endswith('spatialInterp') and type_hint in ('int', 'bool'):
+            widget = QComboBox()
+            widget.addItem('Linear', 0); widget.addItem('Lagrange3', 1)
+            idx = widget.findData(int(value)) if isinstance(value, (int, float)) else 0
+            widget.setCurrentIndex(idx if idx >= 0 else 0)
+            widget.setMinimumWidth(width)
+        elif base_name == 'pathShape' and type_hint == 'str' and hasattr(sound_creator, 'VALID_SAM_PATHS'):
+            widget = QComboBox()
+            widget.addItems(sound_creator.VALID_SAM_PATHS)
+            val_to_set = value if value in sound_creator.VALID_SAM_PATHS else sound_creator.VALID_SAM_PATHS[0]
+            widget.setCurrentText(str(val_to_set))
+            widget.setMinimumWidth(width)
+        elif base_name == 'spatialDecoder' and type_hint == 'str':
+            widget = QComboBox()
+            widget.addItem('ITD Head (time-delay)', 'itd_head')
+            widget.addItem('FOA Cardioid (legacy)', 'foa_cardioid')
+            val_to_set = value if value in ['itd_head', 'foa_cardioid'] else 'itd_head'
+            idx = widget.findData(val_to_set)
+            widget.setCurrentIndex(idx if idx >= 0 else 0)
+            widget.setMinimumWidth(width)
+        elif type_hint == 'bool':
+            widget = QCheckBox()
+            if isinstance(value, str):
+                checked = value.strip().lower() in ('1', 'true', 'yes', 'on')
+            else:
+                checked = bool(value)
+            widget.setChecked(checked)
+        else:
+            widget = QLineEdit(str(value) if value is not None else "")
+            if validator:
+                widget.setValidator(validator)
+            widget.setMinimumWidth(width)
+            widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        
+        return widget
 
     def _populate_envelope_controls(self):
         env_data = self.current_voice_data.get("volume_envelope") # main.py uses "volume_envelope"
@@ -2473,10 +2307,28 @@ def get_default_params_for_function(func_name_from_combo: str, is_transition_mod
         "Hybrid QAM Monaural Beat Transition": "hybrid_qam_monaural_beat_transition",
         "Dual Pulse Binaural": "dual_pulse_binaural",
         "Dual Pulse Binaural Transition": "dual_pulse_binaural_transition",
-        # Add other mappings if your UI names differ from these examples
+        # Explicit snake_case mappings to ensure robustness
+        "rhythmic_waveshaping": "rhythmic_waveshaping",
+        "stereo_am_independent": "stereo_am_independent",
+        "wave_shape_stereo_am": "wave_shape_stereo_am",
+        "spatial_angle_modulation": "spatial_angle_modulation",
+        "binaural_beat": "binaural_beat",
+        "monaural_beat_stereo_amps": "monaural_beat_stereo_amps",
+        "spatial_angle_modulation_monaural_beat": "spatial_angle_modulation_monaural_beat",
+        "isochronic_tone": "isochronic_tone",
+        "qam_beat": "qam_beat",
+        "hybrid_qam_monaural_beat": "hybrid_qam_monaural_beat",
+        "dual_pulse_binaural": "dual_pulse_binaural",
+        "subliminal_encode": "subliminal_encode",
     }
 
     base_func_key = internal_func_key_map.get(func_name_from_combo, func_name_from_combo)
+    
+    # Fallback: if key not found, try snake_case conversion
+    if base_func_key not in internal_func_key_map and base_func_key not in param_definitions:
+         potential_key = base_func_key.lower().replace(" ", "_")
+         if potential_key in param_definitions:
+             base_func_key = potential_key
 
 
     param_definitions = {
@@ -2607,19 +2459,328 @@ def get_default_params_for_function(func_name_from_combo: str, is_transition_mod
                 ('initial_offset', 0.0), ('duration', 0.0), ('transition_curve', 'linear')
             ]
         },
-        "isochronic_tone": { # Example for an isochronic tone (non-transition)
+        "isochronic_tone": {
             "standard": [
-                ('amp', 0.5), ('pulseFreq', 4.0), ('carrierFreq', 200.0),
-                ('dutyCycle', 0.5), ('phaseOffset', 0.0),
-                ('pulseType', 'sine'), ('pulseDepth', 1.0)
+                ('ampL', 0.5), ('ampR', 0.5),
+                ('baseFreq', 200.0), ('beatFreq', 4.0),
+                ('forceMono', False),
+                ('startPhaseL', 0.0), ('startPhaseR', 0.0),
+                ('ampOscDepthL', 0.0), ('ampOscFreqL', 0.0),
+                ('ampOscDepthR', 0.0), ('ampOscFreqR', 0.0),
+                ('freqOscRangeL', 0.0), ('freqOscFreqL', 0.0),
+                ('freqOscRangeR', 0.0), ('freqOscFreqR', 0.0),
+                ('freqOscSkewL', 0.0), ('freqOscSkewR', 0.0),
+                ('freqOscPhaseOffsetL', 0.0), ('freqOscPhaseOffsetR', 0.0),
+                ('ampOscPhaseOffsetL', 0.0), ('ampOscPhaseOffsetR', 0.0),
+                ('ampOscSkewL', 0.0), ('ampOscSkewR', 0.0),
+                ('phaseOscFreq', 0.0), ('phaseOscRange', 0.0),
+                ('rampPercent', 0.2), ('gapPercent', 0.15),
+                ('harmonicSuppression', False),
+                ('pan', 0.0), ('panRangeMin', 0.0), ('panRangeMax', 0.0),
+                ('panType', 'linear'), ('panFreq', 0.0), ('panPhase', 0.0),
+                ('spatialEnable', False), ('spatialUseIld', 1),
+                ('spatialEarAngleDeg', 30.0), ('spatialHeadRadiusM', 0.0875),
+                ('spatialItdScale', 1.0), ('spatialIldMaxDb', 1.5),
+                ('spatialIldXoverHz', 700.0), ('spatialRefDistanceM', 1.0),
+                ('spatialRolloff', 1.0), ('spatialHfRollDbPerM', 0.0),
+                ('spatialDezipperThetaMs', 60.0), ('spatialDezipperDistMs', 80.0),
+                ('spatialDecoder', 'itd_head'), ('spatialMinDistanceM', 0.1),
+                ('spatialMaxDegPerS', 90.0), ('spatialMaxDelayStepSamples', 0.02),
+                ('spatialInterp', 1),
+                ('spatialTrajectory', [{'mode': 'oscillate', 'center_deg': 0, 'extent_deg': 75, 'period_s': 20.0, 'distance_m': [1.0, 1.4], 'seconds': 10.0}])
             ],
             "transition": [
-                ('amp', 0.5), ('startPulseFreq', 4.0), ('endPulseFreq', 4.0),
-                ('startCarrierFreq', 200.0), ('endCarrierFreq', 200.0),
-                ('startDutyCycle', 0.5), ('endDutyCycle', 0.5),
-                ('startPhaseOffset', 0.0), ('endPhaseOffset', 0.0),
-                ('startPulseType', 'sine'), ('endPulseType', 'sine'),
+                ('startAmpL', 0.5), ('endAmpL', 0.5),
+                ('startAmpR', 0.5), ('endAmpR', 0.5),
+                ('startBaseFreq', 200.0), ('endBaseFreq', 200.0),
+                ('startBeatFreq', 4.0), ('endBeatFreq', 4.0),
+                ('startForceMono', False), ('endForceMono', False),
+                ('startStartPhaseL', 0.0), ('endStartPhaseL', 0.0),
+                ('startStartPhaseR', 0.0), ('endStartPhaseR', 0.0),
+                ('startAmpOscDepthL', 0.0), ('endAmpOscDepthL', 0.0),
+                ('startAmpOscFreqL', 0.0), ('endAmpOscFreqL', 0.0),
+                ('startAmpOscDepthR', 0.0), ('endAmpOscDepthR', 0.0),
+                ('startAmpOscFreqR', 0.0), ('endAmpOscFreqR', 0.0),
+                ('startFreqOscRangeL', 0.0), ('endFreqOscRangeL', 0.0),
+                ('startFreqOscFreqL', 0.0), ('endFreqOscFreqL', 0.0),
+                ('startFreqOscRangeR', 0.0), ('endFreqOscRangeR', 0.0),
+                ('startFreqOscFreqR', 0.0), ('endFreqOscFreqR', 0.0),
+                ('startFreqOscSkewL', 0.0), ('endFreqOscSkewL', 0.0),
+                ('startFreqOscSkewR', 0.0), ('endFreqOscSkewR', 0.0),
+                ('startFreqOscPhaseOffsetL', 0.0), ('endFreqOscPhaseOffsetL', 0.0),
+                ('startFreqOscPhaseOffsetR', 0.0), ('endFreqOscPhaseOffsetR', 0.0),
+                ('startAmpOscPhaseOffsetL', 0.0), ('endAmpOscPhaseOffsetL', 0.0),
+                ('startAmpOscPhaseOffsetR', 0.0), ('endAmpOscPhaseOffsetR', 0.0),
+                ('startAmpOscSkewL', 0.0), ('endAmpOscSkewL', 0.0),
+                ('startAmpOscSkewR', 0.0), ('endAmpOscSkewR', 0.0),
+                ('startPhaseOscFreq', 0.0), ('endPhaseOscFreq', 0.0),
+                ('startPhaseOscRange', 0.0), ('endPhaseOscRange', 0.0),
+                ('startRampPercent', 0.2), ('endRampPercent', 0.2),
+                ('startGapPercent', 0.15), ('endGapPercent', 0.15),
+                ('startHarmonicSuppression', False), ('endHarmonicSuppression', False),
+                ('startPan', 0.0), ('endPan', 0.0),
+                ('startPanRangeMin', 0.0), ('endPanRangeMin', 0.0),
+                ('startPanRangeMax', 0.0), ('endPanRangeMax', 0.0),
+                ('startPanType', 'linear'), ('endPanType', 'linear'),
+                ('startPanFreq', 0.0), ('endPanFreq', 0.0),
+                ('startPanPhase', 0.0), ('endPanPhase', 0.0),
+                ('initial_offset', 0.0), ('duration', 0.0), ('transition_curve', 'linear'),
+                # Spatial parameters are usually static or have their own trajectory logic,
+                # but we include them here for completeness if they are supported in transition mode
+                # (though isochronic_tone_transition seems to support them as static params passed through)
+                ('spatialEnable', False), ('spatialUseIld', 1),
+                ('spatialEarAngleDeg', 30.0), ('spatialHeadRadiusM', 0.0875),
+                ('spatialItdScale', 1.0), ('spatialIldMaxDb', 1.5),
+                ('spatialIldXoverHz', 700.0), ('spatialRefDistanceM', 1.0),
+                ('spatialRolloff', 1.0), ('spatialHfRollDbPerM', 0.0),
+                ('spatialDezipperThetaMs', 60.0), ('spatialDezipperDistMs', 80.0),
+                ('spatialDecoder', 'itd_head'), ('spatialMinDistanceM', 0.1),
+                ('spatialMaxDegPerS', 90.0), ('spatialMaxDelayStepSamples', 0.02),
+                ('spatialInterp', 1),
+                ('spatialTrajectory', [{'mode': 'oscillate', 'center_deg': 0, 'extent_deg': 75, 'period_s': 20.0, 'distance_m': [1.0, 1.4], 'seconds': 10.0}])
+            ]
+        },
+        "isochronic_tone": {
+            "standard": [
+                ('ampL', 0.5), ('ampR', 0.5),
+                ('baseFreq', 200.0), ('beatFreq', 4.0),
+                ('forceMono', False),
+                ('startPhaseL', 0.0), ('startPhaseR', 0.0),
+                ('ampOscDepthL', 0.0), ('ampOscFreqL', 0.0),
+                ('ampOscDepthR', 0.0), ('ampOscFreqR', 0.0),
+                ('freqOscRangeL', 0.0), ('freqOscFreqL', 0.0),
+                ('freqOscRangeR', 0.0), ('freqOscFreqR', 0.0),
+                ('freqOscSkewL', 0.0), ('freqOscSkewR', 0.0),
+                ('freqOscPhaseOffsetL', 0.0), ('freqOscPhaseOffsetR', 0.0),
+                ('ampOscPhaseOffsetL', 0.0), ('ampOscPhaseOffsetR', 0.0),
+                ('ampOscSkewL', 0.0), ('ampOscSkewR', 0.0),
+                ('phaseOscFreq', 0.0), ('phaseOscRange', 0.0),
+                ('rampPercent', 0.2), ('gapPercent', 0.15),
+                ('harmonicSuppression', False),
+                ('pan', 0.0), ('panRangeMin', 0.0), ('panRangeMax', 0.0),
+                ('panType', 'linear'), ('panFreq', 0.0), ('panPhase', 0.0),
+                ('spatialEnable', False), ('spatialUseIld', 1),
+                ('spatialEarAngleDeg', 30.0), ('spatialHeadRadiusM', 0.0875),
+                ('spatialItdScale', 1.0), ('spatialIldMaxDb', 1.5),
+                ('spatialIldXoverHz', 700.0), ('spatialRefDistanceM', 1.0),
+                ('spatialRolloff', 1.0), ('spatialHfRollDbPerM', 0.0),
+                ('spatialDezipperThetaMs', 60.0), ('spatialDezipperDistMs', 80.0),
+                ('spatialDecoder', 'itd_head'), ('spatialMinDistanceM', 0.1),
+                ('spatialMaxDegPerS', 90.0), ('spatialMaxDelayStepSamples', 0.02),
+                ('spatialInterp', 1),
+                ('spatialTrajectory', [{'mode': 'oscillate', 'center_deg': 0, 'extent_deg': 75, 'period_s': 20.0, 'distance_m': [1.0, 1.4], 'seconds': 10.0}])
+            ],
+            "transition": [
+                ('startAmpL', 0.5), ('endAmpL', 0.5),
+                ('startAmpR', 0.5), ('endAmpR', 0.5),
+                ('startBaseFreq', 200.0), ('endBaseFreq', 200.0),
+                ('startBeatFreq', 4.0), ('endBeatFreq', 4.0),
+                ('startForceMono', False), ('endForceMono', False),
+                ('startStartPhaseL', 0.0), ('endStartPhaseL', 0.0),
+                ('startStartPhaseR', 0.0), ('endStartPhaseR', 0.0),
+                ('startAmpOscDepthL', 0.0), ('endAmpOscDepthL', 0.0),
+                ('startAmpOscFreqL', 0.0), ('endAmpOscFreqL', 0.0),
+                ('startAmpOscDepthR', 0.0), ('endAmpOscDepthR', 0.0),
+                ('startAmpOscFreqR', 0.0), ('endAmpOscFreqR', 0.0),
+                ('startFreqOscRangeL', 0.0), ('endFreqOscRangeL', 0.0),
+                ('startFreqOscFreqL', 0.0), ('endFreqOscFreqL', 0.0),
+                ('startFreqOscRangeR', 0.0), ('endFreqOscRangeR', 0.0),
+                ('startFreqOscFreqR', 0.0), ('endFreqOscFreqR', 0.0),
+                ('startFreqOscSkewL', 0.0), ('endFreqOscSkewL', 0.0),
+                ('startFreqOscSkewR', 0.0), ('endFreqOscSkewR', 0.0),
+                ('startFreqOscPhaseOffsetL', 0.0), ('endFreqOscPhaseOffsetL', 0.0),
+                ('startFreqOscPhaseOffsetR', 0.0), ('endFreqOscPhaseOffsetR', 0.0),
+                ('startAmpOscPhaseOffsetL', 0.0), ('endAmpOscPhaseOffsetL', 0.0),
+                ('startAmpOscPhaseOffsetR', 0.0), ('endAmpOscPhaseOffsetR', 0.0),
+                ('startAmpOscSkewL', 0.0), ('endAmpOscSkewL', 0.0),
+                ('startAmpOscSkewR', 0.0), ('endAmpOscSkewR', 0.0),
+                ('startPhaseOscFreq', 0.0), ('endPhaseOscFreq', 0.0),
+                ('startPhaseOscRange', 0.0), ('endPhaseOscRange', 0.0),
+                ('startRampPercent', 0.2), ('endRampPercent', 0.2),
+                ('startGapPercent', 0.15), ('endGapPercent', 0.15),
+                ('startHarmonicSuppression', False), ('endHarmonicSuppression', False),
+                ('startPan', 0.0), ('endPan', 0.0),
+                ('startPanRangeMin', 0.0), ('endPanRangeMin', 0.0),
+                ('startPanRangeMax', 0.0), ('endPanRangeMax', 0.0),
+                ('startPanType', 'linear'), ('endPanType', 'linear'),
+                ('startPanFreq', 0.0), ('endPanFreq', 0.0),
+                ('startPanPhase', 0.0), ('endPanPhase', 0.0),
+                ('initial_offset', 0.0), ('duration', 0.0), ('transition_curve', 'linear'),
+                ('spatialEnable', False), ('spatialUseIld', 1),
+                ('spatialEarAngleDeg', 30.0), ('spatialHeadRadiusM', 0.0875),
+                ('spatialItdScale', 1.0), ('spatialIldMaxDb', 1.5),
+                ('spatialIldXoverHz', 700.0), ('spatialRefDistanceM', 1.0),
+                ('spatialRolloff', 1.0), ('spatialHfRollDbPerM', 0.0),
+                ('spatialDezipperThetaMs', 60.0), ('spatialDezipperDistMs', 80.0),
+                ('spatialDecoder', 'itd_head'), ('spatialMinDistanceM', 0.1),
+                ('spatialMaxDegPerS', 90.0), ('spatialMaxDelayStepSamples', 0.02),
+                ('spatialInterp', 1),
+                ('spatialTrajectory', [{'mode': 'oscillate', 'center_deg': 0, 'extent_deg': 75, 'period_s': 20.0, 'distance_m': [1.0, 1.4], 'seconds': 10.0}])
+            ]
+        },
+        "dual_pulse_binaural": {
+            "standard": [
+                ('ampL', 0.5), ('ampR', 0.5),
+                ('baseFreq', 200.0), ('beatFreq', 4.0), ('leftHigh', False),
+                ('startPhaseL', 0.0), ('startPhaseR', 0.0),
+                ('pulseRate', 0.0), ('pulseRateL', 0.0), ('pulseRateR', 0.0),
+                ('rampPercent', 0.2), ('gapPercent', 0.15),
+                ('rampPercentL', 0.2), ('rampPercentR', 0.2),
+                ('gapPercentL', 0.15), ('gapPercentR', 0.15),
+                ('pulsePhaseOffset', 0.0), ('pulsePhaseOffsetL', 0.0), ('pulsePhaseOffsetR', 0.0),
+                ('pulseShape', 'trapezoid'), ('pulseShapeL', 'trapezoid'), ('pulseShapeR', 'trapezoid'),
+                ('pulseDepth', 1.0), ('pulseDepthL', 1.0), ('pulseDepthR', 1.0),
+                ('harmonicSuppression', False),
+                ('ampOscDepthL', 0.0), ('ampOscFreqL', 0.0), ('ampOscPhaseOffsetL', 0.0),
+                ('ampOscDepthR', 0.0), ('ampOscFreqR', 0.0), ('ampOscPhaseOffsetR', 0.0),
+                ('freqOscRangeL', 0.0), ('freqOscFreqL', 0.0), ('freqOscSkewL', 0.0), ('freqOscPhaseOffsetL', 0.0),
+                ('freqOscRangeR', 0.0), ('freqOscFreqR', 0.0), ('freqOscSkewR', 0.0), ('freqOscPhaseOffsetR', 0.0),
+                ('freqOscShape', 'sine'),
+                ('phaseOscFreq', 0.0), ('phaseOscRange', 0.0),
+                ('pan', 0.0), ('panRangeMin', 0.0), ('panRangeMax', 0.0), ('panType', 'linear'), ('panFreq', 0.0)
+            ],
+            "transition": [
+                ('startAmpL', 0.5), ('endAmpL', 0.5), ('startAmpR', 0.5), ('endAmpR', 0.5),
+                ('startBaseFreq', 200.0), ('endBaseFreq', 200.0), ('startBeatFreq', 4.0), ('endBeatFreq', 4.0), ('leftHigh', False),
+                ('startStartPhaseL', 0.0), ('endStartPhaseL', 0.0), ('startStartPhaseR', 0.0), ('endStartPhaseR', 0.0),
+                ('startPulseRate', 0.0), ('endPulseRate', 0.0),
+                ('startPulseRateL', 0.0), ('endPulseRateL', 0.0),
+                ('startPulseRateR', 0.0), ('endPulseRateR', 0.0),
+                ('startRampPercent', 0.2), ('endRampPercent', 0.2),
+                ('startGapPercent', 0.15), ('endGapPercent', 0.15),
+                ('startRampPercentL', 0.2), ('endRampPercentL', 0.2),
+                ('startRampPercentR', 0.2), ('endRampPercentR', 0.2),
+                ('startGapPercentL', 0.15), ('endGapPercentL', 0.15),
+                ('startGapPercentR', 0.15), ('endGapPercentR', 0.15),
+                ('startPulsePhaseOffset', 0.0), ('endPulsePhaseOffset', 0.0),
+                ('startPulsePhaseOffsetL', 0.0), ('endPulsePhaseOffsetL', 0.0),
+                ('startPulsePhaseOffsetR', 0.0), ('endPulsePhaseOffsetR', 0.0),
+                ('startPulseShape', 'trapezoid'), ('endPulseShape', 'trapezoid'),
+                ('startPulseShapeL', 'trapezoid'), ('endPulseShapeL', 'trapezoid'),
+                ('startPulseShapeR', 'trapezoid'), ('endPulseShapeR', 'trapezoid'),
                 ('startPulseDepth', 1.0), ('endPulseDepth', 1.0),
+                ('startPulseDepthL', 1.0), ('endPulseDepthL', 1.0),
+                ('startPulseDepthR', 1.0), ('endPulseDepthR', 1.0),
+                ('startHarmonicSuppression', False), ('endHarmonicSuppression', False),
+                ('startAmpOscDepthL', 0.0), ('endAmpOscDepthL', 0.0), ('startAmpOscFreqL', 0.0), ('endAmpOscFreqL', 0.0),
+                ('startAmpOscPhaseOffsetL', 0.0), ('endAmpOscPhaseOffsetL', 0.0),
+                ('startAmpOscDepthR', 0.0), ('endAmpOscDepthR', 0.0), ('startAmpOscFreqR', 0.0), ('endAmpOscFreqR', 0.0),
+                ('startAmpOscPhaseOffsetR', 0.0), ('endAmpOscPhaseOffsetR', 0.0),
+                ('startFreqOscRangeL', 0.0), ('endFreqOscRangeL', 0.0), ('startFreqOscFreqL', 0.0), ('endFreqOscFreqL', 0.0),
+                ('startFreqOscSkewL', 0.0), ('endFreqOscSkewL', 0.0), ('startFreqOscPhaseOffsetL', 0.0), ('endFreqOscPhaseOffsetL', 0.0),
+                ('startFreqOscRangeR', 0.0), ('endFreqOscRangeR', 0.0), ('startFreqOscFreqR', 0.0), ('endFreqOscFreqR', 0.0),
+                ('startFreqOscSkewR', 0.0), ('endFreqOscSkewR', 0.0), ('startFreqOscPhaseOffsetR', 0.0), ('endFreqOscPhaseOffsetR', 0.0),
+                ('freqOscShape', 'sine'),
+                ('startPhaseOscFreq', 0.0), ('endPhaseOscFreq', 0.0), ('startPhaseOscRange', 0.0), ('endPhaseOscRange', 0.0),
+                ('startPan', 0.0), ('endPan', 0.0), ('startPanRangeMin', 0.0), ('endPanRangeMin', 0.0),
+                ('startPanRangeMax', 0.0), ('endPanRangeMax', 0.0), ('startPanType', 'linear'), ('endPanType', 'linear'),
+                ('startPanFreq', 0.0), ('endPanFreq', 0.0),
+                ('initial_offset', 0.0), ('duration', 0.0), ('transition_curve', 'linear')
+            ]
+        },
+        "stereo_am_independent": {
+            "standard": [
+                ('amp', 0.25),
+                ('carrierFreq', 200.0),
+                ('modFreqL', 4.0), ('modDepthL', 0.8), ('modPhaseL', 0.0),
+                ('modFreqR', 4.0), ('modDepthR', 0.8), ('modPhaseR', 0.0),
+                ('stereo_width_hz', 0.2)
+            ],
+            "transition": [
+                ('amp', 0.25),
+                ('startCarrierFreq', 200.0), ('endCarrierFreq', 250.0),
+                ('startModFreqL', 4.0), ('endModFreqL', 6.0),
+                ('startModDepthL', 0.8), ('endModDepthL', 0.8),
+                ('startModPhaseL', 0.0),
+                ('startModFreqR', 4.1), ('endModFreqR', 5.9),
+                ('startModDepthR', 0.8), ('endModDepthR', 0.8),
+                ('startModPhaseR', 0.0),
+                ('startStereoWidthHz', 0.2), ('endStereoWidthHz', 0.2),
+                ('initial_offset', 0.0), ('duration', 0.0), ('transition_curve', 'linear')
+            ]
+        },
+        "subliminal_encode": {
+            "standard": [
+                ('carrierFreq', 17500.0), ('amp', 0.5), ('mode', 'sequence'), ('audio_path', '')
+            ],
+            "transition": []
+        },
+        "spatial_angle_modulation": {
+            "standard": [
+                ('amp', 0.7), ('carrierFreq', 440.0), ('beatFreq', 4.0),
+                ('pathShape', 'circle'), ('pathRadius', 1.0),
+                ('arcStartDeg', 0.0), ('arcEndDeg', 360.0),
+                ('frame_dur_ms', 46.4), ('overlap_factor', 8)
+            ],
+            "transition": [
+                ('amp', 0.7),
+                ('startCarrierFreq', 440.0), ('endCarrierFreq', 440.0),
+                ('startBeatFreq', 4.0), ('endBeatFreq', 4.0),
+                ('startPathShape', 'circle'), ('endPathShape', 'circle'),
+                ('startPathRadius', 1.0), ('endPathRadius', 1.0),
+                ('startArcStartDeg', 0.0), ('endArcStartDeg', 0.0),
+                ('startArcEndDeg', 360.0), ('endArcEndDeg', 360.0),
+                ('frame_dur_ms', 46.4), ('overlap_factor', 8),
+                ('initial_offset', 0.0), ('duration', 0.0), ('transition_curve', 'linear')
+            ]
+        },
+        "wave_shape_stereo_am": {
+            "standard": [
+                ('amp', 0.15), ('carrierFreq', 200.0),
+                ('shapeModFreq', 4.0), ('shapeModDepth', 0.8), ('shapeAmount', 0.5),
+                ('stereoModFreqL', 4.1), ('stereoModDepthL', 0.8), ('stereoModPhaseL', 0.0),
+                ('stereoModFreqR', 4.0), ('stereoModDepthR', 0.8), ('stereoModPhaseR', 1.5708),
+            ],
+            "transition": [
+                ('amp', 0.15),
+                ('startCarrierFreq', 200.0), ('endCarrierFreq', 100.0),
+                ('startShapeModFreq', 4.0), ('endShapeModFreq', 8.0),
+                ('startShapeModDepth', 0.8), ('endShapeModDepth', 0.8),
+                ('startShapeAmount', 0.5), ('endShapeAmount', 0.5),
+                ('startStereoModFreqL', 4.1), ('endStereoModFreqL', 6.0),
+                ('startStereoModDepthL', 0.8), ('endStereoModDepthL', 0.8),
+                ('startStereoModPhaseL', 0.0),
+                ('startStereoModFreqR', 4.0), ('endStereoModFreqR', 6.1),
+                ('startStereoModDepthR', 0.9), ('endStereoModDepthR', 0.9),
+                ('startStereoModPhaseR', 1.5708),
+                ('initial_offset', 0.0), ('duration', 0.0), ('transition_curve', 'linear')
+            ]
+        },
+        "spatial_angle_modulation_monaural_beat": {
+            "standard": [
+                ('amp', 0.7), ('pathRadius', 1.0), ('frame_dur_ms', 46.4), ('overlap_factor', 8),
+                ('spatialBeatFreq', 4.0), ('spatialPhaseOffset', 0.0), ('rotationDirection', 'cw'),
+                ('sam_ampOscDepth', 0.0), ('sam_ampOscFreq', 0.0), ('sam_ampOscPhaseOffset', 0.0),
+                ('amp_lower_L', 0.5), ('amp_upper_L', 0.5),
+                ('amp_lower_R', 0.5), ('amp_upper_R', 0.5),
+                ('baseFreq', 200.0), ('beatFreq', 4.0),
+                ('startPhaseL', 0.0), ('startPhaseR', 0.0),
+                ('phaseOscFreq', 0.0), ('phaseOscRange', 0.0),
+                ('monaural_ampOscDepth', 0.0), ('monaural_ampOscFreq', 0.0), ('monaural_ampOscPhaseOffset', 0.0)
+            ],
+            "transition": [
+                ('startAmp', 0.7), ('endAmp', 0.7),
+                ('startPathRadius', 1.0), ('endPathRadius', 1.0),
+                ('frame_dur_ms', 46.4), ('overlap_factor', 8),
+                ('startSpatialBeatFreq', 4.0), ('endSpatialBeatFreq', 4.0),
+                ('startSpatialPhaseOffset', 0.0), ('endSpatialPhaseOffset', 0.0),
+                ('rotationDirection', 'cw'),
+                ('start_sam_ampOscDepth', 0.0), ('end_sam_ampOscDepth', 0.0),
+                ('start_sam_ampOscFreq', 0.0), ('end_sam_ampOscFreq', 0.0),
+                ('start_sam_ampOscPhaseOffset', 0.0), ('end_sam_ampOscPhaseOffset', 0.0),
+                ('start_amp_lower_L', 0.5), ('end_amp_lower_L', 0.5),
+                ('start_amp_upper_L', 0.5), ('end_amp_upper_L', 0.5),
+                ('start_amp_lower_R', 0.5), ('end_amp_lower_R', 0.5),
+                ('start_amp_upper_R', 0.5), ('end_amp_upper_R', 0.5),
+                ('startBaseFreq', 200.0), ('endBaseFreq', 200.0),
+                ('startBeatFreq', 4.0), ('endBeatFreq', 4.0),
+                ('startStartPhaseL_monaural', 0.0), ('endStartPhaseL_monaural', 0.0),
+                ('startStartPhaseU_monaural', 0.0), ('endStartPhaseU_monaural', 0.0),
+                ('startPhaseOscFreq_monaural', 0.0), ('endPhaseOscFreq_monaural', 0.0),
+                ('startPhaseOscRange_monaural', 0.0), ('endPhaseOscRange_monaural', 0.0),
+                ('startAmpOscDepth_monaural', 0.0), ('endAmpOscDepth_monaural', 0.0),
+                ('startAmpOscFreq_monaural', 0.0), ('endAmpOscFreq_monaural', 0.0),
+                ('startAmpOscPhaseOffset_monaural', 0.0), ('endAmpOscPhaseOffset_monaural', 0.0),
                 ('initial_offset', 0.0), ('duration', 0.0), ('transition_curve', 'linear')
             ]
         },
