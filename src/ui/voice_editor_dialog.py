@@ -908,18 +908,41 @@ class VoiceEditorDialog(QDialog): # Standard class name
     def populate_parameters(self):
         self._clear_layout(self.params_scroll_layout)
         self.param_widgets = {}
-        
+        self._hidden_params = {}
+
         func_name = self.synth_func_combo.currentText()
         is_transition = self.transition_check.isChecked()
-        
+
         default_params_ordered = self._get_default_params(func_name, is_transition)
 
+        # Respect user preferences that hide specific parameters from display
+        prefs_obj = getattr(self.app, "prefs", None)
+        func_display_prefs = {}
+        if isinstance(getattr(prefs_obj, "voice_detail_display", None), dict):
+            func_display_prefs = prefs_obj.voice_detail_display.get(func_name, {}) or {}
+
+        def _is_hidden_param(param_name: str) -> bool:
+            cfg = func_display_prefs.get(param_name)
+            return isinstance(cfg, dict) and cfg.get("display") is False
+
+        current_saved_params = self.current_voice_data.get("params", {})
+        if func_display_prefs:
+            # Preserve hidden parameters so they aren't lost on save
+            self._hidden_params = {
+                name: current_saved_params.get(name, default_val)
+                for name, default_val in default_params_ordered.items()
+                if _is_hidden_param(name)
+            }
+            default_params_ordered = OrderedDict(
+                (name, val)
+                for name, val in default_params_ordered.items()
+                if not _is_hidden_param(name)
+            )
 
         if not default_params_ordered and func_name != "Error":
             self.params_scroll_layout.addWidget(QLabel(f"Warning: Could not determine parameters for '{func_name}'.\nEnsure it's defined in _get_default_params.", self), 0, 0, 1, 6)
             return
 
-        current_saved_params = self.current_voice_data.get("params", {})
         params_to_display = OrderedDict()
         for name, default_value in default_params_ordered.items():
             params_to_display[name] = current_saved_params.get(name, default_value)
@@ -1733,19 +1756,41 @@ class VoiceEditorDialog(QDialog): # Standard class name
         self.current_voice_data["synth_function_name"] = selected_func
         self.current_voice_data["is_transition"] = is_transition_by_name
 
-        # Merge existing stored params with defaults for the new function
-        new_std_defaults = self._get_default_params(selected_func, False)
-        new_trans_defaults = self._get_default_params(selected_func, True)
-        self._standard_params = self._merge_params(self._standard_params, new_std_defaults)
-        self._transition_params = self._merge_params(self._transition_params, new_trans_defaults)
+        try:
+            # Merge existing stored params with defaults for the new function
+            new_std_defaults = self._get_default_params(selected_func, False)
+            new_trans_defaults = self._get_default_params(selected_func, True)
 
-        # Display appropriate parameter set
-        self.current_voice_data["params"] = OrderedDict(
-            self._transition_params if is_transition_by_name else self._standard_params
-        )
+            if not new_std_defaults and self._standard_params:
+                new_std_defaults = OrderedDict(self._standard_params)
+            if not new_trans_defaults and self._transition_params:
+                new_trans_defaults = OrderedDict(self._transition_params)
 
-        self.populate_parameters()
-        self._update_swap_button_visibility()
+            if new_std_defaults:
+                self._standard_params = self._merge_params(self._standard_params, new_std_defaults)
+            if new_trans_defaults:
+                self._transition_params = self._merge_params(self._transition_params, new_trans_defaults)
+
+            target_params = (
+                self._transition_params if is_transition_by_name else self._standard_params
+            )
+            self.current_voice_data["params"] = OrderedDict(target_params or current_params)
+        except Exception as exc:  # noqa: BLE001 - surface UI-safe error to user
+            traceback.print_exc()
+            QMessageBox.warning(
+                self,
+                "Parameter Load Error",
+                f"Failed to load parameters for '{selected_func}':\n{exc}",
+            )
+            fallback_params = (
+                self._transition_params if is_transition_by_name else self._standard_params
+            ) or current_params
+            self.current_voice_data["params"] = OrderedDict(fallback_params)
+        finally:
+            try:
+                self.populate_parameters()
+            finally:
+                self._update_swap_button_visibility()
 
     @pyqtSlot(int)
     def on_transition_toggle(self, state):
@@ -2136,6 +2181,10 @@ class VoiceEditorDialog(QDialog): # Standard class name
             ):
                 new_synth_params[name] = ""
 
+        # Preserve parameters hidden by user preferences
+        if getattr(self, "_hidden_params", None):
+            for name, value in self._hidden_params.items():
+                new_synth_params.setdefault(name, value)
 
         # Collect Envelope Parameters
         new_envelope_data = None
