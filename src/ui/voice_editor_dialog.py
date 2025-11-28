@@ -2283,6 +2283,38 @@ def get_default_params_for_function(func_name_from_combo: str, is_transition_mod
     Shared helper that returns the default parameter OrderedDict for a synth function.
     Extracted from :meth:`VoiceEditorDialog._get_default_params` for reuse in other dialogs.
     """
+    def _introspect_params(func_name: str) -> OrderedDict:
+        """Return defaults inferred from the synth function signature.
+
+        We intentionally include parameters even when they have no Python default by
+        assigning ``None``. This ensures the GUI still renders editable fields for
+        required arguments instead of appearing empty when a function adds a new
+        parameter without updating the static definitions.
+        """
+
+        ordered = OrderedDict()
+        func = sound_creator.SYNTH_FUNCTIONS.get(func_name)
+        if not func:
+            return ordered
+
+        try:
+            sig = inspect.signature(func)
+        except (TypeError, ValueError):
+            return ordered
+
+        for name, param in sig.parameters.items():
+            if name in {"duration", "sample_rate"}:
+                continue
+            if param.kind == inspect.Parameter.VAR_KEYWORD:
+                # **params buckets (e.g., isochronic_tone) do not expose defaults,
+                # so we rely on manual definitions instead.
+                return OrderedDict()
+
+            default_val = None if param.default is inspect._empty else param.default
+            ordered[name] = default_val
+
+        return ordered
+
     # This map should align QComboBox text with keys in param_definitions
     internal_func_key_map = {
         "Rhythmic Waveshaping": "rhythmic_waveshaping",
@@ -2321,6 +2353,14 @@ def get_default_params_for_function(func_name_from_combo: str, is_transition_mod
         "dual_pulse_binaural": "dual_pulse_binaural",
         "subliminal_encode": "subliminal_encode",
     }
+
+    # Automatically map any ``*_transition`` synth function name to the base
+    # entry in ``param_definitions`` so that transition variants coming
+    # directly from ``sound_creator.SYNTH_FUNCTIONS`` still resolve to a known
+    # parameter list.
+    if func_name_from_combo not in internal_func_key_map and func_name_from_combo.endswith("_transition"):
+        base_name = func_name_from_combo.removesuffix("_transition")
+        internal_func_key_map[func_name_from_combo] = base_name
 
     param_definitions = {
         "rhythmic_waveshaping": { # This is an example, ensure it's correctAdd commentMore actions
@@ -2902,9 +2942,7 @@ def get_default_params_for_function(func_name_from_combo: str, is_transition_mod
     if not definition_set:
         print(f"Warning: No parameter definitions found for function '{effective_func_name_for_lookup}' (derived from combo '{func_name_from_combo}').")
         # Try to get params by direct introspection as a fallback
-        if hasattr(sound_creator, 'get_synth_params'):
-             raw_params = sound_creator.get_synth_params(effective_func_name_for_lookup) # This gets signature defaults
-             ordered_params = OrderedDict(raw_params)
+        ordered_params = _introspect_params(effective_func_name_for_lookup)
         return ordered_params
 
     # Choose param set based on transition mode
@@ -2916,10 +2954,16 @@ def get_default_params_for_function(func_name_from_combo: str, is_transition_mod
             selected_mode_key = "standard"
         else:
             print(f"Warning: No parameters found for '{base_func_key}' in mode '{selected_mode_key}'.")
+            ordered_params = _introspect_params(effective_func_name_for_lookup)
             return ordered_params
 
     # Create OrderedDict for selected mode
     for name, default_val in definition_set[selected_mode_key]:
         ordered_params[name] = default_val
+
+    # If the static definitions were empty for some reason, attempt introspection
+    # so the UI can still render fields for newly added function parameters.
+    if not ordered_params:
+        ordered_params = _introspect_params(effective_func_name_for_lookup)
 
     return ordered_params
