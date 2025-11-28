@@ -2961,9 +2961,18 @@ def get_default_params_for_function(func_name_from_combo: str, is_transition_mod
     for name, default_val in definition_set[selected_mode_key]:
         ordered_params[name] = default_val
 
-    # If the static definitions were empty for some reason, attempt introspection
-    # so the UI can still render fields for newly added function parameters.
+    # Introspect the synth function to pick up any parameters that were added
+    # after the static definitions were last updated.  This keeps the UI in sync
+    # with the actual synth function signatures while still relying on the
+    # curated defaults above for functions (like ``isochronic_tone``) that use
+    # ``**params``.
+    introspected_params = _introspect_params(effective_func_name_for_lookup)
+
     if not ordered_params:
-        ordered_params = _introspect_params(effective_func_name_for_lookup)
+        ordered_params = introspected_params
+    else:
+        for name, default_val in introspected_params.items():
+            if name not in ordered_params:
+                ordered_params[name] = default_val
 
     return ordered_params
