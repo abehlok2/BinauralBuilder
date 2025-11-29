@@ -2557,17 +2557,7 @@ def get_default_params_for_function(func_name_from_combo: str, is_transition_mod
                 ('rampPercent', 0.2), ('gapPercent', 0.15),
                 ('harmonicSuppression', False),
                 ('pan', 0.0), ('panRangeMin', 0.0), ('panRangeMax', 0.0),
-                ('panType', 'linear'), ('panFreq', 0.0), ('panPhase', 0.0),
-                ('spatialEnable', False), ('spatialUseIld', 1),
-                ('spatialEarAngleDeg', 30.0), ('spatialHeadRadiusM', 0.0875),
-                ('spatialItdScale', 1.0), ('spatialIldMaxDb', 1.5),
-                ('spatialIldXoverHz', 700.0), ('spatialRefDistanceM', 1.0),
-                ('spatialRolloff', 1.0), ('spatialHfRollDbPerM', 0.0),
-                ('spatialDezipperThetaMs', 60.0), ('spatialDezipperDistMs', 80.0),
-                ('spatialDecoder', 'itd_head'), ('spatialMinDistanceM', 0.1),
-                ('spatialMaxDegPerS', 90.0), ('spatialMaxDelayStepSamples', 0.02),
-                ('spatialInterp', 1),
-                ('spatialTrajectory', [{'mode': 'oscillate', 'center_deg': 0, 'extent_deg': 75, 'period_s': 20.0, 'distance_m': [1.0, 1.4], 'seconds': 10.0}])
+                ('panType', 'linear'), ('panFreq', 0.0), ('panPhase', 0.0)
             ],
             "transition": [
                 ('startAmpL', 0.5), ('endAmpL', 0.5),
@@ -2604,20 +2594,7 @@ def get_default_params_for_function(func_name_from_combo: str, is_transition_mod
                 ('startPanType', 'linear'), ('endPanType', 'linear'),
                 ('startPanFreq', 0.0), ('endPanFreq', 0.0),
                 ('startPanPhase', 0.0), ('endPanPhase', 0.0),
-                ('initial_offset', 0.0), ('duration', 0.0), ('transition_curve', 'linear'),
-                # Spatial parameters are usually static or have their own trajectory logic,
-                # but we include them here for completeness if they are supported in transition mode
-                # (though isochronic_tone_transition seems to support them as static params passed through)
-                ('spatialEnable', False), ('spatialUseIld', 1),
-                ('spatialEarAngleDeg', 30.0), ('spatialHeadRadiusM', 0.0875),
-                ('spatialItdScale', 1.0), ('spatialIldMaxDb', 1.5),
-                ('spatialIldXoverHz', 700.0), ('spatialRefDistanceM', 1.0),
-                ('spatialRolloff', 1.0), ('spatialHfRollDbPerM', 0.0),
-                ('spatialDezipperThetaMs', 60.0), ('spatialDezipperDistMs', 80.0),
-                ('spatialDecoder', 'itd_head'), ('spatialMinDistanceM', 0.1),
-                ('spatialMaxDegPerS', 90.0), ('spatialMaxDelayStepSamples', 0.02),
-                ('spatialInterp', 1),
-                ('spatialTrajectory', [{'mode': 'oscillate', 'center_deg': 0, 'extent_deg': 75, 'period_s': 20.0, 'distance_m': [1.0, 1.4], 'seconds': 10.0}])
+                ('initial_offset', 0.0), ('duration', 0.0), ('transition_curve', 'linear')
             ]
         },
         "isochronic_tone": {
@@ -2638,17 +2615,7 @@ def get_default_params_for_function(func_name_from_combo: str, is_transition_mod
                 ('rampPercent', 0.2), ('gapPercent', 0.15),
                 ('harmonicSuppression', False),
                 ('pan', 0.0), ('panRangeMin', 0.0), ('panRangeMax', 0.0),
-                ('panType', 'linear'), ('panFreq', 0.0), ('panPhase', 0.0),
-                ('spatialEnable', False), ('spatialUseIld', 1),
-                ('spatialEarAngleDeg', 30.0), ('spatialHeadRadiusM', 0.0875),
-                ('spatialItdScale', 1.0), ('spatialIldMaxDb', 1.5),
-                ('spatialIldXoverHz', 700.0), ('spatialRefDistanceM', 1.0),
-                ('spatialRolloff', 1.0), ('spatialHfRollDbPerM', 0.0),
-                ('spatialDezipperThetaMs', 60.0), ('spatialDezipperDistMs', 80.0),
-                ('spatialDecoder', 'itd_head'), ('spatialMinDistanceM', 0.1),
-                ('spatialMaxDegPerS', 90.0), ('spatialMaxDelayStepSamples', 0.02),
-                ('spatialInterp', 1),
-                ('spatialTrajectory', [{'mode': 'oscillate', 'center_deg': 0, 'extent_deg': 75, 'period_s': 20.0, 'distance_m': [1.0, 1.4], 'seconds': 10.0}])
+                ('panType', 'linear'), ('panFreq', 0.0), ('panPhase', 0.0)
             ],
             "transition": [
                 ('startAmpL', 0.5), ('endAmpL', 0.5),
@@ -2685,17 +2652,7 @@ def get_default_params_for_function(func_name_from_combo: str, is_transition_mod
                 ('startPanType', 'linear'), ('endPanType', 'linear'),
                 ('startPanFreq', 0.0), ('endPanFreq', 0.0),
                 ('startPanPhase', 0.0), ('endPanPhase', 0.0),
-                ('initial_offset', 0.0), ('duration', 0.0), ('transition_curve', 'linear'),
-                ('spatialEnable', False), ('spatialUseIld', 1),
-                ('spatialEarAngleDeg', 30.0), ('spatialHeadRadiusM', 0.0875),
-                ('spatialItdScale', 1.0), ('spatialIldMaxDb', 1.5),
-                ('spatialIldXoverHz', 700.0), ('spatialRefDistanceM', 1.0),
-                ('spatialRolloff', 1.0), ('spatialHfRollDbPerM', 0.0),
-                ('spatialDezipperThetaMs', 60.0), ('spatialDezipperDistMs', 80.0),
-                ('spatialDecoder', 'itd_head'), ('spatialMinDistanceM', 0.1),
-                ('spatialMaxDegPerS', 90.0), ('spatialMaxDelayStepSamples', 0.02),
-                ('spatialInterp', 1),
-                ('spatialTrajectory', [{'mode': 'oscillate', 'center_deg': 0, 'extent_deg': 75, 'period_s': 20.0, 'distance_m': [1.0, 1.4], 'seconds': 10.0}])
+                ('initial_offset', 0.0), ('duration', 0.0), ('transition_curve', 'linear')
             ]
         },
         "dual_pulse_binaural": {

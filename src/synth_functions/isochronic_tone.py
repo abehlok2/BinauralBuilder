@@ -11,7 +11,6 @@ from .common import (
     generate_pan_envelope,
     apply_pan_envelope,
 )
-from .spatial_ambi2d import spatialize_binaural_mid_only, generate_azimuth_trajectory
 
 
 def _parse_bool(value, default=False):
@@ -245,45 +244,7 @@ def isochronic_tone(duration, sample_rate=44100, **params):
         b, a = butter(4, cutoff / nyq, btype='low')
         audio = filtfilt(b, a, audio, axis=0)
 
-    audio = audio.astype(np.float32)
-
-    if bool(params.get("spatialEnable", False)):
-        theta_deg, distance_m = generate_azimuth_trajectory(
-            duration, sample_rate,
-            segments=params.get(
-                "spatialTrajectory",
-                [{
-                    "mode": "oscillate",
-                    "center_deg": 0,
-                    "extent_deg": 75,
-                    "period_s": 20.0,
-                    "distance_m": [1.0, 1.4],
-                    "seconds": duration,
-                }],
-            ),
-        )
-        audio = spatialize_binaural_mid_only(
-            audio, float(sample_rate),
-            theta_deg, distance_m,
-            ild_enable=int(params.get("spatialUseIld", 1)),
-            ear_angle_deg=float(params.get("spatialEarAngleDeg", 30.0)),
-            head_radius_m=float(params.get("spatialHeadRadiusM", 0.0875)),
-            itd_scale=float(params.get("spatialItdScale", 1.0)),
-            ild_max_db=float(params.get("spatialIldMaxDb", 1.5)),
-            ild_xover_hz=float(params.get("spatialIldXoverHz", 700.0)),
-            ref_distance_m=float(params.get("spatialRefDistanceM", 1.0)),
-            rolloff=float(params.get("spatialRolloff", 1.0)),
-            hf_roll_db_per_m=float(params.get("spatialHfRollDbPerM", 0.0)),
-            dz_theta_ms=float(params.get("spatialDezipperThetaMs", 60.0)),
-            dz_dist_ms=float(params.get("spatialDezipperDistMs", 80.0)),
-            decoder=0 if str(params.get("spatialDecoder", "itd_head")).lower() != "foa_cardioid" else 1,
-            min_distance_m=float(params.get("spatialMinDistanceM", 0.1)),
-            max_deg_per_s=float(params.get("spatialMaxDegPerS", 90.0)),
-            max_delay_step_samples=float(params.get("spatialMaxDelayStepSamples", 0.02)),
-            interp_mode=int(params.get("spatialInterp", 1)),
-        )
-
-    return audio
+    return audio.astype(np.float32)
 
 
 def isochronic_tone_transition(
@@ -545,44 +506,6 @@ def isochronic_tone_transition(
         b, a = butter(4, cutoff / nyq, btype='low')
         audio = filtfilt(b, a, audio, axis=0)
 
-    audio = audio.astype(np.float32)
-
-    if bool(params.get("spatialEnable", False)):
-        theta_deg, distance_m = generate_azimuth_trajectory(
-            duration, sample_rate,
-            segments=params.get(
-                "spatialTrajectory",
-                [{
-                    "mode": "oscillate",
-                    "center_deg": 0,
-                    "extent_deg": 75,
-                    "period_s": 20.0,
-                    "distance_m": [1.0, 1.4],
-                    "seconds": duration,
-                }],
-            ),
-        )
-        audio = spatialize_binaural_mid_only(
-            audio, float(sample_rate),
-            theta_deg, distance_m,
-            ild_enable=int(params.get("spatialUseIld", 1)),
-            ear_angle_deg=float(params.get("spatialEarAngleDeg", 30.0)),
-            head_radius_m=float(params.get("spatialHeadRadiusM", 0.0875)),
-            itd_scale=float(params.get("spatialItdScale", 1.0)),
-            ild_max_db=float(params.get("spatialIldMaxDb", 1.5)),
-            ild_xover_hz=float(params.get("spatialIldXoverHz", 700.0)),
-            ref_distance_m=float(params.get("spatialRefDistanceM", 1.0)),
-            rolloff=float(params.get("spatialRolloff", 1.0)),
-            hf_roll_db_per_m=float(params.get("spatialHfRollDbPerM", 0.0)),
-            dz_theta_ms=float(params.get("spatialDezipperThetaMs", 60.0)),
-            dz_dist_ms=float(params.get("spatialDezipperDistMs", 80.0)),
-            decoder=0 if str(params.get("spatialDecoder", "itd_head")).lower() != "foa_cardioid" else 1,
-            min_distance_m=float(params.get("spatialMinDistanceM", 0.1)),
-            max_deg_per_s=float(params.get("spatialMaxDegPerS", 90.0)),
-            max_delay_step_samples=float(params.get("spatialMaxDelayStepSamples", 0.02)),
-            interp_mode=int(params.get("spatialInterp", 1)),
-        )
-
     # Note: Volume envelope (like ADSR/Linen) is applied *within* generate_voice_audio if specified there.
 
-    return audio
+    return audio.astype(np.float32)
