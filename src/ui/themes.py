@@ -27,7 +27,63 @@ def dark_palette() -> QPalette:
 # Style sheet ensuring editable widgets use white text in the dark theme
 GLOBAL_STYLE_SHEET_DARK = """
 
+
+
 QTreeWidget {
+    color: #ffffff;
+}
+
+/* Fix for inputs in Dark theme to prevent white-on-white */
+QLineEdit, QTextEdit, QPlainTextEdit, QSpinBox, QDoubleSpinBox, QComboBox {
+    background-color: #333337;
+    border: 1px solid #555555;
+    color: #ffffff;
+    selection-background-color: #2a82da;
+}
+
+QComboBox::drop-down {
+    border: none;
+}
+
+QTableView, QListView {
+    background-color: #252526;
+    color: #ffffff;
+    alternate-background-color: #2d2d30;
+}
+
+/* --- Cards (Dark) --- */
+#control_panel, #editor_panel {
+    background-color: #252526;
+    border: 1px solid #3e3e42;
+    border-radius: 8px;
+}
+
+QLabel#panel_header {
+    font-size: 11pt;
+    font-weight: bold;
+    color: #ffffff;
+    padding-bottom: 8px;
+    border-bottom: 1px solid #3e3e42;
+    margin-bottom: 8px;
+}
+
+QPushButton[class="primary"] {
+    background-color: #2a82da;
+    border: 1px solid #2a82da;
+    color: #ffffff;
+    font-weight: bold;
+}
+QPushButton[class="primary"]:hover {
+    background-color: #5a9ce6;
+}
+
+QPushButton[class="destructive"] {
+    background-color: #333333;
+    border: 1px solid #cc0000;
+    color: #cc0000;
+}
+QPushButton[class="destructive"]:hover {
+    background-color: #cc0000;
     color: #ffffff;
 }
 
@@ -97,10 +153,50 @@ QLineEdit, QComboBox, QSlider {
     border: 1px solid #555555;
     color: #ffffff;     /* use white text */
 }
+
+/* --- Cards (Green) --- */
+#control_panel, #editor_panel {
+    background-color: #0f0f0f;
+    border: 1px solid rgba(0, 255, 136, 0.3);
+    border-radius: 8px;
+}
+
+QLabel#panel_header {
+    font-size: 11pt;
+    font-weight: bold;
+    color: #00ffaa;
+    padding-bottom: 8px;
+    border-bottom: 1px solid rgba(0, 255, 136, 0.3);
+    margin-bottom: 8px;
+}
+
+QPushButton[class="primary"] {
+    background-color: rgba(0, 255, 136, 0.3);
+    border: 1px solid #00ffaa;
+    color: #00ffaa;
+    font-weight: bold;
+}
+QPushButton[class="primary"]:hover {
+    background-color: rgba(0, 255, 136, 0.5);
+    color: #ffffff;
+}
+
+QPushButton[class="destructive"] {
+    background-color: rgba(255, 50, 50, 0.1);
+    border: 1px solid #ff3333;
+    color: #ff3333;
+}
+QPushButton[class="destructive"]:hover {
+    background-color: rgba(255, 50, 50, 0.4);
+    color: #ffffff;
+}
 """
 
 # Light blue theme with a neutral light palette and blue highlights
 GLOBAL_STYLE_SHEET_LIGHT_BLUE = """
+QWidget {
+    color: #000000;
+}
 QTreeWidget {
     color: #000000;
 }
@@ -109,10 +205,49 @@ QLineEdit, QComboBox, QSlider {
     border: 1px solid #a0a0a0;
     color: #000000;
 }
+
+/* --- Cards (Light Blue) --- */
+#control_panel, #editor_panel {
+    background-color: #f5f9ff;
+    border: 1px solid #cce0ff;
+    border-radius: 8px;
+}
+
+QLabel#panel_header {
+    font-size: 11pt;
+    font-weight: bold;
+    color: #0066cc;
+    padding-bottom: 8px;
+    border-bottom: 1px solid #cce0ff;
+    margin-bottom: 8px;
+}
+
+QPushButton[class="primary"] {
+    background-color: #0078d7;
+    border: 1px solid #0078d7;
+    color: #ffffff;
+    font-weight: bold;
+}
+QPushButton[class="primary"]:hover {
+    background-color: #1084e3;
+}
+
+QPushButton[class="destructive"] {
+    background-color: #ffffff;
+    border: 1px solid #d93025;
+    color: #d93025;
+}
+QPushButton[class="destructive"]:hover {
+    background-color: #d93025;
+    color: #ffffff;
+}
 """
 
 # Material theme with teal and orange accents
 GLOBAL_STYLE_SHEET_MATERIAL = """
+QWidget {
+    color: #212121;
+}
 QTreeWidget {
     color: #212121;
 }
@@ -149,6 +284,48 @@ QLineEdit, QComboBox, QSlider {
     border: 1px solid #bdbdbd;
     color: #212121;
     border-radius: 4px;
+}
+
+/* --- Cards (Material) --- */
+#control_panel, #editor_panel {
+    background-color: #ffffff;
+    border: 1px solid #e0e0e0;
+    border-radius: 8px;
+    /* Material card shadow simulation via border/margin */
+    border-bottom: 2px solid #d0d0d0; 
+}
+
+QLabel#panel_header {
+    font-size: 11pt;
+    font-weight: bold;
+    color: #009688;
+    padding-bottom: 8px;
+    border-bottom: 1px solid #e0e0e0;
+    margin-bottom: 8px;
+}
+
+QPushButton[class="primary"] {
+    background-color: #009688;
+    border: none;
+    color: #ffffff;
+    font-weight: bold;
+    border-radius: 4px;
+    padding: 6px 16px;
+}
+QPushButton[class="primary"]:hover {
+    background-color: #26a69a;
+}
+
+QPushButton[class="destructive"] {
+    background-color: #ffffff;
+    border: 1px solid #d32f2f;
+    color: #d32f2f;
+    border-radius: 4px;
+    padding: 6px 16px;
+}
+QPushButton[class="destructive"]:hover {
+    background-color: #d32f2f;
+    color: #ffffff;
 }
 """
 
@@ -376,6 +553,53 @@ QTabBar::tab:selected {
 
 QTabBar::tab:hover {
     background: #3e3e42;
+}
+
+/* --- Modern Cards (Session Builder) --- */
+#control_panel, #editor_panel {
+    background-color: #252526;
+    border: 1px solid #3e3e42;
+    border-radius: 8px;
+}
+
+/* Header Labels in Cards */
+QLabel#panel_header {
+    font-size: 11pt;
+    font-weight: bold;
+    color: #007acc;
+    padding-bottom: 8px;
+    border-bottom: 1px solid #3e3e42;
+    margin-bottom: 8px;
+}
+
+/* Primary Action Buttons */
+QPushButton[class="primary"] {
+    background-color: #007acc;
+    border: 1px solid #007acc;
+    color: #ffffff;
+    font-weight: bold;
+}
+
+QPushButton[class="primary"]:hover {
+    background-color: #1f8ad2;
+    border-color: #1f8ad2;
+}
+
+QPushButton[class="primary"]:pressed {
+    background-color: #005a9e;
+    border-color: #005a9e;
+}
+
+/* Destructive Action Buttons */
+QPushButton[class="destructive"] {
+    background-color: #333337;
+    border: 1px solid #ce1b1b;
+    color: #ce1b1b;
+}
+
+QPushButton[class="destructive"]:hover {
+    background-color: #ce1b1b;
+    color: #ffffff;
 }
 """
 

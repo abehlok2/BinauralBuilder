@@ -28,7 +28,11 @@ from PyQt5.QtWidgets import (
     QComboBox,
     QSplitter,
     QFormLayout,
+    QSplitter,
+    QFormLayout,
     QStyle,
+    QFrame,
+    QActionGroup,
 )
 
 from src.audio.session_engine import SessionAssembler
@@ -138,6 +142,7 @@ class SessionBuilderWindow(QMainWindow):
         self._current_assembler: Optional[SessionAssembler] = None
 
         self._init_actions()
+        self._init_menu()
         self._init_ui()
         self._load_session(self._session)
 
@@ -149,27 +154,69 @@ class SessionBuilderWindow(QMainWindow):
     # UI creation helpers
     # ------------------------------------------------------------------
     def _init_actions(self) -> None:
-        save_action = QAction(self.style().standardIcon(QStyle.SP_DialogSaveButton), "Save Session", self)
-        save_action.setShortcut("Ctrl+S")
-        save_action.triggered.connect(self._save_session)
-        load_action = QAction(self.style().standardIcon(QStyle.SP_DialogOpenButton), "Load Session", self)
-        load_action.setShortcut("Ctrl+O")
-        load_action.triggered.connect(self._load_session_from_file)
-        self.addAction(save_action)
-        self.addAction(load_action)
+        self.save_action = QAction(self.style().standardIcon(QStyle.SP_DialogSaveButton), "Save Session", self)
+        self.save_action.setShortcut("Ctrl+S")
+        self.save_action.triggered.connect(self._save_session)
+        
+        self.load_action = QAction(self.style().standardIcon(QStyle.SP_DialogOpenButton), "Load Session", self)
+        self.load_action.setShortcut("Ctrl+O")
+        self.load_action.triggered.connect(self._load_session_from_file)
+        
+        self.addAction(self.save_action)
+        self.addAction(self.load_action)
+
+    def _init_menu(self) -> None:
+        menu_bar = self.menuBar()
+        
+        # File Menu
+        file_menu = menu_bar.addMenu("File")
+        file_menu.addAction(self.save_action)
+        file_menu.addAction(self.load_action)
+        file_menu.addSeparator()
+        
+        # Themes Submenu
+        themes_menu = file_menu.addMenu("Themes")
+        theme_group = QActionGroup(self)
+        
+        # Get available themes from themes module
+        available_themes = sorted(themes.THEMES.keys())
+        
+        for theme_name in available_themes:
+            action = QAction(theme_name, self)
+            action.setCheckable(True)
+            action.setData(theme_name)
+            action.triggered.connect(self._change_theme)
+            themes_menu.addAction(action)
+            theme_group.addAction(action)
+            
+            # Check if this is the current theme (approximation)
+            # In a real app we might track current theme name
+            if theme_name == "Modern Dark": 
+                action.setChecked(True)
 
     def _init_ui(self) -> None:
         central = QWidget(self)
         self.setCentralWidget(central)
         main_layout = QVBoxLayout(central)
+        main_layout.setContentsMargins(20, 20, 20, 20)
+        main_layout.setSpacing(20)
 
-        # Top controls: Session Settings & Playback
-        top_layout = QHBoxLayout()
+        # --- Top Panel: Control & Playback (Card Style) ---
+        control_panel = QFrame()
+        control_panel.setObjectName("control_panel")
+        control_layout = QHBoxLayout(control_panel)
+        control_layout.setContentsMargins(20, 20, 20, 20)
+        control_layout.setSpacing(30)
+
+        # Section 1: Session Settings
+        settings_layout = QGridLayout()
+        settings_layout.setHorizontalSpacing(15)
+        settings_layout.setVerticalSpacing(10)
         
-        session_group = QGroupBox("Session Settings")
-        session_group.setToolTip("Configure global session playback and export options.")
-        session_layout = QGridLayout(session_group)
-        
+        settings_header = QLabel("Session Settings")
+        settings_header.setObjectName("panel_header")
+        settings_layout.addWidget(settings_header, 0, 0, 1, 3)
+
         self.crossfade_slider = QSlider(Qt.Horizontal)
         self.crossfade_slider.setRange(0, 300)
         self.crossfade_slider.setToolTip("Global crossfade duration applied between steps (seconds).")
@@ -192,46 +239,67 @@ class SessionBuilderWindow(QMainWindow):
         self.normalization_label = QLabel("0.00")
         self.normalization_label.setToolTip("Current normalization ceiling applied during rendering.")
 
-        session_layout.addWidget(QLabel("Crossfade:"), 0, 0)
-        session_layout.addWidget(self.crossfade_slider, 0, 1)
-        session_layout.addWidget(self.crossfade_spin, 0, 2)
+        settings_layout.addWidget(QLabel("Crossfade:"), 1, 0)
+        settings_layout.addWidget(self.crossfade_slider, 1, 1)
+        settings_layout.addWidget(self.crossfade_spin, 1, 2)
         
-        session_layout.addWidget(QLabel("Curve:"), 1, 0)
-        session_layout.addWidget(self.crossfade_curve_combo, 1, 1, 1, 2)
+        settings_layout.addWidget(QLabel("Curve:"), 2, 0)
+        settings_layout.addWidget(self.crossfade_curve_combo, 2, 1, 1, 2)
         
-        session_layout.addWidget(QLabel("Normalize:"), 2, 0)
-        session_layout.addWidget(self.normalization_slider, 2, 1)
-        session_layout.addWidget(self.normalization_label, 2, 2)
+        settings_layout.addWidget(QLabel("Normalize:"), 3, 0)
+        settings_layout.addWidget(self.normalization_slider, 3, 1)
+        settings_layout.addWidget(self.normalization_label, 3, 2)
         
-        top_layout.addWidget(session_group)
+        control_layout.addLayout(settings_layout, 1) # Stretch factor 1
 
-        # Playback Controls
-        playback_group = QGroupBox("Playback & Export")
-        playback_layout = QVBoxLayout(playback_group)
+        # Vertical Separator
+        separator = QFrame()
+        separator.setFrameShape(QFrame.VLine)
+        separator.setFrameShadow(QFrame.Sunken)
+        control_layout.addWidget(separator)
+
+        # Section 2: Playback & Export
+        playback_layout = QVBoxLayout()
+        playback_layout.setSpacing(10)
+        
+        playback_header = QLabel("Playback & Export")
+        playback_header.setObjectName("panel_header")
+        playback_layout.addWidget(playback_header)
         
         self.preview_btn = QPushButton(self.style().standardIcon(QStyle.SP_MediaPlay), "Preview Stream")
         self.preview_btn.setToolTip("Render the current session and stream audio preview.")
+        self.preview_btn.setProperty("class", "primary") # Apply primary style
+        
         self.stop_btn = QPushButton(self.style().standardIcon(QStyle.SP_MediaStop), "Stop")
         self.stop_btn.setToolTip("Stop streaming playback.")
+        
         self.export_btn = QPushButton(self.style().standardIcon(QStyle.SP_DialogSaveButton), "Export Session")
         self.export_btn.setToolTip("Render the session to an audio file.")
+        self.export_btn.setProperty("class", "primary") # Apply primary style
         
         playback_layout.addWidget(self.preview_btn)
         playback_layout.addWidget(self.stop_btn)
         playback_layout.addWidget(self.export_btn)
         playback_layout.addStretch()
         
-        top_layout.addWidget(playback_group)
-        main_layout.addLayout(top_layout)
+        control_layout.addLayout(playback_layout, 0) # No stretch, fixed width
 
-        # Splitter for Steps List and Step Details
+        main_layout.addWidget(control_panel)
+
+        # --- Main Content Splitter ---
         splitter = QSplitter(Qt.Horizontal)
+        splitter.setHandleWidth(2) # Make handle visible but thin
         main_layout.addWidget(splitter, 1)
 
-        # Left: Steps List
-        step_group = QGroupBox("Session Steps")
-        step_group.setToolTip("Timeline of session steps. Select a row to edit details below.")
-        step_layout = QVBoxLayout(step_group)
+        # Left: Steps List (Directly in splitter, styled by theme)
+        step_container = QWidget()
+        step_layout = QVBoxLayout(step_container)
+        step_layout.setContentsMargins(0, 0, 10, 0) # Right margin for spacing
+        step_layout.setSpacing(10)
+
+        step_header = QLabel("Session Steps")
+        step_header.setObjectName("panel_header")
+        step_layout.addWidget(step_header)
 
         self.step_model = SessionStepModel(self._session.steps, self._binaural_catalog)
         self.step_table = QTableView()
@@ -240,6 +308,8 @@ class SessionBuilderWindow(QMainWindow):
         self.step_table.setSelectionMode(QTableView.SingleSelection)
         self.step_table.horizontalHeader().setStretchLastSection(True)
         self.step_table.setToolTip("List of steps with their duration and presets.")
+        self.step_table.setAlternatingRowColors(True) # Better readability
+        self.step_table.verticalHeader().setVisible(False) # Hide row numbers
         step_layout.addWidget(self.step_table)
 
         step_buttons = QHBoxLayout()
@@ -247,6 +317,8 @@ class SessionBuilderWindow(QMainWindow):
         self.add_step_btn.setToolTip("Insert a new step.")
         self.remove_step_btn = QPushButton(self.style().standardIcon(QStyle.SP_TrashIcon), "Remove")
         self.remove_step_btn.setToolTip("Remove selected step.")
+        self.remove_step_btn.setProperty("class", "destructive")
+
         self.move_up_btn = QPushButton(self.style().standardIcon(QStyle.SP_ArrowUp), "Up")
         self.move_up_btn.setToolTip("Move step earlier.")
         self.move_down_btn = QPushButton(self.style().standardIcon(QStyle.SP_ArrowDown), "Down")
@@ -254,17 +326,29 @@ class SessionBuilderWindow(QMainWindow):
         
         step_buttons.addWidget(self.add_step_btn)
         step_buttons.addWidget(self.remove_step_btn)
+        step_buttons.addStretch()
         step_buttons.addWidget(self.move_up_btn)
         step_buttons.addWidget(self.move_down_btn)
         step_layout.addLayout(step_buttons)
         
-        splitter.addWidget(step_group)
+        splitter.addWidget(step_container)
 
-        # Right: Step Details
-        editor_group = QGroupBox("Step Details")
-        editor_group.setToolTip("Edit parameters for the selected step.")
-        editor_layout = QFormLayout(editor_group)
-        editor_layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        # Right: Step Details (Card Style)
+        self.editor_panel = QFrame()
+        self.editor_panel.setObjectName("editor_panel")
+        editor_main_layout = QVBoxLayout(self.editor_panel)
+        editor_main_layout.setContentsMargins(20, 20, 20, 20)
+        editor_main_layout.setSpacing(15)
+
+        self.editor_header = QLabel("Step Details")
+        self.editor_header.setObjectName("panel_header")
+        editor_main_layout.addWidget(self.editor_header)
+
+        editor_form_layout = QFormLayout()
+        editor_form_layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        editor_form_layout.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        editor_form_layout.setFormAlignment(Qt.AlignLeft | Qt.AlignTop)
+        editor_form_layout.setSpacing(12)
 
         self.preset_combo = QComboBox()
         self.preset_combo.setToolTip("Select the binaural preset used for this step.")
@@ -314,20 +398,24 @@ class SessionBuilderWindow(QMainWindow):
         self.description_edit.setMaximumHeight(100)
         self.description_edit.setToolTip("Notes about the intention or feel of the step.")
 
-        editor_layout.addRow("Binaural Preset:", self.preset_combo)
-        editor_layout.addRow("Noise Preset:", self.noise_combo)
-        editor_layout.addRow("Duration:", self.duration_spin)
-        editor_layout.addRow("Step Crossfade:", cf_widget)
-        editor_layout.addRow("Step Curve:", self.step_crossfade_curve_combo)
-        editor_layout.addRow("Warmup Audio:", warmup_widget)
-        editor_layout.addRow("Description:", self.description_edit)
+        editor_form_layout.addRow("Binaural Preset:", self.preset_combo)
+        editor_form_layout.addRow("Noise Preset:", self.noise_combo)
+        editor_form_layout.addRow("Duration:", self.duration_spin)
+        editor_form_layout.addRow("Step Crossfade:", cf_widget)
+        editor_form_layout.addRow("Step Curve:", self.step_crossfade_curve_combo)
+        editor_form_layout.addRow("Warmup Audio:", warmup_widget)
+        editor_form_layout.addRow("Description:", self.description_edit)
 
-        splitter.addWidget(editor_group)
+        editor_main_layout.addLayout(editor_form_layout)
+        editor_main_layout.addStretch() # Push form to top
+
+        splitter.addWidget(self.editor_panel)
         
         # Set initial splitter sizes (approx 40% list, 60% details)
         splitter.setSizes([400, 600])
 
         self.status_label = QLabel("Ready", central)
+        self.status_label.setStyleSheet("color: #888888; margin-top: 5px;")
         main_layout.addWidget(self.status_label)
 
         self._populate_presets()
@@ -593,7 +681,7 @@ class SessionBuilderWindow(QMainWindow):
     # Save/load handling
     # ------------------------------------------------------------------
     def _save_session(self) -> None:
-        path, _ = QFileDialog.getSaveFileName(self, "Save Session", "session.json", "Session Files (*.json)")
+        path, _ = QFileDialog.getSaveFileName(self, "Save Session", "session.session", "Session Files (*.session *.json)")
         if not path:
             return
         data = _session_to_dict(self._session)
@@ -606,7 +694,7 @@ class SessionBuilderWindow(QMainWindow):
         self.status_label.setText(f"Session saved to {Path(path).name}")
 
     def _load_session_from_file(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "Load Session", "", "Session Files (*.json)")
+        path, _ = QFileDialog.getOpenFileName(self, "Load Session", "", "Session Files (*.session *.json)")
         if not path:
             return
         try:
@@ -673,6 +761,15 @@ class SessionBuilderWindow(QMainWindow):
             self.status_label.setText(f"Exported to {Path(path).name}")
         else:
             self.status_label.setText("Export failed")
+
+    def _change_theme(self) -> None:
+        action = self.sender()
+        if action and isinstance(action, QAction):
+            theme_name = action.data()
+            app = QApplication.instance()
+            if app:
+                themes.apply_theme(app, theme_name)
+                self.status_label.setText(f"Theme changed to {theme_name}")
 
 
 __all__ = ["SessionBuilderWindow"]

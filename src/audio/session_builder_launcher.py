@@ -60,7 +60,7 @@ def launch_session_builder(
     *,
     binaural_preset_dirs: Optional[Iterable[Path | str]] = None,
     noise_preset_dirs: Optional[Iterable[Path | str]] = None,
-    theme: Optional[str] = None,
+    theme: Optional[str] = "Modern Dark",
     builtin_duration: float = 300.0,
     argv: Optional[Sequence[str]] = None,
 ) -> int:
@@ -138,6 +138,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--theme",
         choices=theme_choices or None,
+        default="Modern Dark",
         help="Optional theme name to apply to the UI." + (
             " Available themes: " + ", ".join(theme_choices)
             if theme_choices
