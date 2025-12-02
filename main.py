@@ -412,12 +412,32 @@ class TrackEditorApp(QMainWindow):
             save_settings(self.prefs)
 
     def open_noise_generator(self):
+        existing = getattr(self, "noise_generator_dialog", None)
+        if existing and existing.isVisible():
+            existing.raise_()
+            existing.activateWindow()
+            return
+
         dialog = NoiseGeneratorDialog(self)
-        dialog.exec_()
+        dialog.setWindowModality(Qt.NonModal)
+        dialog.setAttribute(Qt.WA_DeleteOnClose)
+        dialog.destroyed.connect(lambda: setattr(self, "noise_generator_dialog", None))
+        self.noise_generator_dialog = dialog
+        dialog.show()
 
     def open_frequency_tester(self):
+        existing = getattr(self, "frequency_tester_dialog", None)
+        if existing and existing.isVisible():
+            existing.raise_()
+            existing.activateWindow()
+            return
+
         dialog = FrequencyTesterDialog(self, self.prefs)
-        dialog.exec_()
+        dialog.setWindowModality(Qt.NonModal)
+        dialog.setAttribute(Qt.WA_DeleteOnClose)
+        dialog.destroyed.connect(lambda: setattr(self, "frequency_tester_dialog", None))
+        self.frequency_tester_dialog = dialog
+        dialog.show()
 
     def open_binaural_encoder(self):
         dialog = BinauralEncoderDialog(self)
