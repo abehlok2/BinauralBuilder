@@ -11,6 +11,7 @@ from typing import Dict, Iterable, List, Mapping, Optional
 from .utils.voice_file import load_voice_preset
 from .utils.noise_file import load_noise_params
 import json
+import tempfile
 
 try:  # Optional dependency: audio_engine requires PortAudio via slab
     from .synth_functions.audio_engine import (  # type: ignore
@@ -242,6 +243,36 @@ def build_binaural_preset_catalog(
         except Exception:
             continue
 
+    # Load from src.presets (generated file)
+    try:
+        from src.presets import BINAURAL_PRESETS
+        for name, data in BINAURAL_PRESETS.items():
+            try:
+                progression = data.get("progression", [])
+                if not progression or not isinstance(progression, list):
+                    continue
+                
+                first_step = progression[0]
+                voices = first_step.get("voices", [])
+                if not voices:
+                    continue
+
+                preset_id = f"preset:{name}"
+                label = name.replace("_", " ").title()
+                description = first_step.get("description", "Preset loaded from presets.py.")
+                
+                catalog[preset_id] = SessionPresetChoice(
+                    id=preset_id,
+                    label=label,
+                    kind="binaural",
+                    description=description,
+                    payload={"voices": voices},
+                )
+            except Exception:
+                continue
+    except ImportError:
+        pass
+
     return catalog
 
 
@@ -270,6 +301,29 @@ def build_noise_preset_catalog(
                 "params_path": str(path),
             },
         )
+
+    # Load from src.presets (generated file)
+    try:
+        from src.presets import NOISE_PRESETS
+        for name, data in NOISE_PRESETS.items():
+            try:
+                # Noise presets in presets.py are just the params dict
+                preset_id = f"noise_preset:{name}"
+                catalog[preset_id] = SessionPresetChoice(
+                    id=preset_id,
+                    label=name.replace("_", " ").title(),
+                    kind="noise",
+                    description="Noise preset loaded from presets.py.",
+                    payload={
+                        "params": data,
+                        "params_path": None, # No file path for these
+                    },
+                )
+            except Exception:
+                continue
+    except ImportError:
+        pass
+
     return catalog
 
 
@@ -301,6 +355,16 @@ def session_to_track_data(
         params_path = choice.payload.get("params_path") or (
             str(choice.source_path) if choice.source_path else None
         )
+        
+        # Handle in-memory noise params (from presets.py)
+        if params_path is None and "params" in choice.payload:
+            try:
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".noise", mode="w", encoding="utf-8") as tmp:
+                    json.dump(choice.payload["params"], tmp, indent=2)
+                    params_path = tmp.name
+            except Exception:
+                pass
+
         if params_path is None:
             raise ValueError(
                 f"Noise preset '{choice.id}' is missing an associated parameter file."
