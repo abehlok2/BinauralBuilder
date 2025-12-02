@@ -45,6 +45,18 @@ ENVELOPE_TYPE_NONE = "None"
 ENVELOPE_TYPE_LINEAR = "linear_fade" # Corresponds to create_linear_fade_envelope in sound_creator
 SUPPORTED_ENVELOPE_TYPES = [ENVELOPE_TYPE_NONE, ENVELOPE_TYPE_LINEAR]
 
+
+def get_default_param_display_flag(param_name: str) -> bool:
+    """Return whether a parameter should be displayed by default in details views."""
+
+    name_lower = param_name.lower()
+    return not (
+        name_lower.startswith("flange")
+        or name_lower.startswith("spatial")
+        or param_name in FLANGE_TOOLTIPS
+        or param_name in SPATIAL_TOOLTIPS
+    )
+
 # Synth functions that should be available for parameter lookup but hidden
 # from the UI drop-down list. These are typically transition variants that
 # are selected automatically when the "Is Transition?" box is checked.
@@ -1606,27 +1618,50 @@ class VoiceEditorDialog(QDialog): # Standard class name
                     func_name = ''
                     is_trans = False
             
-            if params:
-                try:
-                    ordered = self._get_default_params(func_name, is_trans)
-                    ordered_keys = list(ordered.keys())
-                except Exception:
-                    ordered_keys = []
-                if ordered_keys:
-                    for k in ordered_keys:
-                        if k in params:
-                            v = params[k]
-                            details += "  {}: {}\n".format(k, f"{v:.4g}" if isinstance(v, float) else v)
-                    extra_keys = [k for k in params.keys() if k not in ordered_keys]
-                    for k in extra_keys:
-                        v = params[k]
-                        details += "  {}: {}\n".format(k, f"{v:.4g}" if isinstance(v, float) else v)
-                else:
-                    for k, v in sorted(params.items()):
-                        details += "  {}: {}\n".format(k, f"{v:.4g}" if isinstance(v, float) else v)
-            else:
-                if "Function:" in details: # Only if not an error message
-                    details += "  (No parameters defined)\n"
+            prefs_obj = getattr(self.app, "prefs", None)
+            func_display_prefs = {}
+            if isinstance(getattr(prefs_obj, "voice_detail_display", None), dict):
+                func_display_prefs = prefs_obj.voice_detail_display.get(func_name, {}) or {}
+
+            default_params = OrderedDict()
+            try:
+                default_params = self._get_default_params(func_name, is_trans)
+            except Exception:
+                default_params = OrderedDict()
+
+            def _should_display_param(param_name: str) -> bool:
+                cfg = func_display_prefs.get(param_name, {}) if isinstance(func_display_prefs, dict) else {}
+                if isinstance(cfg, dict) and "display" in cfg:
+                    return cfg.get("display", True)
+                return get_default_param_display_flag(param_name)
+
+            # Build the ordered list of params based on defaults first, then extras
+            ordered_keys = list(default_params.keys())
+            extra_keys = [k for k in params.keys() if k not in default_params]
+            ordered_keys.extend(sorted(extra_keys))
+
+            shown_any = False
+            for param_name in ordered_keys:
+                if not _should_display_param(param_name):
+                    continue
+
+                cfg = func_display_prefs.get(param_name, {}) if isinstance(func_display_prefs, dict) else {}
+                value = params.get(
+                    param_name,
+                    cfg.get("default", default_params.get(param_name)),
+                )
+
+                if value is None:
+                    continue
+
+                shown_any = True
+                display_val = f"{value:.4g}" if isinstance(value, float) else value
+                details += f"  {param_name}: {display_val}\n"
+
+            if not shown_any and "Function:" in details:
+                details += "  (No parameters selected for display)\n"
+            elif not params and "Function:" in details:
+                details += "  (No parameters defined)\n"
 
             # Envelope details (either current UI if editing same, or saved for other ref)
             if is_editing_same_voice:
