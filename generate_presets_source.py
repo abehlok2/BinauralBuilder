@@ -1,50 +1,63 @@
 import json
 import glob
 import os
+import argparse
 from pathlib import Path
+from typing import List
 
-def generate_presets_source():
+def generate_presets_source(input_files: List[str]):
     binaural_presets = {}
     noise_presets = {}
 
-    # Find JSON files in the current directory (excluding hidden/system dirs)
-    json_files = glob.glob("*.json")
-    for json_file in json_files:
-        # Skip package.json or other non-preset files if any (heuristic: presets seem to start with F)
-        # But user said "collected .json files", so I'll try to include all that look like session definitions.
-        # The ones found were F*.json.
-        if not json_file.startswith("F"):
+    # If no input files provided, maybe default to nothing or all? 
+    # User said "just particular ones", so if list is empty, we do nothing or warn.
+    # But for convenience let's assume if specific files are given we use them.
+    # If the user provides a mix of json and noise files, we handle them.
+
+    files_to_process = []
+    if not input_files:
+        # Fallback to all if none specified? Or just print help?
+        # "I don't want to add every single json file" implies we should NOT default to all.
+        print("# No input files provided. Usage: python generate_presets_source.py file1.json file2.noise ...")
+        return
+    else:
+        for f in input_files:
+            # Expand globs if the shell didn't do it (Windows cmd might not)
+            expanded = glob.glob(f)
+            if not expanded:
+                # If it's not a glob or file not found, just add it to try opening (might be a specific path)
+                files_to_process.append(f)
+            else:
+                files_to_process.extend(expanded)
+
+    for file_path in files_to_process:
+        path_obj = Path(file_path)
+        if not path_obj.exists():
+            print(f"# File not found: {file_path}")
             continue
             
-        try:
-            with open(json_file, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-                # Check if it looks like a session preset (has 'progression')
-                if 'progression' in data:
-                    name = Path(json_file).stem
-                    binaural_presets[name] = data
-        except Exception as e:
-            print(f"# Error reading {json_file}: {e}")
-
-    # Find .noise files
-    noise_files = glob.glob("*.noise")
-    for noise_file in noise_files:
-        try:
-            # Noise files are JSON but with .noise extension? Or pickle?
-            # Let's check one. I'll assume JSON for now based on "collected .json files" comment, 
-            # but I should verify. 
-            # Wait, binauralbuilder_core/session.py uses load_noise_params.
-            # Let's check what load_noise_params does.
-            # Actually, I'll just read it as text/json.
-            with open(noise_file, 'r', encoding='utf-8') as f:
-                # Try to load as JSON
-                data = json.load(f)
-                name = Path(noise_file).stem
-                noise_presets[name] = data
-        except json.JSONDecodeError:
-             print(f"# {noise_file} is not valid JSON, skipping.")
-        except Exception as e:
-            print(f"# Error reading {noise_file}: {e}")
+        if path_obj.suffix.lower() == '.json':
+            try:
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    if 'progression' in data:
+                        name = path_obj.stem
+                        binaural_presets[name] = data
+                    else:
+                        print(f"# {file_path} does not look like a binaural session preset (missing 'progression').")
+            except Exception as e:
+                print(f"# Error reading {file_path}: {e}")
+        
+        elif path_obj.suffix.lower() == '.noise':
+            try:
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    name = path_obj.stem
+                    noise_presets[name] = data
+            except Exception as e:
+                print(f"# Error reading {file_path}: {e}")
+        else:
+            print(f"# Skipping unknown file type: {file_path}")
 
     output = []
     output.append('"""Built-in presets for the Session Builder."""')
@@ -62,4 +75,8 @@ def generate_presets_source():
     print("\n".join(output))
 
 if __name__ == "__main__":
-    generate_presets_source()
+    parser = argparse.ArgumentParser(description="Generate presets.py from JSON/Noise files.")
+    parser.add_argument("files", nargs="*", help="List of files to include in the presets.")
+    args = parser.parse_args()
+    
+    generate_presets_source(args.files)

@@ -138,47 +138,48 @@ def build_binaural_preset_catalog(
 
     catalog: Dict[str, SessionPresetChoice] = {}
 
-    for state in _iter_brainwave_states():
-        if _get_preset_nodes_for_state is not None:
-            nodes = _get_preset_nodes_for_state(state, duration)
-        else:
-            preset = _FALLBACK_PRESETS[state.value]
-            nodes = [
-                {
-                    "duration": duration,
-                    "base_freq": preset["base_freq"],
-                    "beat_freq": preset["beat_freq"],
-                    "volume_left": preset["volume"],
-                    "volume_right": preset["volume"],
-                }
-            ]
-        if not nodes:
-            continue
-        first_node = nodes[0]
-        node_dict = _node_to_dict(first_node, duration)
-        preset_id = f"builtin:{state.value}"
-        voice_payload = {
-            "synth_function_name": "binaural_beat",
-            "params": {
-                "baseFreq": _node_attr(first_node, "base_freq", node_dict.get("base_freq", 0.0)),
-                "beatFreq": _node_attr(first_node, "beat_freq", node_dict.get("beat_freq", 0.0)),
-                "ampL": _node_attr(first_node, "volume_left", node_dict.get("volume_left", 0.0)),
-                "ampR": _node_attr(first_node, "volume_right", node_dict.get("volume_right", 0.0)),
-            },
-            "is_transition": False,
-            "description": f"Built-in {state.name.title()} preset",
-        }
-        catalog[preset_id] = SessionPresetChoice(
-            id=preset_id,
-            label=f"{state.name.title()} (Built-in)",
-            kind="binaural",
-            description="Generated from audio_engine defaults.",
-            payload={
-                "voice_data": voice_payload,
-                "nodes": [_node_to_dict(n, duration) for n in nodes],
-                "brainwave_state": state.value,
-            },
-        )
+    # Built-in presets (Alpha-Gamma) removed by user request.
+    # for state in _iter_brainwave_states():
+    #     if _get_preset_nodes_for_state is not None:
+    #         nodes = _get_preset_nodes_for_state(state, duration)
+    #     else:
+    #         preset = _FALLBACK_PRESETS[state.value]
+    #         nodes = [
+    #             {
+    #                 "duration": duration,
+    #                 "base_freq": preset["base_freq"],
+    #                 "beat_freq": preset["beat_freq"],
+    #                 "volume_left": preset["volume"],
+    #                 "volume_right": preset["volume"],
+    #             }
+    #         ]
+    #     if not nodes:
+    #         continue
+    #     first_node = nodes[0]
+    #     node_dict = _node_to_dict(first_node, duration)
+    #     preset_id = f"builtin:{state.value}"
+    #     voice_payload = {
+    #         "synth_function_name": "binaural_beat",
+    #         "params": {
+    #             "baseFreq": _node_attr(first_node, "base_freq", node_dict.get("base_freq", 0.0)),
+    #             "beatFreq": _node_attr(first_node, "beat_freq", node_dict.get("beat_freq", 0.0)),
+    #             "ampL": _node_attr(first_node, "volume_left", node_dict.get("volume_left", 0.0)),
+    #             "ampR": _node_attr(first_node, "volume_right", node_dict.get("volume_right", 0.0)),
+    #         },
+    #         "is_transition": False,
+    #         "description": f"Built-in {state.name.title()} preset",
+    #     }
+    #     catalog[preset_id] = SessionPresetChoice(
+    #         id=preset_id,
+    #         label=f"{state.name.title()} (Built-in)",
+    #         kind="binaural",
+    #         description="Generated from audio_engine defaults.",
+    #         payload={
+    #             "voice_data": voice_payload,
+    #             "nodes": [_node_to_dict(n, duration) for n in nodes],
+    #             "brainwave_state": state.value,
+    #         },
+    #     )
 
     preset_dirs = preset_dirs or []
     # Load .voice files
