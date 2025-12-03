@@ -14,6 +14,8 @@ from ..utils.noise_file import load_noise_params
 from .noise_flanger import (
     _generate_swept_notch_arrays,
     _generate_swept_notch_arrays_transition,
+    noise_swept_notch,
+    noise_swept_notch_transition,
 )
 from .fx_flanger import flanger_stereo
 
@@ -383,6 +385,12 @@ except Exception as e:
     print(f"Error inspecting functions: {e}")
 
 print(f"Detected Synth Functions: {list(SYNTH_FUNCTIONS.keys())}")
+
+# Explicitly register noise functions if missed by discovery
+if "noise_swept_notch" not in SYNTH_FUNCTIONS:
+    SYNTH_FUNCTIONS["noise_swept_notch"] = noise_swept_notch
+if "noise_swept_notch_transition" not in SYNTH_FUNCTIONS:
+    SYNTH_FUNCTIONS["noise_swept_notch_transition"] = noise_swept_notch_transition
 
 
 def get_synth_params(func_name):

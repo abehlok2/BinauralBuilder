@@ -669,10 +669,11 @@ def apply_flanger(
     direction="up",
     lfo_waveform="sine",
     feedback=0.0,
+    initial_offset=0.0,
 ):
     """Apply a flanging effect to ``input_signal``."""
     n = len(input_signal)
-    t = np.arange(n) / sample_rate
+    t = (np.arange(n) / sample_rate) + initial_offset
     if lfo_waveform.lower() == "triangle":
         lfo = signal.sawtooth(2 * np.pi * lfo_freq * t, width=0.5)
     else:
@@ -712,6 +713,7 @@ def generate_flanged_noise(
     mix=0.5,
     direction="up",
     lfo_waveform="sine",
+    initial_offset=0.0,
 ):
     """Generate noise and apply a flanger."""
     num_samples = int(duration_seconds * sample_rate)
@@ -724,6 +726,7 @@ def generate_flanged_noise(
         mix=mix,
         direction=direction,
         lfo_waveform=lfo_waveform,
+        initial_offset=initial_offset,
     )
 
 
@@ -842,6 +845,7 @@ def _apply_deep_swept_notches_single_phase(
     phase_offset=90,
     lfo_waveform="sine",
     use_memmap=True,
+    initial_offset=0.0,
 ):
     """Apply one or more deep swept notch filters for a single LFO phase."""
     n_samples = len(input_signal)
@@ -859,7 +863,7 @@ def _apply_deep_swept_notches_single_phase(
     else:
         output = input_signal.copy()
 
-    t = np.arange(n_samples) / sample_rate
+    t = (np.arange(n_samples) / sample_rate) + initial_offset
 
     # --- LFO Generation ---
     if lfo_waveform.lower() == "triangle":
@@ -968,6 +972,7 @@ def apply_deep_swept_notches(
     extra_phase_offset=0.0,
     lfo_waveform="sine",
     use_memmap=False,
+    initial_offset=0.0,
 ):
     """Wrapper for deep swept notch filters."""
     output = _apply_deep_swept_notches_single_phase(
@@ -980,6 +985,7 @@ def apply_deep_swept_notches(
         phase_offset,
         lfo_waveform,
         use_memmap=use_memmap,
+        initial_offset=initial_offset,
     )
 
     if extra_phase_offset:
@@ -993,6 +999,7 @@ def apply_deep_swept_notches(
             phase_offset + extra_phase_offset,
             lfo_waveform,
             use_memmap=use_memmap,
+            initial_offset=initial_offset,
         )
 
     return output
@@ -1013,6 +1020,7 @@ def _generate_swept_notch_arrays(
     memory_efficient,
     n_jobs,
     static_notches=None,
+    initial_offset=0.0,
 ):
     """Internal helper to generate swept notch noise and return stereo array."""
     if filter_sweeps is None:
@@ -1502,6 +1510,7 @@ def noise_generator(
         bool(memory_efficient),
         n_jobs,
         static_notches,
+        initial_offset=float(extra_params.get("initial_offset", 0.0)),
     )
 
     audio = np.array(stereo_output, dtype=np.float32, copy=True)
@@ -1510,7 +1519,7 @@ def noise_generator(
 
     num_samples = audio.shape[0]
     if num_samples == 0:
-        return audio.reshape(0, 2)
+        return audio.reshape(0, 2), {}
 
     env = _build_noise_envelope(num_samples, sample_rate, fade_in, fade_out, amp_envelope)
 
@@ -1580,7 +1589,7 @@ def noise_generator(
             )
             audio = np.nan_to_num(audio, nan=0.0, posinf=0.0, neginf=0.0)
 
-    return audio
+    return audio, {}
 
 
 def noise_generator_transition(
@@ -1788,7 +1797,7 @@ def noise_generator_transition(
             )
             audio = np.nan_to_num(audio, nan=0.0, posinf=0.0, neginf=0.0)
 
-    return audio
+    return audio, {}
 
 
 # =======================================================
@@ -2414,4 +2423,223 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+
+
+
+# ==========================================
+# Synth Function Wrappers for Noise
+# ==========================================
+
+def noise_swept_notch(
+    duration,
+    sample_rate,
+    lfo_freq=0.1,
+    sweeps=None,
+    notch_q=None,
+    casc=None,
+    start_lfo_phase_offset_deg=0.0,
+    start_intra_phase_offset_deg=0.0,
+    input_audio_path=None,
+    noise_type="pink",
+    lfo_waveform="sine",
+    stereo_phase_invert=False,
+    channels=2,
+    static_notches=None,
+    volume=1.0,
+    **kwargs
+):
+    """
+    Wrapper for _generate_swept_notch_arrays to be used as a synth function voice.
+    Adapts the flat argument list to the specific arguments required by the internal generator.
+    """
+    # Handle input_audio_path being empty string
+    if input_audio_path == "":
+        input_audio_path = None
+
+    # Parse sweeps using the helper to handle list of dicts or tuples
+    # This returns (filter_sweeps, q_vals, casc_vals)
+    filter_sweeps, parsed_q, parsed_casc = _prepare_static_sweeps(sweeps)
+    
+    num_sweeps = len(filter_sweeps)
+
+    # Handle notch_q broadcasting/override
+    if notch_q is None:
+        notch_q = parsed_q
+    elif isinstance(notch_q, (int, float)):
+        notch_q = [float(notch_q)] * num_sweeps
+    elif isinstance(notch_q, (list, tuple)):
+        if len(notch_q) == 1 and num_sweeps > 1:
+            notch_q = [float(notch_q[0])] * num_sweeps
+        else:
+            notch_q = [float(q) for q in notch_q]
+
+    # Handle casc broadcasting/override
+    if casc is None:
+        casc = parsed_casc
+    elif isinstance(casc, int):
+        casc = [int(casc)] * num_sweeps
+    elif isinstance(casc, (list, tuple)):
+        if len(casc) == 1 and num_sweeps > 1:
+            casc = [int(casc[0])] * num_sweeps
+        else:
+            casc = [int(c) for c in casc]
+    
+    # Generate the noise
+    audio, _ = _generate_swept_notch_arrays(
+        duration,
+        sample_rate,
+        lfo_freq,
+        filter_sweeps,
+        notch_q,
+        casc,
+        start_lfo_phase_offset_deg,
+        start_intra_phase_offset_deg,
+        input_audio_path,
+        noise_type,
+        lfo_waveform,
+        stereo_phase_invert,
+        channels,
+        static_notches
+    )
+    
+    # Apply volume
+    if volume != 1.0:
+        audio *= volume
+        
+    return audio
+
+
+def noise_swept_notch_transition(
+    duration,
+    sample_rate,
+    start_lfo_freq=0.1,
+    end_lfo_freq=0.1,
+    start_sweeps=None,
+    end_sweeps=None,
+    start_q=None,
+    end_q=None,
+    start_casc=None,
+    end_casc=None,
+    start_lfo_phase_offset_deg=0.0,
+    end_lfo_phase_offset_deg=0.0,
+    start_intra_phase_offset_deg=0.0,
+    end_intra_phase_offset_deg=0.0,
+    input_audio_path=None,
+    noise_type="pink",
+    lfo_waveform="sine",
+    initial_offset=0.0,
+    transition_duration=None,
+    transition_curve="linear",
+    stereo_phase_invert=False,
+    channels=2,
+    static_notches=None,
+    volume=1.0,
+    **kwargs
+):
+    """
+    Wrapper for _generate_swept_notch_arrays_transition to be used as a synth function voice.
+    """
+    # Handle input_audio_path being empty string
+    if input_audio_path == "":
+        input_audio_path = None
+
+    # Parse sweeps using the transition helper
+    # This returns (start_sweeps, end_sweeps, start_q_vals, end_q_vals, start_casc, end_casc)
+    # We pass 'start_sweeps' argument as the input because that's likely where the list of dicts is passed
+    # if the UI sends a single 'sweeps' list, it might be in start_sweeps or kwargs.
+    # But based on the error log, the param is named 'sweeps'.
+    
+    sweeps_input = kwargs.get('sweeps', start_sweeps)
+    if sweeps_input is None:
+        sweeps_input = start_sweeps
+
+    (
+        parsed_start_sweeps,
+        parsed_end_sweeps,
+        parsed_start_q,
+        parsed_end_q,
+        parsed_start_casc,
+        parsed_end_casc
+    ) = _prepare_transition_sweeps(sweeps_input)
+    
+    num_sweeps = len(parsed_start_sweeps)
+
+    # Handle start_q broadcasting/override
+    if start_q is None:
+        start_q = parsed_start_q
+    elif isinstance(start_q, (int, float)):
+        start_q = [float(start_q)] * num_sweeps
+    elif isinstance(start_q, (list, tuple)):
+        if len(start_q) == 1 and num_sweeps > 1:
+            start_q = [float(start_q[0])] * num_sweeps
+        else:
+            start_q = [float(q) for q in start_q]
+
+    # Handle end_q broadcasting/override
+    if end_q is None:
+        end_q = parsed_end_q
+    elif isinstance(end_q, (int, float)):
+        end_q = [float(end_q)] * num_sweeps
+    elif isinstance(end_q, (list, tuple)):
+        if len(end_q) == 1 and num_sweeps > 1:
+            end_q = [float(end_q[0])] * num_sweeps
+        else:
+            end_q = [float(q) for q in end_q]
+
+    # Handle start_casc broadcasting/override
+    if start_casc is None:
+        start_casc = parsed_start_casc
+    elif isinstance(start_casc, int):
+        start_casc = [int(start_casc)] * num_sweeps
+    elif isinstance(start_casc, (list, tuple)):
+        if len(start_casc) == 1 and num_sweeps > 1:
+            start_casc = [int(start_casc[0])] * num_sweeps
+        else:
+            start_casc = [int(c) for c in start_casc]
+
+    # Handle end_casc broadcasting/override
+    if end_casc is None:
+        end_casc = parsed_end_casc
+    elif isinstance(end_casc, int):
+        end_casc = [int(end_casc)] * num_sweeps
+    elif isinstance(end_casc, (list, tuple)):
+        if len(end_casc) == 1 and num_sweeps > 1:
+            end_casc = [int(end_casc[0])] * num_sweeps
+        else:
+            end_casc = [int(c) for c in end_casc]
+
+    # Generate the noise
+    audio, _ = _generate_swept_notch_arrays_transition(
+        duration,
+        sample_rate,
+        start_lfo_freq,
+        end_lfo_freq,
+        parsed_start_sweeps,
+        parsed_end_sweeps,
+        start_q,
+        end_q,
+        start_casc,
+        end_casc,
+        start_lfo_phase_offset_deg,
+        end_lfo_phase_offset_deg,
+        start_intra_phase_offset_deg,
+        end_intra_phase_offset_deg,
+        input_audio_path,
+        noise_type,
+        lfo_waveform,
+        initial_offset,
+        transition_duration if transition_duration is not None else duration,
+        transition_curve,
+        stereo_phase_invert,
+        channels,
+        static_notches
+    )
+
+    # Apply volume
+    if volume != 1.0:
+        audio *= volume
+        
+    return audio
 

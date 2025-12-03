@@ -13,6 +13,19 @@ from PyQt5.QtWidgets import (
     QSpinBox,
     QVBoxLayout,
 )
+from PyQt5.QtCore import QBuffer, QIODevice
+try:
+    from PyQt5.QtMultimedia import (
+        QAudioOutput,
+        QAudioFormat,
+        QAudioDeviceInfo,
+        QAudio,
+    )
+    QT_MULTIMEDIA_AVAILABLE = True
+except ImportError:
+    QT_MULTIMEDIA_AVAILABLE = False
+
+import numpy as np
 
 from src.utils.colored_noise import (
     DEFAULT_COLOR_PRESETS,
@@ -91,11 +104,26 @@ class ColoredNoiseDialog(QDialog):
         layout.addLayout(form)
 
         button_layout = QHBoxLayout()
+        self.test_btn = QPushButton("Test")
+        self.test_btn.clicked.connect(self.on_test)
+        self.stop_btn = QPushButton("Stop")
+        self.stop_btn.clicked.connect(self.on_stop)
+        self.stop_btn.setEnabled(False)
+        
         close_btn = QPushButton("Close")
         close_btn.clicked.connect(self.reject)
+        
+        button_layout.addWidget(self.test_btn)
+        button_layout.addWidget(self.stop_btn)
         button_layout.addStretch(1)
         button_layout.addWidget(close_btn)
         layout.addLayout(button_layout)
+
+        self.audio_output = None
+        self.audio_buffer = None
+
+        if not QT_MULTIMEDIA_AVAILABLE:
+            self.test_btn.setEnabled(False)
 
         self._refresh_color_presets()
 
@@ -194,3 +222,64 @@ class ColoredNoiseDialog(QDialog):
         self._custom_presets.pop(name, None)
         save_custom_color_presets(self._custom_presets)
         self._refresh_color_presets()
+
+    def on_test(self):
+        if not QT_MULTIMEDIA_AVAILABLE:
+            return
+
+        try:
+            # Generate 5 seconds of noise for testing
+            gen = self._collect_params()
+            gen.duration = 5.0
+            noise = gen.generate()
+            
+            # Convert to int16 PCM
+            audio_int16 = (np.clip(noise, -1.0, 1.0) * 32767).astype(np.int16)
+            audio_bytes = audio_int16.tobytes()
+
+            fmt = QAudioFormat()
+            fmt.setCodec("audio/pcm")
+            fmt.setSampleRate(gen.sample_rate)
+            fmt.setSampleSize(16)
+            fmt.setChannelCount(1) # Mono
+            fmt.setByteOrder(QAudioFormat.LittleEndian)
+            fmt.setSampleType(QAudioFormat.SignedInt)
+
+            device_info = QAudioDeviceInfo.defaultOutputDevice()
+            if not device_info.isFormatSupported(fmt):
+                # Try stereo if mono fails
+                fmt.setChannelCount(2)
+                if not device_info.isFormatSupported(fmt):
+                    QMessageBox.warning(self, "Test Error", "Default output device does not support the required format")
+                    return
+                # Duplicate for stereo
+                stereo = np.column_stack((noise, noise))
+                audio_int16 = (np.clip(stereo, -1.0, 1.0) * 32767).astype(np.int16)
+                audio_bytes = audio_int16.tobytes()
+
+            if self.audio_output:
+                self.on_stop()
+
+            self.audio_output = QAudioOutput(fmt, self)
+            self.audio_output.stateChanged.connect(self.on_audio_state_changed)
+            self.audio_buffer = QBuffer()
+            self.audio_buffer.setData(audio_bytes)
+            self.audio_buffer.open(QIODevice.ReadOnly)
+            self.audio_output.start(self.audio_buffer)
+            self.stop_btn.setEnabled(True)
+            
+        except Exception as exc:
+            QMessageBox.critical(self, "Error", str(exc))
+
+    def on_stop(self):
+        if self.audio_output:
+            self.audio_output.stop()
+            self.audio_output = None
+        if self.audio_buffer:
+            self.audio_buffer.close()
+            self.audio_buffer = None
+        self.stop_btn.setEnabled(False)
+
+    def on_audio_state_changed(self, state):
+        if state in (QAudio.IdleState, QAudio.StoppedState):
+            self.on_stop()

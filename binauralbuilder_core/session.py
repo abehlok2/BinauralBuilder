@@ -64,6 +64,8 @@ class SessionStep:
     crossfade_duration: Optional[float] = None
     crossfade_curve: Optional[str] = None
     description: str = ""
+    noise_volume: float = 1.0
+    binaural_volume: float = 1.0
 
 
 @dataclass
@@ -80,7 +82,10 @@ class Session:
     background_noise_start_time: float = 0.0
     background_noise_fade_in: float = 0.0
     background_noise_fade_out: float = 0.0
+    background_noise_fade_in: float = 0.0
+    background_noise_fade_out: float = 0.0
     background_noise_amp_envelope: Optional[List[List[float]]] = None
+    normalization_level: float = 0.95
 
 
 def _collect_files(directories: Iterable[Path], extension: str) -> List[Path]:
@@ -339,7 +344,10 @@ def session_to_track_data(
             "sample_rate": session.sample_rate,
             "crossfade_duration": session.crossfade_duration,
             "crossfade_curve": session.crossfade_curve,
+            "crossfade_duration": session.crossfade_duration,
+            "crossfade_curve": session.crossfade_curve,
             "output_filename": session.output_filename,
+            "normalization_level": session.normalization_level,
         },
         "background_noise": {},
         "clips": [],
@@ -406,11 +414,18 @@ def session_to_track_data(
         else:
             raise ValueError(f"Binaural preset '{choice.id}' is missing voice data.")
 
+        # Tag binaural voices
+        for voice in voice_entries:
+            voice["voice_type"] = "binaural"
+
         step_start = step.start if step.start is not None else current_time
         step_entry: Dict[str, object] = {
             "duration": step.duration,
             "start": step_start,
             "voices": voice_entries,
+            "binaural_volume": step.binaural_volume,
+            "noise_volume": step.noise_volume,
+            "normalization_level": session.normalization_level,
         }
         if step.description:
             step_entry["description"] = step.description
@@ -437,6 +452,25 @@ def session_to_track_data(
                     "description": step.description or choice.label,
                 }
             )
+
+        if step.noise_preset_id:
+            noise_choice = noise_catalog.get(step.noise_preset_id)
+            if noise_choice:
+                noise_params = noise_choice.payload.get("params", {})
+                
+                # Determine if it's a transition or static noise
+                is_transition = getattr(noise_params, "transition", False) or noise_params.get("transition", False)
+                
+                # Create a voice entry for the noise
+                noise_voice = {
+                    "synth_function_name": "noise_swept_notch_transition" if is_transition else "noise_swept_notch",
+                    "params": dict(noise_params),
+                    "is_transition": bool(is_transition),
+                    "voice_type": "noise",
+                }
+                
+                # Add the noise voice to the step's voices
+                step_entry["voices"].append(noise_voice)
 
         step_crossfade = (
             step.crossfade_duration

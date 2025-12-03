@@ -9,7 +9,7 @@ from typing import Callable, Deque, Dict, List, Optional
 import numpy as np
 
 try:  # pragma: no cover - import guard mirrors UI dialogs
-    from PyQt5.QtCore import QBuffer, QIODevice, QObject
+    from PyQt5.QtCore import QBuffer, QIODevice, QObject, QTimer
     from PyQt5.QtMultimedia import (
         QAudio,
         QAudioDeviceInfo,
@@ -99,6 +99,19 @@ except Exception:  # pragma: no cover - allow headless operation
     QAudioFormat = _DummyAudioFormat  # type: ignore
     QAudioOutput = None  # type: ignore
     QBuffer = _DummyQBuffer  # type: ignore
+    
+    class _DummyQTimer:
+        def __init__(self, parent=None): pass
+        def start(self, ms=None): pass
+        def stop(self): pass
+        def setInterval(self, ms): pass
+        @property
+        def timeout(self): return _DummySignal()
+        
+    class _DummySignal:
+        def connect(self, slot): pass
+        
+    QTimer = _DummyQTimer # type: ignore
 
 from src.synth_functions.sound_creator import (
     crossfade_signals,
@@ -111,11 +124,15 @@ _BYTES_PER_FRAME = 4  # 16-bit stereo
 
 
 @dataclass
-class _StreamState:
-    index: int = 0
-    prev_chunk: Optional[np.ndarray] = None
-    prev_crossfade_samples: int = 0
-    prev_crossfade_curve: str = "linear"
+class _StepPlaybackInfo:
+    index: int
+    start_sample: int
+    end_sample: int
+    fade_in_samples: int
+    fade_in_curve: str
+    fade_out_samples: int
+    fade_out_curve: str
+    data: Dict[str, object]
 
 
 class _PCMBufferDevice(QIODevice):
@@ -226,12 +243,21 @@ class SessionStreamPlayer(QObject):  # type: ignore[misc]
         self._audio_output: Optional[QAudioOutput] = None  # type: ignore[assignment]
         self._buffer_device: Optional[_PCMBufferDevice] = None
         self._prebuffer_device: Optional[QBuffer] = None  # type: ignore[type-arg]
-        self._stream_state = _StreamState(prev_crossfade_curve=self._default_crossfade_curve)
-        self._total_samples_estimate = self._estimate_total_samples()
-        self._processed_samples = 0
+        
+        self._playback_sample = 0
+        self._playback_step_states: Dict[int, List[dict]] = {}
+        self._step_infos: List[_StepPlaybackInfo] = []
+        self._total_samples_estimate = 0
 
         self._progress_callback: Optional[Callable[[float], None]] = None
         self._time_remaining_callback: Optional[Callable[[float], None]] = None
+        
+        self._recalculate_timeline()
+        
+        self._refill_timer = QTimer(self)
+        if hasattr(self._refill_timer, "timeout"):
+             self._refill_timer.timeout.connect(self._check_buffer_status)
+        self._refill_timer.setInterval(50) # Check every 50ms
 
     # ------------------------------------------------------------------
     # Public API
@@ -242,19 +268,17 @@ class SessionStreamPlayer(QObject):  # type: ignore[misc]
     def set_time_remaining_callback(self, callback: Optional[Callable[[float], None]]) -> None:
         self._time_remaining_callback = callback
 
-    def start(self, *, use_prebuffer: Optional[bool] = None) -> None:
-        if use_prebuffer is not None:
-            self._use_prebuffer = bool(use_prebuffer)
+    def start(self, use_prebuffer: bool = False) -> None:
+        """Start playback."""
         self.stop()
-
+        self._use_prebuffer = bool(use_prebuffer)
+        self._playback_sample = 0
+        self._playback_step_states = {}
+        
         fmt = self._build_format()
-        self._processed_samples = 0
-        self._stream_state = _StreamState(prev_crossfade_curve=self._default_crossfade_curve)
 
         if self._use_prebuffer:
             data = self._render_full_audio()
-            self._processed_samples = len(data) // _BYTES_PER_FRAME
-            self._emit_progress()
             buffer = QBuffer()
             buffer.setData(data)
             buffer.open(QIODevice.ReadOnly)
@@ -268,15 +292,69 @@ class SessionStreamPlayer(QObject):  # type: ignore[misc]
             self._audio_output = self._create_audio_output(fmt)
             self._prime_ring_buffer()
             self._audio_output.start(device)
+            self._refill_timer.start()
+
+    def set_volume(self, volume: float) -> None:
+        """Set playback volume (0.0 - 1.0)."""
+        if self._audio_output:
+            self._audio_output.setVolume(volume)
+
+    @property
+    def duration(self) -> float:
+        """Total duration in seconds."""
+        return self._total_samples_estimate / self._sample_rate
+
+    @property
+    def position(self) -> float:
+        """Current playback position in seconds."""
+        return self._playback_sample / self._sample_rate
+
+    def seek(self, time_seconds: float) -> None:
+        """Seek to a specific time in seconds."""
+        target_sample = int(time_seconds * self._sample_rate)
+        target_sample = max(0, min(target_sample, self._total_samples_estimate))
+        
+        if self._use_prebuffer and self._prebuffer_device:
+            # Seek in pre-rendered buffer
+            byte_offset = target_sample * _BYTES_PER_FRAME
+            # Align to frame boundary
+            byte_offset = (byte_offset // _BYTES_PER_FRAME) * _BYTES_PER_FRAME
+            self._prebuffer_device.seek(byte_offset)
+            self._playback_sample = target_sample
+            return
+
+        # Incremental seeking
+        self.stop() # Stop current playback to reset buffers
+        
+        # Reset state for incremental playback
+        self._playback_sample = target_sample
+        self._playback_step_states = {} # Clear states, they will regenerate from scratch at new position
+        # Note: This means LFOs might reset if we seek into the middle of a step.
+        # Ideally we would fast-forward generation, but that's expensive.
+        # For now, accepting state reset on seek.
+        
+        # Restart stream
+        fmt = self._build_format()
+        device = _PCMBufferDevice()
+        device.open(QIODevice.ReadOnly)
+        self._buffer_device = device
+        self._audio_output = self._create_audio_output(fmt)
+        
+        # Prime buffer - this will trigger _generate_next_chunk
+        self._prime_ring_buffer()
+        self._audio_output.start(device)
+        self._refill_timer.start()
 
     def pause(self) -> None:
         if self._audio_output:
+            self._refill_timer.stop()
             self._audio_output.suspend()
 
     def resume(self) -> None:
         if self._audio_output:
             self._prime_ring_buffer()
             self._audio_output.resume()
+            self._refill_timer.start()
 
     def stop(self) -> None:
         if self._audio_output:
@@ -293,8 +371,10 @@ class SessionStreamPlayer(QObject):  # type: ignore[misc]
         if self._prebuffer_device:
             self._prebuffer_device.close()
             self._prebuffer_device = None
-        self._stream_state = _StreamState(prev_crossfade_curve=self._default_crossfade_curve)
-        self._processed_samples = 0
+        self._playback_sample = 0
+        self._playback_step_states = {}
+        if hasattr(self, "_refill_timer"):
+            self._refill_timer.stop()
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -326,21 +406,83 @@ class SessionStreamPlayer(QObject):  # type: ignore[misc]
                 raise RuntimeError("Default output device does not support 16-bit stereo PCM")
         return fmt
 
-    def _estimate_total_samples(self) -> int:
-        total = 0
-        prev_crossfade = 0
-        first = True
-        for step in self._steps:
-            duration = float(step.get("duration", 0.0))  # type: ignore[arg-type]
+    def _recalculate_timeline(self) -> None:
+        """Pre-calculate start/end samples for all steps based on crossfades."""
+        self._step_infos = []
+        current_time_sample = 0
+        prev_crossfade_samples = 0
+        
+        for i, step in enumerate(self._steps):
+            duration = float(step.get("duration", 0.0))
             samples = max(int(duration * self._sample_rate), 0)
-            if first:
-                total += samples
-                first = False
-            else:
-                total += max(samples - prev_crossfade, 0)
+            
             crossfade = float(step.get("crossfade_duration", self._default_crossfade_duration))
-            prev_crossfade = max(int(crossfade * self._sample_rate), 0)
-        return max(total, 0)
+            crossfade_samples = max(int(crossfade * self._sample_rate), 0)
+            crossfade_curve = str(step.get("crossfade_curve", self._default_crossfade_curve))
+            
+            # Start sample for this step in the global timeline
+            # If it's the first step, it starts at 0.
+            # If it's not, it starts 'prev_crossfade_samples' earlier than the "end" of the previous step's exclusive region.
+            # Wait, standard logic:
+            # Step N starts at `current_time_sample`.
+            # Step N+1 starts at `current_time_sample + samples - crossfade_samples`.
+            
+            start_sample = current_time_sample
+            end_sample = start_sample + samples
+            
+            # Fade in from previous step
+            fade_in_len = prev_crossfade_samples if i > 0 else 0
+            # Fade out to next step
+            fade_out_len = crossfade_samples
+            
+            # Previous step's crossfade curve determines our fade in? 
+            # Usually: 
+            # Prev Step Fade Out: using Prev Step's curve.
+            # This Step Fade In: using Prev Step's curve (complementary).
+            # So fade_in_curve comes from previous step.
+            
+            prev_step_curve = self._steps[i-1].get("crossfade_curve", self._default_crossfade_curve) if i > 0 else "linear"
+            
+            info = _StepPlaybackInfo(
+                index=i,
+                start_sample=start_sample,
+                end_sample=end_sample,
+                fade_in_samples=fade_in_len,
+                fade_in_curve=str(prev_step_curve),
+                fade_out_samples=fade_out_len,
+                fade_out_curve=crossfade_curve,
+                data=step
+            )
+            self._step_infos.append(info)
+            
+            # Advance time
+            # The next step starts 'crossfade_samples' before this step ends.
+            advance = max(0, samples - crossfade_samples)
+            current_time_sample += advance
+            
+            prev_crossfade_samples = crossfade_samples
+            
+        # Total samples is the end of the last step
+        if self._step_infos:
+            self._total_samples_estimate = self._step_infos[-1].end_sample
+        else:
+            self._total_samples_estimate = 0
+
+    def _check_buffer_status(self) -> None:
+        """Periodically check buffer level and refill if needed."""
+        if not self._buffer_device or self._use_prebuffer:
+            return
+        
+        # If we are near the end, don't buffer too much? 
+        # _generate_next_chunk handles end of stream.
+        
+        # Target: keep buffer at least 50% full
+        target_bytes = int(self._ring_buffer_seconds * self._sample_rate * _BYTES_PER_FRAME)
+        current_bytes = self._buffer_device.queued_bytes()
+        
+        if current_bytes < target_bytes * 0.5:
+            # Refill up to target
+            self._prime_ring_buffer()
 
     def _prime_ring_buffer(self) -> None:
         if not self._buffer_device:
@@ -353,13 +495,22 @@ class SessionStreamPlayer(QObject):  # type: ignore[misc]
             self._enqueue_audio_chunk(chunk)
 
     def _render_full_audio(self) -> bytes:
+        # Pre-render using the same chunk generation logic
+        # We process in chunks to avoid huge memory spikes during generation, 
+        # but we concatenate everything at the end.
+        chunk_size = 4096 * 4
+        current_sample = 0
         chunks: List[np.ndarray] = []
-        state = _StreamState(prev_crossfade_curve=self._default_crossfade_curve)
-        while True:
-            chunk = self._generate_next_chunk(state)
-            if chunk is None:
+        step_states: Dict[int, List[dict]] = {}
+        
+        while current_sample < self._total_samples_estimate:
+            # Generate next chunk
+            chunk = self._generate_next_chunk(current_sample, chunk_size, step_states)
+            if chunk is None or chunk.size == 0:
                 break
             chunks.append(chunk)
+            current_sample += chunk.shape[0]
+            
         if chunks:
             audio = np.concatenate(chunks, axis=0)
         else:
@@ -367,86 +518,131 @@ class SessionStreamPlayer(QObject):  # type: ignore[misc]
         return self._float_to_pcm(audio)
 
     def _next_float_chunk(self) -> Optional[np.ndarray]:
-        return self._generate_next_chunk(self._stream_state)
+        # Generate chunk for current playback position
+        chunk_size = 4096 # 100ms approx at 44.1k
+        chunk = self._generate_next_chunk(self._playback_sample, chunk_size, self._playback_step_states)
+        if chunk is not None:
+            self._playback_sample += chunk.shape[0]
+        return chunk
 
-    def _generate_next_chunk(self, state: _StreamState) -> Optional[np.ndarray]:
-        while True:
-            if state.index >= len(self._steps):
-                chunk = state.prev_chunk
-                state.prev_chunk = None
-                if chunk is not None and chunk.size:
-                    return chunk
-                return None
-
-            step = self._steps[state.index]
-            duration = float(step.get("duration", 0.0))
-            if duration <= 0.0:
-                state.index += 1
-                state.prev_crossfade_samples = int(
-                    max(float(step.get("crossfade_duration", self._default_crossfade_duration)), 0.0)
-                    * self._sample_rate
-                )
-                state.prev_crossfade_curve = str(step.get("crossfade_curve", self._default_crossfade_curve))
+    def _generate_next_chunk(self, start_sample: int, max_frames: int, step_states: Dict[int, List[dict]]) -> Optional[np.ndarray]:
+        if start_sample >= self._total_samples_estimate:
+            return None
+            
+        end_sample = min(start_sample + max_frames, self._total_samples_estimate)
+        num_frames = end_sample - start_sample
+        
+        if num_frames <= 0:
+            return None
+            
+        mix_buffer = np.zeros((num_frames, 2), dtype=np.float32)
+        
+        # Find active steps
+        # Optimization: could use binary search or keep track of active indices, 
+        # but linear scan is fine for small number of steps.
+        
+        for info in self._step_infos:
+            # Check overlap
+            if info.end_sample <= start_sample:
                 continue
-
-            audio = generate_single_step_audio_segment(
-                step,
+            if info.start_sample >= end_sample:
+                break # Sorted by start time, so we can stop
+                
+            # Calculate overlap range relative to the chunk
+            chunk_rel_start = max(0, info.start_sample - start_sample)
+            chunk_rel_end = min(num_frames, info.end_sample - start_sample)
+            
+            # Calculate overlap range relative to the step
+            step_rel_start = max(0, start_sample - info.start_sample)
+            step_rel_end = step_rel_start + (chunk_rel_end - chunk_rel_start)
+            
+            gen_len = step_rel_end - step_rel_start
+            
+            if gen_len <= 0:
+                continue
+                
+            # Generate audio for this step segment
+            chunk_start_time = step_rel_start / self._sample_rate
+            duration = gen_len / self._sample_rate
+            
+            current_states = step_states.get(info.index)
+            
+            # Call generation
+            audio, new_states = generate_single_step_audio_segment(
+                info.data,
                 self._global_settings,
                 duration,
+                duration_override=duration,
+                chunk_start_time=chunk_start_time,
+                voice_states=current_states,
+                return_state=True
             )
-            if audio is None or audio.ndim != 2 or audio.shape[1] != 2:
-                audio = np.zeros((int(duration * self._sample_rate), 2), dtype=np.float32)
-            audio = np.asarray(audio, dtype=np.float32)
-
-            crossfade_duration = float(step.get("crossfade_duration", self._default_crossfade_duration))
-            crossfade_samples = max(int(crossfade_duration * self._sample_rate), 0)
-            crossfade_curve = str(step.get("crossfade_curve", self._default_crossfade_curve))
-
-            if state.prev_chunk is None:
-                state.prev_chunk = audio
-                state.prev_crossfade_samples = crossfade_samples
-                state.prev_crossfade_curve = crossfade_curve
-                state.index += 1
-                continue
-
-            prev_chunk = state.prev_chunk
-            incoming_samples = min(
-                state.prev_crossfade_samples,
-                prev_chunk.shape[0],
-                audio.shape[0],
-            )
-            if incoming_samples > 0:
-                transition = crossfade_signals(
-                    prev_chunk[-incoming_samples:],
-                    audio[:incoming_samples],
-                    self._sample_rate,
-                    incoming_samples / self._sample_rate,
-                    curve=state.prev_crossfade_curve or self._default_crossfade_curve,
-                    phase_align=True,
-                )
-                head = prev_chunk[:-incoming_samples]
-                if head.size:
-                    chunk_out = np.concatenate([head, transition], axis=0)
+            
+            step_states[info.index] = new_states
+            
+            # Ensure shape matches
+            if audio.shape[0] != gen_len:
+                # Pad or truncate
+                if audio.shape[0] < gen_len:
+                    audio = np.pad(audio, ((0, gen_len - audio.shape[0]), (0, 0)))
                 else:
-                    chunk_out = transition
-                remainder = audio[incoming_samples:]
-            else:
-                chunk_out = prev_chunk
-                remainder = audio
-
-            state.prev_chunk = remainder if remainder.size else None
-            state.prev_crossfade_samples = crossfade_samples
-            state.prev_crossfade_curve = crossfade_curve
-            state.index += 1
-            if chunk_out.size:
-                return chunk_out.astype(np.float32, copy=False)
+                    audio = audio[:gen_len]
+            
+            # Apply Fades
+            # We need to apply fade in/out based on position in step
+            
+            # Fade In
+            if info.fade_in_samples > 0 and step_rel_start < info.fade_in_samples:
+                # We are in fade in region
+                # Calculate local fade indices
+                fade_start_idx = 0 # relative to audio chunk
+                fade_end_idx = min(gen_len, info.fade_in_samples - step_rel_start)
+                
+                # Calculate progress (0.0 to 1.0)
+                # Global progress in fade: step_rel_start / fade_in_samples
+                
+                start_p = step_rel_start / info.fade_in_samples
+                end_p = (step_rel_start + fade_end_idx) / info.fade_in_samples
+                
+                curve = np.linspace(start_p, end_p, fade_end_idx)
+                # Apply curve shape (linear for now, TODO: support others)
+                # For crossfade, we usually want 'linear' or 'equal_power'
+                # If curve is linear:
+                envelope = curve
+                
+                audio[:fade_end_idx] *= envelope[:, np.newaxis]
+                
+            # Fade Out
+            step_duration_samples = info.end_sample - info.start_sample
+            fade_out_start_sample = step_duration_samples - info.fade_out_samples
+            
+            if info.fade_out_samples > 0 and step_rel_end > fade_out_start_sample:
+                # We are in fade out region
+                local_start = max(0, fade_out_start_sample - step_rel_start)
+                local_end = gen_len
+                
+                # Progress 0.0 (start of fade out) to 1.0 (end of step)
+                # Global pos: step_rel_start + local_i
+                # Progress = (global_pos - fade_out_start_sample) / fade_out_samples
+                
+                start_p = (step_rel_start + local_start - fade_out_start_sample) / info.fade_out_samples
+                end_p = (step_rel_start + local_end - fade_out_start_sample) / info.fade_out_samples
+                
+                curve = np.linspace(start_p, end_p, local_end - local_start)
+                envelope = 1.0 - curve # Fade out
+                
+                audio[local_start:local_end] *= envelope[:, np.newaxis]
+            
+            # Mix into buffer
+            mix_buffer[chunk_rel_start:chunk_rel_end] += audio
+            
+        return mix_buffer
 
     def _enqueue_audio_chunk(self, chunk: np.ndarray) -> None:
         if not self._buffer_device or chunk.size == 0:
             return
         pcm = self._float_to_pcm(chunk)
         self._buffer_device.enqueue(pcm)
-        self._processed_samples += chunk.shape[0]
         self._emit_progress()
 
     def _float_to_pcm(self, audio: np.ndarray) -> bytes:
@@ -459,10 +655,10 @@ class SessionStreamPlayer(QObject):  # type: ignore[misc]
     def _emit_progress(self) -> None:
         if self._progress_callback:
             total = self._total_samples_estimate or 1
-            ratio = min(max(self._processed_samples / total, 0.0), 1.0)
+            ratio = min(max(self._playback_sample / total, 0.0), 1.0)
             self._progress_callback(ratio)
         if self._time_remaining_callback:
-            remaining_samples = max(self._total_samples_estimate - self._processed_samples, 0)
+            remaining_samples = max(self._total_samples_estimate - self._playback_sample, 0)
             seconds = remaining_samples / float(self._sample_rate or 1)
             self._time_remaining_callback(seconds)
 

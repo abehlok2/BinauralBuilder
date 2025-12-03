@@ -12,7 +12,7 @@ from .common import (
 from .spatial_ambi2d import spatialize_binaural_mid_only, generate_azimuth_trajectory
 
 
-def binaural_beat(duration, sample_rate=44100, **params):
+def binaural_beat(duration, sample_rate=44100, initial_offset=0.0, **params):
     # --- Unpack synthesis parameters ---
     ampL = float(params.get('ampL', 0.5))
     ampR = float(params.get('ampR', 0.5))
@@ -98,6 +98,9 @@ def binaural_beat(duration, sample_rate=44100, **params):
     #             positions.append(i0)
     #             bursts.append(burst_samples)
     #
+    #             positions.append(i0)
+    #             bursts.append(burst_samples)
+    #
     # if bursts:
     #     pos_arr   = np.array(positions, dtype=np.int32)
     #     # Ensure all burst_samples have the same length if concatenating or handle individually
@@ -113,14 +116,16 @@ def binaural_beat(duration, sample_rate=44100, **params):
     #             burst_arr = np.empty(0, dtype=np.float32)
     #             pos_arr = np.empty(0, dtype=np.int32)
     #
+    #
 
     pos_arr   = np.empty(0, dtype=np.int32)
     burst_arr = np.empty(0, dtype=np.float32)
 
-    audio = _binaural_beat_core(
+    audio, finalL, finalR = _binaural_beat_core(
         N,
         float(duration),
         float(sample_rate),
+        float(initial_offset),
         leftHigh,
         ampL, ampR, baseF, beatF,
         startL, startR, pOF, pOR,
@@ -190,12 +195,16 @@ def binaural_beat(duration, sample_rate=44100, **params):
             interp_mode=int(params.get("spatialInterp", 1)),
         )
 
-    return audio
+    state = {
+        'startPhaseL': finalL,
+        'startPhaseR': finalR
+    }
+    return audio, state
 
 
 @numba.njit(parallel=True, fastmath=True)
 def _binaural_beat_core(
-    N, duration, sample_rate,
+    N, duration, sample_rate, initial_offset,
     leftHigh,
     ampL, ampR, baseF, beatF,
     startL, startR, pOF, pOR,
@@ -210,12 +219,12 @@ def _binaural_beat_core(
     burst  # float32[:] concatenated glitch samples
 ):
     if N <= 0 :
-        return np.zeros((0,2), dtype=np.float32)
+        return np.zeros((0,2), dtype=np.float32), 0.0, 0.0
         
     t = np.empty(N, dtype=np.float64)
     dt = duration / N if N > 0 else 0.0
     for i in numba.prange(N): # Use prange for parallel
-        t[i] = i * dt
+        t[i] = i * dt + initial_offset
 
     halfB = beatF / 2.0
     if leftHigh:
@@ -296,7 +305,7 @@ def _binaural_beat_core(
                             out[p,0] += current_burst_segment[j]
                             out[p,1] += current_burst_segment[j]
                     idx += L
-    return out
+    return out, curL, curR
 
 
 from .common import calculate_transition_alpha

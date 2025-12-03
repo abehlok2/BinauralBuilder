@@ -15,6 +15,8 @@ from src.utils.noise_file import load_noise_params
 from src.synth_functions.noise_flanger import (
     _generate_swept_notch_arrays,
     _generate_swept_notch_arrays_transition,
+    noise_swept_notch,
+    noise_swept_notch_transition,
 )
 from src.synth_functions.fx_flanger import flanger_stereo
 
@@ -162,6 +164,26 @@ def phase_align_signal(prev_tail, next_audio, max_search_samples=2048):
 
     # Circular shift the entire segment so the first sample continues the phase
     return np.roll(next_audio, offset, axis=0)
+
+
+def create_linear_fade_envelope(duration, sample_rate, start_amp=1.0, end_amp=1.0, fade_duration=0.05):
+    """
+    Creates a linear fade envelope.
+    """
+    N = int(duration * sample_rate)
+    if N <= 0:
+        return np.array([])
+        
+    env = np.full(N, float(end_amp))
+    
+    fade_samples = int(fade_duration * sample_rate)
+    if fade_samples > 0:
+        fade_samples = min(fade_samples, N)
+        # Fade in from start_amp to end_amp
+        fade_curve = np.linspace(float(start_amp), float(end_amp), fade_samples)
+        env[:fade_samples] = fade_curve
+        
+    return env
 
 
 def _flanger_effect_stereo_continuous(
@@ -376,6 +398,12 @@ except Exception as e:
 
 print(f"Detected Synth Functions: {list(SYNTH_FUNCTIONS.keys())}")
 
+# Explicitly register noise functions if missed by discovery
+if "noise_swept_notch" not in SYNTH_FUNCTIONS:
+    SYNTH_FUNCTIONS["noise_swept_notch"] = noise_swept_notch
+if "noise_swept_notch_transition" not in SYNTH_FUNCTIONS:
+    SYNTH_FUNCTIONS["noise_swept_notch_transition"] = noise_swept_notch_transition
+
 
 def get_synth_params(func_name):
     """Gets parameter names and default values for a synth function by inspecting its signature."""
@@ -424,7 +452,7 @@ def steps_have_continuous_voices(prev_step, next_step):
     return True
 
 
-def generate_voice_audio(voice_data, duration, sample_rate, global_start_time):
+def generate_voice_audio(voice_data, duration, sample_rate, global_start_time, chunk_start_time=0.0, previous_state=None, return_state=False):
     """Generates audio for a single voice based on its definition."""
     func_name = voice_data.get("synth_function_name")
     params = dict(voice_data.get("params", {}))
@@ -454,7 +482,7 @@ def generate_voice_audio(voice_data, duration, sample_rate, global_start_time):
             transition_func_name = func_name + "_transition"
             if transition_func_name in SYNTH_FUNCTIONS:
                 actual_func_name = transition_func_name
-                print(f"Note: Step marked as transition, using '{actual_func_name}' instead of base '{func_name}'.")
+                # print(f"Note: Step marked as transition, using '{actual_func_name}' instead of base '{func_name}'.")
             else:
                 print(f"Warning: Step marked as transition, but transition function '{transition_func_name}' not found for base '{func_name}'. Using static version '{func_name}'. Parameters might mismatch.")
                 # Keep actual_func_name as func_name (the static one)
@@ -463,7 +491,7 @@ def generate_voice_audio(voice_data, duration, sample_rate, global_start_time):
             base_func_name = func_name.replace("_transition", "")
             if base_func_name in SYNTH_FUNCTIONS:
                 actual_func_name = base_func_name
-                print(f"Note: Step not marked as transition, using base function '{actual_func_name}' instead of selected '{func_name}'.")
+                # print(f"Note: Step not marked as transition, using base function '{actual_func_name}' instead of selected '{func_name}'.")
             else:
                 print(f"Warning: Step not marked as transition, selected '{func_name}', but base function '{base_func_name}' not found. Using selected '{func_name}'. Parameters might mismatch.")
                 # Keep actual_func_name as func_name (the transition one user selected)
@@ -471,7 +499,8 @@ def generate_voice_audio(voice_data, duration, sample_rate, global_start_time):
     if not actual_func_name or actual_func_name not in SYNTH_FUNCTIONS:
         print(f"Error: Synth function '{actual_func_name}' (derived from '{func_name}') not found or invalid.")
         N = int(duration * sample_rate)
-        return np.zeros((N, 2))
+        empty = np.zeros((N, 2))
+        return (empty, {}) if return_state else empty
 
     synth_func = SYNTH_FUNCTIONS[actual_func_name]
 
@@ -488,18 +517,43 @@ def generate_voice_audio(voice_data, duration, sample_rate, global_start_time):
 
     # --- Generate base audio ---
     try:
-        print(f"  Calling: {actual_func_name}(duration={duration}, sample_rate={sample_rate}, **{cleaned_params})")
-        audio = synth_func(duration=duration, sample_rate=sample_rate, **cleaned_params)
+        # Prepare params for stateful generation
+        call_params = cleaned_params.copy()
+        
+        # Check if function accepts initial_offset
+        # We can inspect or just try passing it if we are sure. 
+        # For now, let's assume if it's binaural_beat it accepts it.
+        # Or we can rely on **kwargs in the function definition.
+        # Most functions accept **kwargs, so passing extra params is safe-ish, 
+        # but some might not use it.
+        # However, binaural_beat definitely uses it now.
+        
+        call_params['initial_offset'] = float(chunk_start_time)
+        
+        if previous_state:
+            call_params.update(previous_state)
+
+        # print(f"  Calling: {actual_func_name}(duration={duration}, sample_rate={sample_rate}, initial_offset={chunk_start_time}, ...)")
+        result = synth_func(duration=duration, sample_rate=sample_rate, **call_params)
+        
+        voice_state = {}
+        if isinstance(result, tuple) and len(result) == 2:
+            audio, voice_state = result
+        else:
+            audio = result
+            
     except Exception as e:
         print(f"Error calling synth function '{actual_func_name}' with params {cleaned_params}:")
         traceback.print_exc()
         N = int(duration * sample_rate)
-        return np.zeros((N, 2))
+        empty = np.zeros((N, 2))
+        return (empty, {}) if return_state else empty
 
     if audio is None:
         print(f"Error: Synth function '{actual_func_name}' returned None.")
         N = int(duration * sample_rate)
-        return np.zeros((N, 2))
+        empty = np.zeros((N, 2))
+        return (empty, {}) if return_state else empty
 
     # --- Apply volume envelope if defined ---
     envelope_data = voice_data.get("volume_envelope")
@@ -585,11 +639,14 @@ def generate_voice_audio(voice_data, duration, sample_rate, global_start_time):
 
     # Final check for shape (N, 2)
     if not (audio.ndim == 2 and audio.shape[1] == 2):
-          if N_audio == 0: return np.zeros((0, 2)) # Handle zero duration case gracefully
+          if N_audio == 0: 
+              empty = np.zeros((0, 2))
+              return (empty, {}) if return_state else empty
           else:
                 print(f"Error: Final audio shape for voice is incorrect ({audio.shape}). Returning silence.")
                 N_expected = int(duration * sample_rate)
-                return np.zeros((N_expected, 2))
+                empty = np.zeros((N_expected, 2))
+                return (empty, {}) if return_state else empty
     # Apply flanger effect if requested
     if flange_params:
         def _collect(prefix: str) -> dict:
@@ -668,6 +725,8 @@ def generate_voice_audio(voice_data, duration, sample_rate, global_start_time):
              audio[:fade_len] *= fade_in[:, np.newaxis]
              audio[-fade_len:] *= fade_out[:, np.newaxis]
 
+    if return_state:
+        return audio.astype(np.float32), voice_state
     return audio.astype(np.float32) # Ensure float32 output
 
 
@@ -1298,7 +1357,7 @@ def generate_wav(track_data, output_filename=None, target_level=0.25, progress_c
     """Backward compatible wrapper for generate_audio."""
     return generate_audio(track_data, output_filename, target_level, progress_callback)
 
-def generate_single_step_audio_segment(step_data, global_settings, target_duration_seconds, duration_override=None):
+def generate_single_step_audio_segment(step_data, global_settings, target_duration_seconds, duration_override=None, chunk_start_time=0.0, voice_states=None, return_state=False):
     """
     Generates a raw audio segment for a single step, looping or truncating 
     it to fill a target duration.
@@ -1308,10 +1367,14 @@ def generate_single_step_audio_segment(step_data, global_settings, target_durati
         global_settings: Dictionary containing global audio settings
         target_duration_seconds: Target duration for the output segment
         duration_override: Optional override for the step's natural duration when generating audio
+        chunk_start_time: Start time of this chunk relative to the step start (for LFO continuity)
+        voice_states: List of state dictionaries for each voice from previous chunk
+        return_state: If True, returns (audio, new_voice_states)
     """
     if not step_data or not global_settings:
         print("Error: Invalid step_data or global_settings provided.")
-        return np.zeros((0, 2), dtype=np.float32)
+        empty = np.zeros((0, 2), dtype=np.float32)
+        return (empty, []) if return_state else empty
 
     try:
         sample_rate = int(global_settings.get("sample_rate", 44100))
@@ -1319,7 +1382,8 @@ def generate_single_step_audio_segment(step_data, global_settings, target_durati
             raise ValueError("Sample rate must be positive")
     except (ValueError, TypeError):
         print("Error: Invalid sample rate in global_settings.")
-        return np.zeros((0, 2), dtype=np.float32)
+        empty = np.zeros((0, 2), dtype=np.float32)
+        return (empty, []) if return_state else empty
 
     target_total_samples = int(target_duration_seconds * sample_rate)
     output_audio_segment = np.zeros((target_total_samples, 2), dtype=np.float32)
@@ -1327,52 +1391,100 @@ def generate_single_step_audio_segment(step_data, global_settings, target_durati
     voices_data = step_data.get("voices", [])
     if not voices_data:
         print("Warning: Step has no voices. Returning silence.")
-        return output_audio_segment
+        return (output_audio_segment, []) if return_state else output_audio_segment
 
     # Use duration override if provided, otherwise use step's natural duration
     if duration_override is not None:
         step_generation_duration = float(duration_override)
-        print(f"  Using duration override: {step_generation_duration:.2f}s (natural: {step_data.get('duration', 0):.2f}s)")
+        # print(f"  Using duration override: {step_generation_duration:.2f}s (natural: {step_data.get('duration', 0):.2f}s)")
     else:
         step_generation_duration = float(step_data.get("duration", 0))
     
     if step_generation_duration <= 0:
         print("Warning: Step generation duration is zero or negative. Returning silence.")
-        return output_audio_segment    
+        return (output_audio_segment, []) if return_state else output_audio_segment
     step_generation_samples = int(step_generation_duration * sample_rate)
     if step_generation_samples <= 0:
         print("Warning: Step has zero samples. Returning silence.")
-        return output_audio_segment
+        return (output_audio_segment, []) if return_state else output_audio_segment
 
     # Generate one iteration of the step's audio
-    single_iteration_audio_mix = np.zeros((step_generation_samples, 2), dtype=np.float32)
+    binaural_mix = np.zeros((step_generation_samples, 2), dtype=np.float32)
+    noise_mix = np.zeros((step_generation_samples, 2), dtype=np.float32)
     
-    print(f"  Generating single iteration for step (Duration: {step_generation_duration:.2f}s, Samples: {step_generation_samples})")
+    # print(f"  Generating single iteration for step (Duration: {step_generation_duration:.2f}s, Samples: {step_generation_samples})")
+    
+    has_binaural = False
+    has_noise = False
+    
+    new_voice_states = []
+    current_voice_states = voice_states if voice_states and len(voice_states) == len(voices_data) else [None] * len(voices_data)
+
     for i, voice_data in enumerate(voices_data):
         func_name_short = voice_data.get('synth_function_name', 'UnknownFunc')
-        print(f"    Generating Voice {i+1}/{len(voices_data)}: {func_name_short}")
+        voice_type = voice_data.get('voice_type', 'binaural') # Default to binaural for backward compat
         
-        voice_audio = generate_voice_audio(voice_data, step_generation_duration, sample_rate, 0.0)
+        # print(f"    Generating Voice {i+1}/{len(voices_data)}: {func_name_short} ({voice_type})")
         
-        # Add generated audio if valid
+        voice_audio, v_state = generate_voice_audio(
+            voice_data, 
+            step_generation_duration, 
+            sample_rate, 
+            0.0,
+            chunk_start_time=chunk_start_time,
+            previous_state=current_voice_states[i],
+            return_state=True
+        )
+        new_voice_states.append(v_state)
+        
         if voice_audio is not None and voice_audio.shape[0] == step_generation_samples and voice_audio.ndim == 2 and voice_audio.shape[1] == 2:
-            single_iteration_audio_mix += voice_audio  # Sum voices
+            if voice_type == 'noise':
+                noise_mix += voice_audio
+                has_noise = True
+            else:
+                binaural_mix += voice_audio
+                has_binaural = True
         elif voice_audio is not None:
             print(f"    Warning: Voice {i+1} ({func_name_short}) generated audio shape mismatch ({voice_audio.shape} vs {(step_generation_samples, 2)}). Skipping voice.")
 
-    # Normalize the single iteration audio
-    step_peak = np.max(np.abs(single_iteration_audio_mix))
-    step_normalization_threshold = 0.95  # Normalize to -0.44 dBFS to leave some headroom
-    if step_peak > step_normalization_threshold and step_peak > 1e-9:
-        print(f"    Normalizing step mix (peak={step_peak:.3f}) down to {step_normalization_threshold:.2f}")
-        single_iteration_audio_mix *= (step_normalization_threshold / step_peak)
-    elif step_peak <= 1e-9:
-        print("    Warning: Step audio is essentially silent.")
+    # --- Independent Normalization & Volume Application ---
+    
+    # Get settings
+    norm_level = float(step_data.get("normalization_level", global_settings.get("normalization_level", 0.95)))
+    binaural_vol = float(step_data.get("binaural_volume", 1.0))
+    noise_vol = float(step_data.get("noise_volume", 1.0))
+    
+    # 1. Normalize Binaural Mix
+    if has_binaural:
+        bin_peak = np.max(np.abs(binaural_mix))
+        if bin_peak > 1e-9:
+            # Normalize to target level
+            binaural_mix *= (norm_level / bin_peak)
+            # Apply volume
+            binaural_mix *= binaural_vol
+            # print(f"    Binaural mix normalized (peak {bin_peak:.3f} -> {norm_level:.2f}) and scaled by {binaural_vol:.2f}")
+        else:
+            print("    Warning: Binaural mix is silent.")
+
+    # 2. Normalize Noise Mix
+    if has_noise:
+        noise_peak = np.max(np.abs(noise_mix))
+        if noise_peak > 1e-9:
+            # Normalize to target level
+            noise_mix *= (norm_level / noise_peak)
+            # Apply volume
+            noise_mix *= noise_vol
+            # print(f"    Noise mix normalized (peak {noise_peak:.3f} -> {norm_level:.2f}) and scaled by {noise_vol:.2f}")
+        else:
+            print("    Warning: Noise mix is silent.")
+
+    # 3. Combine
+    single_iteration_audio_mix = binaural_mix + noise_mix
 
     # Fill the output_audio_segment by looping/truncating the single_iteration_audio_mix
     if step_generation_samples == 0:
         print("    Error: Step has zero generation samples, cannot loop.")
-        return output_audio_segment
+        return (output_audio_segment, new_voice_states) if return_state else output_audio_segment
 
     current_pos_samples = 0
     while current_pos_samples < target_total_samples:
@@ -1381,7 +1493,8 @@ def generate_single_step_audio_segment(step_data, global_settings, target_durati
         
         output_audio_segment[current_pos_samples:current_pos_samples + samples_to_copy] = single_iteration_audio_mix[:samples_to_copy]
         current_pos_samples += samples_to_copy
-
-    print(f"  Generated single step audio segment: {target_duration_seconds:.2f}s ({output_audio_segment.shape[0]} samples)")
-    return output_audio_segment.astype(np.float32)
+        
+    # print(f"  Generated single step audio segment: {target_duration_seconds:.2f}s ({output_audio_segment.shape[0]} samples)")
+    result = output_audio_segment.astype(np.float32)
+    return (result, new_voice_states) if return_state else result
 

@@ -594,7 +594,7 @@ QPushButton[class="primary"]:pressed {
 QPushButton[class="destructive"] {
     background-color: #333337;
     border: 1px solid #ce1b1b;
-    color: #ce1b1b;
+    color: #ffffff;
 }
 
 QPushButton[class="destructive"]:hover {

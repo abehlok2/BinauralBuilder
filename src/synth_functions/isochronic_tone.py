@@ -63,7 +63,7 @@ def _trapezoid_envelope_scalar(t_in_cycle, cycle_len, ramp_percent, gap_percent)
 
 @numba.njit(fastmath=True)
 def _isochronic_tone_core(
-    N, duration, sample_rate,
+    N, duration, sample_rate, initial_offset,
     ampL, ampR, baseFreq, beatFreq, force_mono,
     startPhaseL, startPhaseR,
     ampOscDepthL, ampOscFreqL,
@@ -78,7 +78,7 @@ def _isochronic_tone_core(
     rampPercent, gapPercent,
 ):
     if N <= 0:
-        return np.zeros((0, 2), dtype=np.float32)
+        return np.zeros((0, 2), dtype=np.float32), startPhaseL, startPhaseR
 
     out = np.empty((N, 2), dtype=np.float32)
     dt = duration / N if N > 0 else 0.0
@@ -87,10 +87,10 @@ def _isochronic_tone_core(
     phaseR = startPhaseR
 
     cycle_len = 1.0 / beatFreq if beatFreq > 1e-9 else 0.0
-    cycle_phase = 0.0
+    # cycle_phase is calculated per sample from absolute time
 
     for i in range(N):
-        t = i * dt
+        t = i * dt + initial_offset
 
         vibL = (freqOscRangeL * 0.5) * skewed_sine_phase(_frac(freqOscFreqL * t + freqOscPhaseOffsetL/(2*np.pi)), freqOscSkewL)
         vibR = (freqOscRangeR * 0.5) * skewed_sine_phase(_frac(freqOscFreqR * t + freqOscPhaseOffsetR/(2*np.pi)), freqOscSkewR)
@@ -119,9 +119,7 @@ def _isochronic_tone_core(
             phR += dphi
 
         if cycle_len > 0.0:
-            cycle_phase += beatFreq * dt
-            if cycle_phase >= 1.0:
-                cycle_phase -= int(cycle_phase)
+            cycle_phase = _frac(t * beatFreq)
             t_in_cycle = cycle_phase * cycle_len
         else:
             t_in_cycle = 0.0
@@ -138,10 +136,10 @@ def _isochronic_tone_core(
         out[i, 0] = np.float32(np.sin(phL) * iso * envL * ampL)
         out[i, 1] = np.float32(np.sin(phR) * iso * envR * ampR)
 
-    return out
+    return out, phaseL, phaseR
 
 
-def isochronic_tone(duration, sample_rate=44100, **params):
+def isochronic_tone(duration, sample_rate=44100, initial_offset=0.0, **params):
     """Generate an isochronic tone with extended modulation options."""
 
     pan_default = float(params.get('pan', 0.0))
@@ -185,10 +183,11 @@ def isochronic_tone(duration, sample_rate=44100, **params):
     harmonic_suppression = _parse_bool(params.get('harmonicSuppression', False))
 
     N = int(sample_rate * duration)
-    audio = _isochronic_tone_core(
+    audio, finalL, finalR = _isochronic_tone_core(
         N,
         float(duration),
         float(sample_rate),
+        float(initial_offset),
         ampL,
         ampR,
         baseFreq,
@@ -244,7 +243,11 @@ def isochronic_tone(duration, sample_rate=44100, **params):
         b, a = butter(4, cutoff / nyq, btype='low')
         audio = filtfilt(b, a, audio, axis=0)
 
-    return audio.astype(np.float32)
+    state = {
+        'startPhaseL': finalL,
+        'startPhaseR': finalR
+    }
+    return audio.astype(np.float32), state
 
 
 def isochronic_tone_transition(
