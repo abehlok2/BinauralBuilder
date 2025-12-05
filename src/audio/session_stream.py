@@ -164,6 +164,11 @@ from src.synth_functions.sound_creator import (
     crossfade_signals,
     generate_single_step_audio_segment,
 )
+from src.synth_functions.noise_flanger import (
+    _generate_swept_notch_arrays,
+    _generate_swept_notch_arrays_transition,
+)
+from src.utils.noise_file import load_noise_params
 
 
 _INT16_MAX = np.int16(32767).item()
@@ -302,20 +307,23 @@ class AudioGeneratorWorker(QObject):
         self._global_settings = global_settings
         self._default_crossfade_duration = float(global_settings.get("crossfade_duration", 0.0))
         self._default_crossfade_curve = str(global_settings.get("crossfade_curve", "linear"))
-        
+
         self._steps: List[Dict[str, object]] = list(
             self._track_data.get("steps", [])
         )
-        
+
         self._playback_sample = 0
         self._playback_step_states: Dict[int, List[dict]] = {}
         self._step_infos: List[_StepPlaybackInfo] = []
         self._total_samples_estimate = 0
-        
+
+        self._background_noise: Optional[np.ndarray] = None
+
         self._running = False
         self._paused = False
-        
+
         self._recalculate_timeline()
+        self._prepare_background_noise()
         
     def _recalculate_timeline(self) -> None:
         """Pre-calculate start/end samples for all steps based on crossfades."""
@@ -360,7 +368,142 @@ class AudioGeneratorWorker(QObject):
             self._total_samples_estimate = self._step_infos[-1].end_sample
         else:
             self._total_samples_estimate = 0
-            
+
+    def _prepare_background_noise(self) -> None:
+        """Generate the background noise layer to mirror offline assembly."""
+
+        self._background_noise = None
+
+        bg_cfg = self._track_data.get("background_noise") or {}
+        if not isinstance(bg_cfg, dict):
+            return
+
+        bg_file = (
+            bg_cfg.get("file")
+            or bg_cfg.get("params_path")
+            or bg_cfg.get("noise_file")
+        )
+        if not bg_file:
+            return
+
+        track_duration_sec = self._total_samples_estimate / float(self._sample_rate or 1)
+        if track_duration_sec <= 0:
+            return
+
+        try:
+            params = load_noise_params(bg_file)
+        except Exception:
+            return
+
+        params.duration_seconds = track_duration_sec
+        params.sample_rate = self._sample_rate
+
+        try:
+            if getattr(params, "transition", False):
+                start_sweeps = [
+                    (sw.get("start_min", 1000), sw.get("start_max", 10000))
+                    for sw in params.sweeps
+                ]
+                end_sweeps = [
+                    (sw.get("end_min", 1000), sw.get("end_max", 10000))
+                    for sw in params.sweeps
+                ]
+                start_q = [sw.get("start_q", 30) for sw in params.sweeps]
+                end_q = [sw.get("end_q", 30) for sw in params.sweeps]
+                start_casc = [sw.get("start_casc", 10) for sw in params.sweeps]
+                end_casc = [sw.get("end_casc", 10) for sw in params.sweeps]
+
+                noise_audio, _ = _generate_swept_notch_arrays_transition(
+                    track_duration_sec,
+                    self._sample_rate,
+                    params.start_lfo_freq,
+                    params.end_lfo_freq,
+                    start_sweeps,
+                    end_sweeps,
+                    start_q,
+                    end_q,
+                    start_casc,
+                    end_casc,
+                    params.start_lfo_phase_offset_deg,
+                    params.end_lfo_phase_offset_deg,
+                    params.start_intra_phase_offset_deg,
+                    params.end_intra_phase_offset_deg,
+                    params.input_audio_path or None,
+                    params.noise_type,
+                    params.lfo_waveform,
+                    params.initial_offset,
+                    params.duration,
+                    "linear",
+                    False,
+                    2,
+                    getattr(params, "static_notches", None),
+                )
+            else:
+                sweeps = [
+                    (sw.get("start_min", 1000), sw.get("start_max", 10000))
+                    for sw in params.sweeps
+                ]
+                notch_q = [sw.get("start_q", 30) for sw in params.sweeps]
+                casc = [sw.get("start_casc", 10) for sw in params.sweeps]
+
+                noise_audio, _ = _generate_swept_notch_arrays(
+                    track_duration_sec,
+                    self._sample_rate,
+                    params.lfo_freq,
+                    sweeps,
+                    notch_q,
+                    casc,
+                    params.start_lfo_phase_offset_deg,
+                    params.start_intra_phase_offset_deg,
+                    params.input_audio_path or None,
+                    params.noise_type,
+                    params.lfo_waveform,
+                    False,
+                    2,
+                    getattr(params, "static_notches", None),
+                )
+        except Exception:
+            return
+
+        if noise_audio.ndim == 1:
+            noise_audio = np.column_stack((noise_audio, noise_audio))
+
+        start_time = float(bg_cfg.get("start_time", 0.0))
+        start_sample = max(0, int(start_time * self._sample_rate))
+
+        if start_sample > 0:
+            noise_audio = np.pad(noise_audio, ((start_sample, 0), (0, 0)), "constant")
+
+        gain = float(bg_cfg.get("gain", 1.0))
+        fade_in = float(bg_cfg.get("fade_in", 0.0))
+        fade_out = float(bg_cfg.get("fade_out", 0.0))
+        amp_env = bg_cfg.get("amp_envelope")
+
+        env = np.ones(noise_audio.shape[0], dtype=np.float32) * gain
+        if fade_in > 0:
+            n = min(int(fade_in * self._sample_rate), env.size)
+            env[:n] *= np.linspace(0, 1, n, dtype=np.float32)
+        if fade_out > 0:
+            n = min(int(fade_out * self._sample_rate), env.size)
+            env[-n:] *= np.linspace(1, 0, n, dtype=np.float32)
+        if isinstance(amp_env, list) and amp_env:
+            times = [max(0.0, float(p[0])) for p in amp_env]
+            amps = [float(p[1]) for p in amp_env]
+            t_samples = np.array(times) * self._sample_rate
+            interp = np.interp(
+                np.arange(env.size, dtype=np.float32),
+                t_samples,
+                amps,
+                left=amps[0],
+                right=amps[-1],
+            )
+            env *= interp
+
+        noise_audio = noise_audio[: env.size] * env[:, None]
+        self._background_noise = noise_audio.astype(np.float32, copy=False)
+
+        if self._background_noise.shape[0] > self._total_samples_estimate:
+            self._total_samples_estimate = self._background_noise.shape[0]
     @pyqtSlot()
     def start_generation(self):
         self._running = True
@@ -470,11 +613,21 @@ class AudioGeneratorWorker(QObject):
             
         end_sample = min(start_sample + max_frames, self._total_samples_estimate)
         num_frames = end_sample - start_sample
-        
+
         if num_frames <= 0:
             return None
-            
+
         mix_buffer = np.zeros((num_frames, 2), dtype=np.float32)
+
+        if self._background_noise is not None:
+            bg_slice = self._background_noise[start_sample:end_sample]
+            if bg_slice.shape[0] < num_frames:
+                bg_slice = np.pad(
+                    bg_slice,
+                    ((0, num_frames - bg_slice.shape[0]), (0, 0)),
+                    "constant",
+                )
+            mix_buffer += bg_slice
         
         for info in self._step_infos:
             if info.end_sample <= start_sample:
@@ -527,27 +680,44 @@ class AudioGeneratorWorker(QObject):
                 else:
                     audio = audio[:gen_len]
             
+            def _fade_envelope(start_frac: float, end_frac: float, length: int, curve: str, *, invert: bool = False) -> np.ndarray:
+                """Return a fade envelope matching :func:`crossfade_signals` curves.
+
+                ``start_frac``/``end_frac`` represent the fractional progress (0→1)
+                through the fade window covered by this chunk. ``invert`` toggles
+                between fade-in (False) and fade-out (True).
+                """
+
+                positions = np.linspace(start_frac, end_frac, length, endpoint=False, dtype=np.float32)
+                positions = np.clip(positions, 0.0, 1.0)
+
+                if curve == "equal_power":
+                    theta = positions * (np.pi / 2.0)
+                    values = np.cos(theta) if invert else np.sin(theta)
+                else:
+                    values = 1.0 - positions if invert else positions
+
+                return values
+
             # Fade In
             if info.fade_in_samples > 0 and step_rel_start < info.fade_in_samples:
-                fade_start_idx = 0 
+                fade_start_idx = 0
                 fade_end_idx = min(gen_len, info.fade_in_samples - step_rel_start)
-                start_p = step_rel_start / info.fade_in_samples
-                end_p = (step_rel_start + fade_end_idx) / info.fade_in_samples
-                curve = np.linspace(start_p, end_p, fade_end_idx)
-                envelope = curve
+                start_p = step_rel_start / max(info.fade_in_samples, 1)
+                end_p = (step_rel_start + fade_end_idx) / max(info.fade_in_samples, 1)
+                envelope = _fade_envelope(start_p, end_p, fade_end_idx, info.fade_in_curve, invert=False)
                 audio[:fade_end_idx] *= envelope[:, np.newaxis]
-                
+
             # Fade Out
             step_duration_samples = info.end_sample - info.start_sample
             fade_out_start_sample = step_duration_samples - info.fade_out_samples
-            
+
             if info.fade_out_samples > 0 and step_rel_end > fade_out_start_sample:
                 local_start = max(0, fade_out_start_sample - step_rel_start)
                 local_end = gen_len
-                start_p = (step_rel_start + local_start - fade_out_start_sample) / info.fade_out_samples
-                end_p = (step_rel_start + local_end - fade_out_start_sample) / info.fade_out_samples
-                curve = np.linspace(start_p, end_p, local_end - local_start)
-                envelope = 1.0 - curve
+                start_p = (step_rel_start + local_start - fade_out_start_sample) / max(info.fade_out_samples, 1)
+                end_p = (step_rel_start + local_end - fade_out_start_sample) / max(info.fade_out_samples, 1)
+                envelope = _fade_envelope(start_p, end_p, local_end - local_start, info.fade_out_curve, invert=True)
                 audio[local_start:local_end] *= envelope[:, np.newaxis]
             
             mix_buffer[chunk_rel_start:chunk_rel_end] += audio
