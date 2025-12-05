@@ -164,6 +164,11 @@ from src.synth_functions.sound_creator import (
     crossfade_signals,
     generate_single_step_audio_segment,
 )
+from src.synth_functions.noise_flanger import (
+    _generate_swept_notch_arrays,
+    _generate_swept_notch_arrays_transition,
+)
+from src.utils.noise_file import load_noise_params
 
 
 _INT16_MAX = np.int16(32767).item()
@@ -302,20 +307,23 @@ class AudioGeneratorWorker(QObject):
         self._global_settings = global_settings
         self._default_crossfade_duration = float(global_settings.get("crossfade_duration", 0.0))
         self._default_crossfade_curve = str(global_settings.get("crossfade_curve", "linear"))
-        
+
         self._steps: List[Dict[str, object]] = list(
             self._track_data.get("steps", [])
         )
-        
+
         self._playback_sample = 0
         self._playback_step_states: Dict[int, List[dict]] = {}
         self._step_infos: List[_StepPlaybackInfo] = []
         self._total_samples_estimate = 0
-        
+
+        self._background_noise: Optional[np.ndarray] = None
+
         self._running = False
         self._paused = False
-        
+
         self._recalculate_timeline()
+        self._prepare_background_noise()
         
     def _recalculate_timeline(self) -> None:
         """Pre-calculate start/end samples for all steps based on crossfades."""
@@ -360,7 +368,142 @@ class AudioGeneratorWorker(QObject):
             self._total_samples_estimate = self._step_infos[-1].end_sample
         else:
             self._total_samples_estimate = 0
-            
+
+    def _prepare_background_noise(self) -> None:
+        """Generate the background noise layer to mirror offline assembly."""
+
+        self._background_noise = None
+
+        bg_cfg = self._track_data.get("background_noise") or {}
+        if not isinstance(bg_cfg, dict):
+            return
+
+        bg_file = (
+            bg_cfg.get("file")
+            or bg_cfg.get("params_path")
+            or bg_cfg.get("noise_file")
+        )
+        if not bg_file:
+            return
+
+        track_duration_sec = self._total_samples_estimate / float(self._sample_rate or 1)
+        if track_duration_sec <= 0:
+            return
+
+        try:
+            params = load_noise_params(bg_file)
+        except Exception:
+            return
+
+        params.duration_seconds = track_duration_sec
+        params.sample_rate = self._sample_rate
+
+        try:
+            if getattr(params, "transition", False):
+                start_sweeps = [
+                    (sw.get("start_min", 1000), sw.get("start_max", 10000))
+                    for sw in params.sweeps
+                ]
+                end_sweeps = [
+                    (sw.get("end_min", 1000), sw.get("end_max", 10000))
+                    for sw in params.sweeps
+                ]
+                start_q = [sw.get("start_q", 30) for sw in params.sweeps]
+                end_q = [sw.get("end_q", 30) for sw in params.sweeps]
+                start_casc = [sw.get("start_casc", 10) for sw in params.sweeps]
+                end_casc = [sw.get("end_casc", 10) for sw in params.sweeps]
+
+                noise_audio, _ = _generate_swept_notch_arrays_transition(
+                    track_duration_sec,
+                    self._sample_rate,
+                    params.start_lfo_freq,
+                    params.end_lfo_freq,
+                    start_sweeps,
+                    end_sweeps,
+                    start_q,
+                    end_q,
+                    start_casc,
+                    end_casc,
+                    params.start_lfo_phase_offset_deg,
+                    params.end_lfo_phase_offset_deg,
+                    params.start_intra_phase_offset_deg,
+                    params.end_intra_phase_offset_deg,
+                    params.input_audio_path or None,
+                    params.noise_type,
+                    params.lfo_waveform,
+                    params.initial_offset,
+                    params.duration,
+                    "linear",
+                    False,
+                    2,
+                    getattr(params, "static_notches", None),
+                )
+            else:
+                sweeps = [
+                    (sw.get("start_min", 1000), sw.get("start_max", 10000))
+                    for sw in params.sweeps
+                ]
+                notch_q = [sw.get("start_q", 30) for sw in params.sweeps]
+                casc = [sw.get("start_casc", 10) for sw in params.sweeps]
+
+                noise_audio, _ = _generate_swept_notch_arrays(
+                    track_duration_sec,
+                    self._sample_rate,
+                    params.lfo_freq,
+                    sweeps,
+                    notch_q,
+                    casc,
+                    params.start_lfo_phase_offset_deg,
+                    params.start_intra_phase_offset_deg,
+                    params.input_audio_path or None,
+                    params.noise_type,
+                    params.lfo_waveform,
+                    False,
+                    2,
+                    getattr(params, "static_notches", None),
+                )
+        except Exception:
+            return
+
+        if noise_audio.ndim == 1:
+            noise_audio = np.column_stack((noise_audio, noise_audio))
+
+        start_time = float(bg_cfg.get("start_time", 0.0))
+        start_sample = max(0, int(start_time * self._sample_rate))
+
+        if start_sample > 0:
+            noise_audio = np.pad(noise_audio, ((start_sample, 0), (0, 0)), "constant")
+
+        gain = float(bg_cfg.get("gain", 1.0))
+        fade_in = float(bg_cfg.get("fade_in", 0.0))
+        fade_out = float(bg_cfg.get("fade_out", 0.0))
+        amp_env = bg_cfg.get("amp_envelope")
+
+        env = np.ones(noise_audio.shape[0], dtype=np.float32) * gain
+        if fade_in > 0:
+            n = min(int(fade_in * self._sample_rate), env.size)
+            env[:n] *= np.linspace(0, 1, n, dtype=np.float32)
+        if fade_out > 0:
+            n = min(int(fade_out * self._sample_rate), env.size)
+            env[-n:] *= np.linspace(1, 0, n, dtype=np.float32)
+        if isinstance(amp_env, list) and amp_env:
+            times = [max(0.0, float(p[0])) for p in amp_env]
+            amps = [float(p[1]) for p in amp_env]
+            t_samples = np.array(times) * self._sample_rate
+            interp = np.interp(
+                np.arange(env.size, dtype=np.float32),
+                t_samples,
+                amps,
+                left=amps[0],
+                right=amps[-1],
+            )
+            env *= interp
+
+        noise_audio = noise_audio[: env.size] * env[:, None]
+        self._background_noise = noise_audio.astype(np.float32, copy=False)
+
+        if self._background_noise.shape[0] > self._total_samples_estimate:
+            self._total_samples_estimate = self._background_noise.shape[0]
     @pyqtSlot()
     def start_generation(self):
         self._running = True
@@ -470,11 +613,21 @@ class AudioGeneratorWorker(QObject):
             
         end_sample = min(start_sample + max_frames, self._total_samples_estimate)
         num_frames = end_sample - start_sample
-        
+
         if num_frames <= 0:
             return None
-            
+
         mix_buffer = np.zeros((num_frames, 2), dtype=np.float32)
+
+        if self._background_noise is not None:
+            bg_slice = self._background_noise[start_sample:end_sample]
+            if bg_slice.shape[0] < num_frames:
+                bg_slice = np.pad(
+                    bg_slice,
+                    ((0, num_frames - bg_slice.shape[0]), (0, 0)),
+                    "constant",
+                )
+            mix_buffer += bg_slice
         
         for info in self._step_infos:
             if info.end_sample <= start_sample:
