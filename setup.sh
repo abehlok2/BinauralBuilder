@@ -84,8 +84,15 @@ PIP_CMD=("$PYTHON_BIN" -m pip)
 echo "Upgrading pip and build tooling..."
 "${PIP_CMD[@]}" install --upgrade pip setuptools wheel
 
-echo "Installing Python dependencies for the audio GUI..."
-"${PIP_CMD[@]}" install -r audio/requirements.txt
+export NUMBA_CPU_NAME="${NUMBA_CPU_NAME:-host}"
+if [[ -n "${NUMBA_CPU_FEATURES:-}" ]]; then
+    echo "Using custom NUMBA_CPU_FEATURES=${NUMBA_CPU_FEATURES}"
+    export NUMBA_CPU_FEATURES
+else
+    echo "NUMBA_CPU_FEATURES not set; Numba will auto-detect host capabilities."
+fi
+echo "Installing Python dependencies for the audio GUI with NUMBA_CPU_NAME=${NUMBA_CPU_NAME}..."
+"${PIP_CMD[@]}" install -r requirements.txt
 
 if [[ $SKIP_VENV -eq 1 ]]; then
     ACTIVE_PYTHON="$PYTHON_BIN"

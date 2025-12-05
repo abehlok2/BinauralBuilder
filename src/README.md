@@ -4,6 +4,20 @@ This folder contains a small library of Python synthesis routines used by `sound
 
 ---
 
+## Installation and performance notes
+
+The `setup.sh` and `setup.ps1` helpers install dependencies with `NUMBA_CPU_NAME=host` so Numba can emit code tuned for your CPU. You can optionally set `NUMBA_CPU_FEATURES` before running either script if you need to pin the target flags manually.
+
+To confirm Numba is available and using multiple cores, run the lightweight benchmark:
+
+```
+python -m binauralbuilder_core.utils.numba_status --benchmark
+```
+
+The script prints the detected thread count and throughput so you can verify parallel execution is active.
+
+---
+
 ## Quick Usage
 
 ```

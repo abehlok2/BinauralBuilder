@@ -68,12 +68,17 @@ $Pip = "$Python -m pip"
 Write-Host "Upgrading pip and build tooling..."
 Invoke-Expression "$Pip install --upgrade pip setuptools wheel"
 
-Write-Host "Installing Python dependencies for the audio GUI..."
-if (Test-Path "audio/requirements.txt") {
-    Invoke-Expression "$Pip install -r audio/requirements.txt"
-} else {
-    Write-Warning "audio/requirements.txt not found!"
+if (-not $env:NUMBA_CPU_NAME) {
+    $env:NUMBA_CPU_NAME = "host"
 }
+if ($env:NUMBA_CPU_FEATURES) {
+    Write-Host "Using custom NUMBA_CPU_FEATURES=$($env:NUMBA_CPU_FEATURES)"
+} else {
+    Write-Host "NUMBA_CPU_FEATURES not set; Numba will auto-detect host capabilities."
+}
+
+Write-Host "Installing Python dependencies for the audio GUI with NUMBA_CPU_NAME=$($env:NUMBA_CPU_NAME)..."
+Invoke-Expression "$Pip install -r requirements.txt"
 
 # --- Create default audio configuration ---
 Write-Host "Creating default audio configuration if needed..."

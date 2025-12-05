@@ -1,5 +1,10 @@
 """Standalone-friendly binaural synthesis and session assembly API."""
 
+from .utils.numba_status import configure_numba
+
+# Log Numba status early so imports that rely on it can fall back gracefully.
+configure_numba()
+
 from .session import (
     Session,
     SessionStep,
