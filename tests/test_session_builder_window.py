@@ -5,6 +5,9 @@ try:
 except ImportError as exc:  # pragma: no cover - environment dependent
     pytest.skip(f"PyQt5 not available: {exc}", allow_module_level=True)
 
+from dataclasses import asdict
+import json
+
 from src.audio.session_model import Session, SessionPresetChoice, SessionStep
 from src.ui.session_builder_window import SessionBuilderWindow
 
@@ -27,7 +30,7 @@ class DummyStream:
         self.started = False
         self.stopped = False
 
-    def start(self):
+    def start(self, *args, **kwargs):
         self.started = True
 
     def stop(self):
@@ -79,7 +82,7 @@ def test_step_duration_updates_model(qapp):
     window.close()
 
 
-def test_preview_and_export_invoke_services(qapp, monkeypatch, tmp_path):
+def test_playback_and_export_use_latest_session(qapp, monkeypatch, tmp_path):
     binaural_catalog = {"alpha": _catalog_entry("alpha", "Alpha")}
     session = Session(steps=[SessionStep(binaural_preset_id="alpha", duration=30.0)])
 
@@ -107,7 +110,7 @@ def test_preview_and_export_invoke_services(qapp, monkeypatch, tmp_path):
     window.show()
     qapp.processEvents()
 
-    window.preview_btn.click()
+    window.play_pause_btn.click()
     qapp.processEvents()
 
     assert assemblers, "Assembler should be created for preview"
@@ -123,9 +126,57 @@ def test_preview_and_export_invoke_services(qapp, monkeypatch, tmp_path):
         lambda *args, **kwargs: (str(export_path), ""),
     )
 
+    # Adjust session to ensure export rebuilds the assembler
+    session.steps[0].duration = 45.0
+    window.duration_spin.setValue(45.0)
+    qapp.processEvents()
+
     window.export_btn.click()
     qapp.processEvents()
 
+    assert len(assemblers) == 2
+    assert assemblers[-1].track_data["steps"][0]["duration"] == 45.0
     assert assemblers[-1].render_calls == [str(export_path)]
+
+    window.close()
+
+
+def test_save_and_load_buttons_round_trip(qapp, monkeypatch, tmp_path):
+    binaural_catalog = {"alpha": _catalog_entry("alpha", "Alpha")}
+    session = Session(steps=[SessionStep(binaural_preset_id="alpha", duration=10.0, description="first")])
+
+    window = SessionBuilderWindow(
+        session=session,
+        binaural_catalog=binaural_catalog,
+        noise_catalog={},
+    )
+    window.show()
+    qapp.processEvents()
+
+    save_path = tmp_path / "saved.session"
+    monkeypatch.setattr(
+        "src.ui.session_builder_window.QFileDialog.getSaveFileName",
+        lambda *args, **kwargs: (str(save_path), ""),
+    )
+
+    window.save_btn.click()
+    qapp.processEvents()
+
+    assert save_path.exists()
+
+    loaded_step = SessionStep(binaural_preset_id="alpha", duration=22.0, description="loaded")
+    with open(save_path, "w", encoding="utf-8") as fh:
+        json.dump(asdict(Session(steps=[loaded_step])), fh)
+
+    monkeypatch.setattr(
+        "src.ui.session_builder_window.QFileDialog.getOpenFileName",
+        lambda *args, **kwargs: (str(save_path), ""),
+    )
+
+    window.load_btn.click()
+    qapp.processEvents()
+
+    assert window._session.steps[0].description == "loaded"
+    assert window._session.steps[0].duration == pytest.approx(22.0)
 
     window.close()
