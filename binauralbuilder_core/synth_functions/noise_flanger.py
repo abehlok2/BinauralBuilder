@@ -1397,6 +1397,9 @@ def generate_swept_notch_pink_sound(
         static_notches,
     )
     try:
+        output_dir = os.path.dirname(filename)
+        if output_dir and not os.path.exists(output_dir):
+            os.makedirs(output_dir, exist_ok=True)
         sf.write(filename, stereo_output, sample_rate, subtype="PCM_16")
         print(f"\nSuccessfully generated and saved to '{filename}' in {total_time:.2f} seconds.")
     except Exception as e:
@@ -1457,6 +1460,9 @@ def generate_swept_notch_pink_sound_transition(
         static_notches,
     )
     try:
+        output_dir = os.path.dirname(filename)
+        if output_dir and not os.path.exists(output_dir):
+            os.makedirs(output_dir, exist_ok=True)
         sf.write(filename, stereo_output, sample_rate, subtype="PCM_16")
         print(f"\nSuccessfully generated and saved to '{filename}' in {total_time:.2f} seconds.")
     except Exception as e:
