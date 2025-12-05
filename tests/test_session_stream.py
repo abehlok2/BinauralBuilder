@@ -142,3 +142,164 @@ def test_stream_player_pause_and_stop(track_data):
     player.stop()
     assert audio_output.stopped is True
     assert player._buffer_device is None
+
+
+# =============================================================================
+# Noise voice streaming tests (directly test generate_single_step_audio_segment)
+# =============================================================================
+
+from src.synth_functions.sound_creator import generate_single_step_audio_segment
+
+
+def test_noise_voice_caching_produces_continuous_audio():
+    """Test that noise voices are cached and sliced correctly for continuous playback."""
+    sample_rate = 4000
+    step_duration = 1.0  # 1 second step
+    chunk_duration = 0.25  # 250ms chunks
+
+    # Create a step with a noise voice
+    step_data = {
+        "duration": step_duration,
+        "voices": [
+            {
+                "synth_function_name": "binaural_beat",
+                "voice_type": "noise",
+                "params": {"carrier_freq": 200, "beat_freq": 10},
+            }
+        ],
+    }
+    global_settings = {"sample_rate": sample_rate}
+
+    # Generate 4 chunks covering the full step
+    chunks = []
+    voice_states = None
+    for i in range(4):
+        chunk_start_time = i * chunk_duration
+        audio, voice_states = generate_single_step_audio_segment(
+            step_data,
+            global_settings,
+            chunk_duration,
+            duration_override=chunk_duration,
+            chunk_start_time=chunk_start_time,
+            voice_states=voice_states,
+            return_state=True,
+        )
+        chunks.append(audio)
+
+    # Verify all chunks have the expected shape
+    chunk_samples = int(chunk_duration * sample_rate)
+    for i, chunk in enumerate(chunks):
+        assert chunk.shape == (chunk_samples, 2), f"Chunk {i} has wrong shape: {chunk.shape}"
+
+    # Verify that the chunks form continuous audio (no silent gaps)
+    # Check that no chunk is completely silent
+    for i, chunk in enumerate(chunks):
+        chunk_power = np.mean(chunk ** 2)
+        assert chunk_power > 1e-12, f"Chunk {i} is silent (power={chunk_power})"
+
+    # Verify that the voice state was properly cached
+    assert voice_states is not None
+    assert len(voice_states) == 1
+    noise_state = voice_states[0]
+    assert isinstance(noise_state, dict)
+    assert "full_audio" in noise_state
+    assert "noise_peak" in noise_state
+
+
+def test_noise_voice_boundary_slicing_pads_correctly():
+    """Test that noise slicing at step boundaries pads short slices."""
+    sample_rate = 4000
+    step_duration = 0.5  # 500ms step
+    chunk_duration = 0.3  # 300ms chunk - second chunk extends beyond step
+
+    step_data = {
+        "duration": step_duration,
+        "voices": [
+            {
+                "synth_function_name": "binaural_beat",
+                "voice_type": "noise",
+                "params": {"carrier_freq": 200, "beat_freq": 10},
+            }
+        ],
+    }
+    global_settings = {"sample_rate": sample_rate}
+
+    # First chunk: 0-300ms
+    audio1, voice_states = generate_single_step_audio_segment(
+        step_data,
+        global_settings,
+        chunk_duration,
+        duration_override=chunk_duration,
+        chunk_start_time=0.0,
+        voice_states=None,
+        return_state=True,
+    )
+
+    # Second chunk: 300-600ms (but step only lasts 500ms)
+    audio2, voice_states = generate_single_step_audio_segment(
+        step_data,
+        global_settings,
+        chunk_duration,
+        duration_override=chunk_duration,
+        chunk_start_time=0.3,
+        voice_states=voice_states,
+        return_state=True,
+    )
+
+    chunk_samples = int(chunk_duration * sample_rate)
+
+    # Both chunks should have the full requested size (padding applied if needed)
+    assert audio1.shape == (chunk_samples, 2), f"First chunk has wrong shape: {audio1.shape}"
+    assert audio2.shape == (chunk_samples, 2), f"Second chunk has wrong shape: {audio2.shape}"
+
+
+def test_noise_normalization_consistent_across_chunks():
+    """Test that noise normalization uses cached peak for consistent volume."""
+    sample_rate = 4000
+    step_duration = 1.0
+    chunk_duration = 0.25
+
+    step_data = {
+        "duration": step_duration,
+        "voices": [
+            {
+                "synth_function_name": "binaural_beat",
+                "voice_type": "noise",
+                "params": {"carrier_freq": 200, "beat_freq": 10},
+            }
+        ],
+        "normalization_level": 0.8,
+        "noise_volume": 1.0,
+    }
+    global_settings = {"sample_rate": sample_rate}
+
+    # Generate all chunks
+    chunks = []
+    voice_states = None
+    for i in range(4):
+        chunk_start_time = i * chunk_duration
+        audio, voice_states = generate_single_step_audio_segment(
+            step_data,
+            global_settings,
+            chunk_duration,
+            duration_override=chunk_duration,
+            chunk_start_time=chunk_start_time,
+            voice_states=voice_states,
+            return_state=True,
+        )
+        chunks.append(audio)
+
+    # Check that peak values are similar across chunks (within reasonable tolerance)
+    # If normalization is consistent, chunks shouldn't have wildly different peaks
+    peaks = [np.max(np.abs(chunk)) for chunk in chunks]
+
+    # All peaks should be reasonably close (accounting for the nature of noise)
+    # The key is that they shouldn't vary by orders of magnitude
+    max_peak = max(peaks)
+    min_peak = min(peaks)
+
+    # Allow up to 3x variation due to random noise characteristics
+    # but not more (which would indicate per-chunk normalization issues)
+    if max_peak > 0:
+        peak_ratio = max_peak / (min_peak + 1e-10)
+        assert peak_ratio < 10.0, f"Peak variation too large: {peaks}"

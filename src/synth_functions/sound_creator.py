@@ -1434,8 +1434,19 @@ def generate_single_step_audio_segment(step_data, global_settings, target_durati
         # If we already generated the full-length noise for this step, just slice
         if voice_type == 'noise' and cached_full_audio is not None:
             start_sample = int(chunk_start_time * sample_rate)
-            end_sample = start_sample + step_generation_samples
+            # Clamp end_sample to avoid out-of-bounds slicing
+            cached_len = cached_full_audio.shape[0]
+            end_sample = min(start_sample + step_generation_samples, cached_len)
             voice_audio = cached_full_audio[start_sample:end_sample]
+            # Pad if the slice is shorter than expected (e.g., at step boundaries)
+            if voice_audio.shape[0] < step_generation_samples:
+                pad_len = step_generation_samples - voice_audio.shape[0]
+                voice_audio = np.pad(
+                    voice_audio,
+                    ((0, pad_len), (0, 0)),
+                    mode="constant",
+                    constant_values=0.0,
+                )
             new_voice_states.append(prev_state)
         # Otherwise, generate audio normally. For noise voices requested via
         # streaming, generate the full step once and cache it so subsequent
@@ -1455,10 +1466,23 @@ def generate_single_step_audio_segment(step_data, global_settings, target_durati
             )
             full_state = full_state or {}
             full_state["full_audio"] = full_audio
+            # Pre-compute and cache the peak normalization factor from full audio
+            # to ensure consistent volume across all chunks
+            full_peak = np.max(np.abs(full_audio))
+            full_state["noise_peak"] = full_peak if full_peak > 1e-9 else 1.0
 
             start_sample = int(chunk_start_time * sample_rate)
             end_sample = min(start_sample + step_generation_samples, full_samples)
             voice_audio = full_audio[start_sample:end_sample]
+            # Pad if the slice is shorter than expected (e.g., at step boundaries)
+            if voice_audio.shape[0] < step_generation_samples:
+                pad_len = step_generation_samples - voice_audio.shape[0]
+                voice_audio = np.pad(
+                    voice_audio,
+                    ((0, pad_len), (0, 0)),
+                    mode="constant",
+                    constant_values=0.0,
+                )
             new_voice_states.append(full_state)
         else:
             voice_audio, v_state = generate_voice_audio(
@@ -1502,10 +1526,27 @@ def generate_single_step_audio_segment(step_data, global_settings, target_durati
             print("    Warning: Binaural mix is silent.")
 
     # 2. Normalize Noise Mix
+    # For streaming mode, use the cached peak from the full audio to ensure
+    # consistent volume across all chunks (avoids volume pumping between chunks)
     if has_noise:
-        noise_peak = np.max(np.abs(noise_mix))
+        # Collect cached peak values from noise voice states
+        cached_noise_peak = None
+        for i, voice_data in enumerate(voices_data):
+            if voice_data.get('voice_type', 'binaural') == 'noise':
+                state = new_voice_states[i] if i < len(new_voice_states) else None
+                if isinstance(state, dict) and "noise_peak" in state:
+                    peak_val = state["noise_peak"]
+                    if cached_noise_peak is None or peak_val > cached_noise_peak:
+                        cached_noise_peak = peak_val
+
+        # Use cached peak if available (streaming mode), otherwise use chunk peak
+        if cached_noise_peak is not None and cached_noise_peak > 1e-9:
+            noise_peak = cached_noise_peak
+        else:
+            noise_peak = np.max(np.abs(noise_mix))
+
         if noise_peak > 1e-9:
-            # Normalize to target level
+            # Normalize to target level using consistent peak value
             noise_mix *= (norm_level / noise_peak)
             # Apply volume
             noise_mix *= noise_vol
