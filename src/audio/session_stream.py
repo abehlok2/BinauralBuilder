@@ -527,27 +527,44 @@ class AudioGeneratorWorker(QObject):
                 else:
                     audio = audio[:gen_len]
             
+            def _fade_envelope(start_frac: float, end_frac: float, length: int, curve: str, *, invert: bool = False) -> np.ndarray:
+                """Return a fade envelope matching :func:`crossfade_signals` curves.
+
+                ``start_frac``/``end_frac`` represent the fractional progress (0→1)
+                through the fade window covered by this chunk. ``invert`` toggles
+                between fade-in (False) and fade-out (True).
+                """
+
+                positions = np.linspace(start_frac, end_frac, length, endpoint=False, dtype=np.float32)
+                positions = np.clip(positions, 0.0, 1.0)
+
+                if curve == "equal_power":
+                    theta = positions * (np.pi / 2.0)
+                    values = np.cos(theta) if invert else np.sin(theta)
+                else:
+                    values = 1.0 - positions if invert else positions
+
+                return values
+
             # Fade In
             if info.fade_in_samples > 0 and step_rel_start < info.fade_in_samples:
-                fade_start_idx = 0 
+                fade_start_idx = 0
                 fade_end_idx = min(gen_len, info.fade_in_samples - step_rel_start)
-                start_p = step_rel_start / info.fade_in_samples
-                end_p = (step_rel_start + fade_end_idx) / info.fade_in_samples
-                curve = np.linspace(start_p, end_p, fade_end_idx)
-                envelope = curve
+                start_p = step_rel_start / max(info.fade_in_samples, 1)
+                end_p = (step_rel_start + fade_end_idx) / max(info.fade_in_samples, 1)
+                envelope = _fade_envelope(start_p, end_p, fade_end_idx, info.fade_in_curve, invert=False)
                 audio[:fade_end_idx] *= envelope[:, np.newaxis]
-                
+
             # Fade Out
             step_duration_samples = info.end_sample - info.start_sample
             fade_out_start_sample = step_duration_samples - info.fade_out_samples
-            
+
             if info.fade_out_samples > 0 and step_rel_end > fade_out_start_sample:
                 local_start = max(0, fade_out_start_sample - step_rel_start)
                 local_end = gen_len
-                start_p = (step_rel_start + local_start - fade_out_start_sample) / info.fade_out_samples
-                end_p = (step_rel_start + local_end - fade_out_start_sample) / info.fade_out_samples
-                curve = np.linspace(start_p, end_p, local_end - local_start)
-                envelope = 1.0 - curve
+                start_p = (step_rel_start + local_start - fade_out_start_sample) / max(info.fade_out_samples, 1)
+                end_p = (step_rel_start + local_end - fade_out_start_sample) / max(info.fade_out_samples, 1)
+                envelope = _fade_envelope(start_p, end_p, local_end - local_start, info.fade_out_curve, invert=True)
                 audio[local_start:local_end] *= envelope[:, np.newaxis]
             
             mix_buffer[chunk_rel_start:chunk_rel_end] += audio
