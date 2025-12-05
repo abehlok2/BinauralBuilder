@@ -1,6 +1,6 @@
 librosa==0.11.0
 numpy==2.2.5
-# numba provides optional JIT acceleration but isn't required on Windows
+# numba provides optional JIT acceleration. Install with NUMBA_CPU_NAME=host to enable host-specific CPU flags
 numba
 pyqt5==5.15.11
 scipy==1.15.2
