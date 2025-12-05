@@ -1426,16 +1426,51 @@ def generate_single_step_audio_segment(step_data, global_settings, target_durati
         
         # print(f"    Generating Voice {i+1}/{len(voices_data)}: {func_name_short} ({voice_type})")
         
-        voice_audio, v_state = generate_voice_audio(
-            voice_data, 
-            step_generation_duration, 
-            sample_rate, 
-            0.0,
-            chunk_start_time=chunk_start_time,
-            previous_state=current_voice_states[i],
-            return_state=True
-        )
-        new_voice_states.append(v_state)
+        prev_state = current_voice_states[i]
+        cached_full_audio = None
+        if isinstance(prev_state, dict):
+            cached_full_audio = prev_state.get("full_audio")
+
+        # If we already generated the full-length noise for this step, just slice
+        if voice_type == 'noise' and cached_full_audio is not None:
+            start_sample = int(chunk_start_time * sample_rate)
+            end_sample = start_sample + step_generation_samples
+            voice_audio = cached_full_audio[start_sample:end_sample]
+            new_voice_states.append(prev_state)
+        # Otherwise, generate audio normally. For noise voices requested via
+        # streaming, generate the full step once and cache it so subsequent
+        # chunks don't restart the noise generator (which causes discontinuities
+        # between chunks).
+        elif voice_type == 'noise' and return_state:
+            full_duration = float(step_data.get("duration", step_generation_duration))
+            full_samples = int(full_duration * sample_rate)
+            full_audio, full_state = generate_voice_audio(
+                voice_data,
+                full_duration,
+                sample_rate,
+                0.0,
+                chunk_start_time=0.0,
+                previous_state=None,
+                return_state=True,
+            )
+            full_state = full_state or {}
+            full_state["full_audio"] = full_audio
+
+            start_sample = int(chunk_start_time * sample_rate)
+            end_sample = min(start_sample + step_generation_samples, full_samples)
+            voice_audio = full_audio[start_sample:end_sample]
+            new_voice_states.append(full_state)
+        else:
+            voice_audio, v_state = generate_voice_audio(
+                voice_data,
+                step_generation_duration,
+                sample_rate,
+                0.0,
+                chunk_start_time=chunk_start_time,
+                previous_state=current_voice_states[i],
+                return_state=True
+            )
+            new_voice_states.append(v_state)
         
         if voice_audio is not None and voice_audio.shape[0] == step_generation_samples and voice_audio.ndim == 2 and voice_audio.shape[1] == 2:
             if voice_type == 'noise':
