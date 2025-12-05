@@ -746,13 +746,30 @@ class SessionBuilderWindow(QMainWindow):
         self.step_crossfade_curve_combo.blockSignals(False)
 
     def _clear_step_editors(self) -> None:
-        self.preset_combo.setCurrentIndex(-1)
+        default_duration = float(self._defaults.get("step_duration", 1.0))
+        default_binaural = self._defaults.get("default_binaural_id")
+        default_noise = self._defaults.get("default_noise_id")
+
+        # Binaural preset selection
+        if default_binaural:
+            idx = self.preset_combo.findData(default_binaural)
+            self.preset_combo.setCurrentIndex(idx if idx >= 0 else -1)
+        else:
+            self.preset_combo.setCurrentIndex(-1)
+
         self.binaural_vol_slider.setValue(100)
         self.binaural_vol_spin.setValue(1.0)
-        self.noise_combo.setCurrentIndex(0 if self.noise_combo.count() else -1)
+
+        # Noise preset selection ("None" entry is index 0)
+        if default_noise:
+            idx = self.noise_combo.findData(default_noise)
+            self.noise_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        else:
+            self.noise_combo.setCurrentIndex(0 if self.noise_combo.count() else -1)
+
         self.noise_vol_slider.setValue(100)
         self.noise_vol_spin.setValue(1.0)
-        self.duration_spin.setValue(1.0)
+        self.duration_spin.setValue(default_duration)
         self.step_crossfade_slider.setValue(0)
         self.step_crossfade_spin.setValue(0.0)
         self.step_crossfade_curve_combo.setCurrentIndex(0)
