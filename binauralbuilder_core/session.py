@@ -6,7 +6,7 @@ import copy
 from dataclasses import dataclass, field, asdict
 from enum import Enum
 from pathlib import Path
-from typing import Dict, Iterable, List, Mapping, Optional
+from typing import Any, Dict, Iterable, List, Mapping, Optional
 
 from .utils.voice_file import load_voice_preset
 from .utils.noise_file import load_noise_params
@@ -115,6 +115,76 @@ def _node_attr(node, name: str, default):
     if isinstance(node, dict):
         return node.get(name, default)
     return default
+
+
+def _normalize_noise_voice_params(raw_params: Mapping[str, Any]) -> Dict[str, Any]:
+    """Convert UI-friendly noise params into synth function arguments.
+
+    Noise ``.noise`` files store sweep data as dictionaries (``start_min``,
+    ``end_min`` etc.) because that format is convenient for the editor UI. The
+    synth functions expect tuples/lists for the sweep frequencies/Q values and
+    will raise when they receive the raw dicts, resulting in silent or choppy
+    noise.  This helper reshapes the values into the form expected by
+    ``noise_swept_notch``/``noise_swept_notch_transition``.
+    """
+
+    params = dict(raw_params)
+    sweeps = params.get("sweeps")
+
+    # Empty sweeps should fall back to the synth defaults rather than passing
+    # an empty list (which triggers a length mismatch error).
+    if sweeps == []:
+        params.pop("sweeps", None)
+        sweeps = None
+
+    if isinstance(sweeps, list) and sweeps and isinstance(sweeps[0], Mapping):
+        start_sweeps: list[tuple[float, float]] = []
+        end_sweeps: list[tuple[float, float]] = []
+        start_q: list[float] = []
+        end_q: list[float] = []
+        start_casc: list[int] = []
+        end_casc: list[int] = []
+
+        for sweep in sweeps:
+            start_min = float(sweep.get("start_min", sweep.get("min", 1000.0)))
+            start_max = float(sweep.get("start_max", sweep.get("max", 10000.0)))
+            end_min = float(sweep.get("end_min", start_min))
+            end_max = float(sweep.get("end_max", start_max))
+
+            start_sweeps.append((start_min, start_max))
+            end_sweeps.append((end_min, end_max))
+
+            start_q.append(float(sweep.get("start_q", 25.0)))
+            end_q.append(float(sweep.get("end_q", start_q[-1])))
+
+            start_casc.append(int(sweep.get("start_casc", 10)))
+            end_casc.append(int(sweep.get("end_casc", start_casc[-1])))
+
+        params.pop("sweeps", None)
+
+        if params.get("transition"):
+            params["start_sweeps"] = start_sweeps
+            params["end_sweeps"] = end_sweeps
+            params["start_q"] = start_q if len(start_q) > 1 else start_q[0]
+            params["end_q"] = end_q if len(end_q) > 1 else end_q[0]
+            params["start_casc"] = start_casc if len(start_casc) > 1 else start_casc[0]
+            params["end_casc"] = end_casc if len(end_casc) > 1 else end_casc[0]
+
+            # Preserve the UI transition duration so the synth function can use
+            # it instead of defaulting to the full step length.
+            if "duration" in params:
+                params["transition_duration"] = params["duration"]
+        else:
+            params["sweeps"] = start_sweeps
+            params["notch_q"] = start_q if len(start_q) > 1 else start_q[0]
+            params["casc"] = start_casc if len(start_casc) > 1 else start_casc[0]
+
+    # Normalize blank input audio paths to ``None`` so the synth generator will
+    # create noise instead of attempting to read an empty path.
+    if not params.get("input_audio_path"):
+        params["input_audio_path"] = None
+
+    return params
 
 
 def _node_to_dict(node, default_duration: float) -> Dict[str, float]:
@@ -456,7 +526,9 @@ def session_to_track_data(
         if step.noise_preset_id:
             noise_choice = noise_catalog.get(step.noise_preset_id)
             if noise_choice:
-                noise_params = noise_choice.payload.get("params", {})
+                noise_params = _normalize_noise_voice_params(
+                    noise_choice.payload.get("params", {})
+                )
                 
                 # Determine if it's a transition or static noise
                 is_transition = getattr(noise_params, "transition", False) or noise_params.get("transition", False)
