@@ -313,17 +313,17 @@ def pan2(signal, pan=0):
         return np.vstack([left, right]).T
 
 
-def _ensure_1d_length(value, length):
-    """Return a 1-D float64 array of ``length`` from ``value``.
+def _ensure_1d_length(value, length, dtype=np.float64):
+    """Return a 1-D array of ``length`` from ``value``.
 
     Scalars are broadcast while 1-D arrays must already match the requested
     length.  This helper keeps the pan utilities resilient to scalar or
     per-sample modulation inputs.
     """
-    arr = np.asarray(value, dtype=np.float64)
+    arr = np.asarray(value, dtype=dtype)
     if arr.ndim == 0:
-        return np.full(length, float(arr), dtype=np.float64)
-    arr = np.ravel(arr).astype(np.float64, copy=False)
+        return np.full(length, float(arr), dtype=dtype)
+    arr = np.ravel(arr).astype(dtype, copy=False)
     if arr.size != length:
         raise ValueError(f"Expected array of length {length}, received shape {arr.shape}.")
     return arr
@@ -361,11 +361,11 @@ def generate_pan_envelope(
     if num_samples <= 0:
         return np.zeros(0, dtype=np.float64)
 
-    base_arr = _ensure_1d_length(pan_base, num_samples)
-    range_min_arr = _ensure_1d_length(pan_range_min, num_samples)
-    range_max_arr = _ensure_1d_length(pan_range_max, num_samples)
-    freq_arr = _ensure_1d_length(pan_freq, num_samples)
-    phase_arr = _ensure_1d_length(initial_phase, num_samples)
+    base_arr = _ensure_1d_length(pan_base, num_samples, dtype=np.float32)
+    range_min_arr = _ensure_1d_length(pan_range_min, num_samples, dtype=np.float32)
+    range_max_arr = _ensure_1d_length(pan_range_max, num_samples, dtype=np.float32)
+    freq_arr = _ensure_1d_length(pan_freq, num_samples, dtype=np.float32)
+    phase_arr = _ensure_1d_length(initial_phase, num_samples, dtype=np.float32)
 
     range_low = np.minimum(range_min_arr, range_max_arr)
     range_high = np.maximum(range_min_arr, range_max_arr)
@@ -386,27 +386,30 @@ def generate_pan_envelope(
     # Ensure positive frequencies (negative values would simply invert the
     # traversal direction; treat them as their absolute magnitude).
     freq_arr = np.abs(freq_arr)
-    dt = 1.0 / float(sample_rate)
-    freq_prefix = np.concatenate(([0.0], freq_arr[:-1]))
-    cycles = np.cumsum(freq_prefix) * dt
+    dt = np.float32(1.0 / float(sample_rate))
+    freq_prefix = np.concatenate((np.asarray([0.0], dtype=np.float32), freq_arr[:-1]))
+    cycles = np.cumsum(freq_prefix, dtype=np.float32)
+    cycles *= dt
 
     pan_type_key = str(pan_type).strip().lower()
     if pan_type_key not in {"linear", "inward", "outward"}:
         pan_type_key = "linear"
 
     if pan_type_key == "linear":
-        phase = phase_arr + 2.0 * np.pi * cycles
-        lfo = np.sin(phase)
-        center = 0.5 * (range_high + range_low)
-        half_span = 0.5 * (range_high - range_low)
+        two_pi = np.float32(2.0 * np.pi)
+        phase = phase_arr + two_pi * cycles
+        lfo = np.sin(phase, dtype=np.float32)
+        center = np.float32(0.5) * (range_high + range_low)
+        half_span = np.float32(0.5) * (range_high - range_low)
         pan_values = center + half_span * lfo
     else:
-        phase_cycles = (phase_arr / (2.0 * np.pi)) + cycles
+        two_pi = np.float32(2.0 * np.pi)
+        phase_cycles = (phase_arr / two_pi) + cycles
         cycle_index = np.floor(phase_cycles).astype(np.int64)
         cycle_pos = phase_cycles - cycle_index
 
         even_mask = (cycle_index & 1) == 0
-        pan_values = np.empty(num_samples, dtype=np.float64)
+        pan_values = np.empty(num_samples, dtype=np.float32)
 
         if pan_type_key == "inward":
             start_even = range_high
@@ -427,7 +430,7 @@ def generate_pan_envelope(
                 target_odd[~even_mask] - 0.0
             ) * cycle_pos[~even_mask]
 
-    return np.clip(pan_values, -1.0, 1.0)
+    return np.clip(pan_values, -1.0, 1.0).astype(np.float32, copy=False)
 
 
 def apply_pan_envelope(audio, pan_values):
@@ -439,16 +442,19 @@ def apply_pan_envelope(audio, pan_values):
     if audio.ndim != 2 or audio.shape[1] != 2:
         raise ValueError("apply_pan_envelope expects an array of shape (N, 2).")
 
-    pan_arr = np.asarray(pan_values, dtype=np.float64)
+    pan_arr = np.asarray(pan_values, dtype=audio.dtype)
     if pan_arr.ndim == 0:
-        pan_arr = np.full(audio.shape[0], float(pan_arr), dtype=np.float64)
+        pan_arr = np.full(audio.shape[0], float(pan_arr), dtype=audio.dtype)
     elif pan_arr.ndim == 1 and pan_arr.shape[0] == audio.shape[0]:
-        pan_arr = pan_arr.astype(np.float64, copy=False)
+        pan_arr = pan_arr.astype(audio.dtype, copy=False)
     else:
         raise ValueError("Pan envelope length must match the number of samples.")
 
-    pan_clipped = np.clip(pan_arr, -1.0, 1.0)
-    angle = (pan_clipped + 1.0) * (np.pi / 4.0)
+    dtype = audio.dtype
+    one = dtype.type(1.0)
+    half_pi = dtype.type(np.pi / 2.0)
+    pan_clipped = np.clip(pan_arr, -one, one)
+    angle = (pan_clipped + one) * (half_pi * dtype.type(0.5))
 
     left_gain = np.cos(angle).astype(audio.dtype, copy=False)
     right_gain = np.sin(angle).astype(audio.dtype, copy=False)

@@ -499,7 +499,7 @@ def generate_voice_audio(voice_data, duration, sample_rate, global_start_time, c
     if not actual_func_name or actual_func_name not in SYNTH_FUNCTIONS:
         print(f"Error: Synth function '{actual_func_name}' (derived from '{func_name}') not found or invalid.")
         N = int(duration * sample_rate)
-        empty = np.zeros((N, 2))
+        empty = np.zeros((N, 2), dtype=np.float32)
         return (empty, {}) if return_state else empty
 
     synth_func = SYNTH_FUNCTIONS[actual_func_name]
@@ -546,13 +546,13 @@ def generate_voice_audio(voice_data, duration, sample_rate, global_start_time, c
         print(f"Error calling synth function '{actual_func_name}' with params {cleaned_params}:")
         traceback.print_exc()
         N = int(duration * sample_rate)
-        empty = np.zeros((N, 2))
+        empty = np.zeros((N, 2), dtype=np.float32)
         return (empty, {}) if return_state else empty
 
     if audio is None:
         print(f"Error: Synth function '{actual_func_name}' returned None.")
         N = int(duration * sample_rate)
-        empty = np.zeros((N, 2))
+        empty = np.zeros((N, 2), dtype=np.float32)
         return (empty, {}) if return_state else empty
 
     # --- Apply volume envelope if defined ---
