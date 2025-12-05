@@ -280,15 +280,26 @@ class SessionBuilderWindow(QMainWindow):
         # Section 2: Playback & Export
         playback_layout = QVBoxLayout()
         playback_layout.setSpacing(10)
-        
+
         playback_header = QLabel("Playback & Export")
         playback_header.setObjectName("panel_header")
         playback_layout.addWidget(playback_header)
-        
+
+        session_buttons = QHBoxLayout()
+        session_buttons.setSpacing(8)
+        self.save_btn = QPushButton(self.style().standardIcon(QStyle.SP_DialogSaveButton), "Save Session")
+        self.save_btn.setToolTip("Save the current session steps and settings to disk.")
+        self.save_btn.setProperty("class", "secondary")
+        self.load_btn = QPushButton(self.style().standardIcon(QStyle.SP_DialogOpenButton), "Load Session")
+        self.load_btn.setToolTip("Load session steps and settings from disk.")
+        session_buttons.addWidget(self.save_btn)
+        session_buttons.addWidget(self.load_btn)
+        playback_layout.addLayout(session_buttons)
+
         self.export_btn = QPushButton(self.style().standardIcon(QStyle.SP_DialogSaveButton), "Export Session")
         self.export_btn.setToolTip("Render the session to an audio file.")
         self.export_btn.setProperty("class", "primary") # Apply primary style
-        
+
         playback_layout.addWidget(self.export_btn)
         
         control_layout.addLayout(playback_layout, 0) # No stretch, fixed width
@@ -575,6 +586,8 @@ class SessionBuilderWindow(QMainWindow):
         self.warmup_btn.clicked.connect(self._choose_warmup_file)
         self.description_edit.textChanged.connect(self._on_description_changed)
 
+        self.save_btn.clicked.connect(self._save_session)
+        self.load_btn.clicked.connect(self._load_session_from_file)
         self.export_btn.clicked.connect(self._export_session)
 
         # Playback controls
@@ -594,8 +607,14 @@ class SessionBuilderWindow(QMainWindow):
     # ------------------------------------------------------------------
     # Session & model synchronization
     # ------------------------------------------------------------------
+    def _invalidate_assembler(self) -> None:
+        """Clear any cached assembler so exports rebuild from current state."""
+
+        self._current_assembler = None
+
     def _load_session(self, session: Session) -> None:
         self._session = session
+        self._invalidate_assembler()
         self.crossfade_spin.blockSignals(True)
         self.crossfade_slider.blockSignals(True)
         self.crossfade_spin.setValue(float(session.crossfade_duration))
@@ -639,10 +658,12 @@ class SessionBuilderWindow(QMainWindow):
             self._update_normalization_label(int(new_norm * 100))
             
             self.crossfade_spin.setValue(new_cross) # Signals will update slider
-            
+
             # Update duration spinbox for next step
             self.duration_spin.setValue(new_dur)
-            
+
+            self._invalidate_assembler()
+
             self.status_label.setText("Defaults updated and applied.")
             
     def _update_total_duration(self, *args) -> None:
@@ -782,18 +803,22 @@ class SessionBuilderWindow(QMainWindow):
         seconds = value / 10.0
         self.crossfade_spin.setValue(seconds)
         self._session.crossfade_duration = seconds
+        self._invalidate_assembler()
 
     def _sync_crossfade_slider_from_spin(self, value: float) -> None:
         self.crossfade_slider.setValue(int(round(value * 10)))
         self._session.crossfade_duration = float(value)
+        self._invalidate_assembler()
 
     def _on_crossfade_curve_changed(self, text: str) -> None:
         self._session.crossfade_curve = text
+        self._invalidate_assembler()
 
     def _on_normalization_changed(self, value: int) -> None:
         value = max(0, min(value, 75))
         self._session.normalization_level = value / 100.0
         self._update_normalization_label(value)
+        self._invalidate_assembler()
 
     def _update_normalization_label(self, slider_value: int) -> None:
         self.normalization_label.setText(f"{slider_value / 100:.2f}")
@@ -806,12 +831,14 @@ class SessionBuilderWindow(QMainWindow):
         if preset_id:
             step.binaural_preset_id = preset_id
             self.step_model.refresh(self._session.steps)
+            self._invalidate_assembler()
 
     def _on_noise_changed(self, index: int) -> None:
         step = self._get_selected_step()
         if step is None:
             return
         step.noise_preset_id = self.noise_combo.itemData(index)
+        self._invalidate_assembler()
 
     def _sync_noise_vol_spin_from_slider(self, value: int) -> None:
         vol = value / 100.0
@@ -827,6 +854,7 @@ class SessionBuilderWindow(QMainWindow):
         if step is None:
             return
         step.noise_volume = float(value)
+        self._invalidate_assembler()
 
     def _sync_binaural_vol_spin_from_slider(self, value: int) -> None:
         vol = value / 100.0
@@ -841,6 +869,7 @@ class SessionBuilderWindow(QMainWindow):
         step = self._get_selected_step()
         if step:
             step.binaural_volume = float(value)
+            self._invalidate_assembler()
 
     def _on_duration_changed(self, value: float) -> None:
         step = self._get_selected_step()
@@ -848,6 +877,7 @@ class SessionBuilderWindow(QMainWindow):
             return
         step.duration = float(value)
         self.step_model.refresh(self._session.steps)
+        self._invalidate_assembler()
 
     def _sync_step_crossfade_spin_from_slider(self, value: int) -> None:
         seconds = value / 10.0
@@ -866,6 +896,7 @@ class SessionBuilderWindow(QMainWindow):
             step.crossfade_duration = None
         else:
             step.crossfade_duration = float(value)
+        self._invalidate_assembler()
 
     def _on_step_curve_changed(self, index: int) -> None:
         step = self._get_selected_step()
@@ -875,6 +906,7 @@ class SessionBuilderWindow(QMainWindow):
             step.crossfade_curve = None
         else:
             step.crossfade_curve = self.step_crossfade_curve_combo.itemText(index)
+        self._invalidate_assembler()
 
     def _choose_warmup_file(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "Select Warmup Audio", "src/presets/audio", "Audio Files (*.wav *.flac *.mp3);;All Files (*)")
@@ -884,6 +916,7 @@ class SessionBuilderWindow(QMainWindow):
         step = self._get_selected_step()
         if step is not None:
             step.warmup_clip_path = path
+            self._invalidate_assembler()
 
     def _on_description_changed(self) -> None:
         step = self._get_selected_step()
@@ -891,6 +924,7 @@ class SessionBuilderWindow(QMainWindow):
             return
         step.description = self.description_edit.toPlainText()
         self.step_model.refresh(self._session.steps)
+        self._invalidate_assembler()
 
     # ------------------------------------------------------------------
     # Step list manipulation
@@ -944,6 +978,7 @@ class SessionBuilderWindow(QMainWindow):
         self._session.steps.append(step)
         self.step_model.refresh(self._session.steps)
         self.step_table.selectRow(len(self._session.steps) - 1)
+        self._invalidate_assembler()
 
     def _remove_step(self) -> None:
         index = self._selected_step_index()
@@ -956,6 +991,7 @@ class SessionBuilderWindow(QMainWindow):
                 self.step_table.selectRow(min(index, len(self._session.steps) - 1))
             else:
                 self._clear_step_editors()
+            self._invalidate_assembler()
 
     def _move_step(self, direction: int) -> None:
         index = self._selected_step_index()
@@ -968,6 +1004,7 @@ class SessionBuilderWindow(QMainWindow):
         steps[index], steps[new_index] = steps[new_index], steps[index]
         self.step_model.refresh(steps)
         self.step_table.selectRow(new_index)
+        self._invalidate_assembler()
 
     # ------------------------------------------------------------------
     # Save/load handling
@@ -1147,6 +1184,7 @@ class SessionBuilderWindow(QMainWindow):
              self._stop_playback()
 
     def _export_session(self) -> None:
+        self._invalidate_assembler()
         if self._current_assembler is None:
             self._current_assembler = self._create_assembler()
         path, _ = QFileDialog.getSaveFileName(self, "Export Session", self._session.output_filename, "Audio Files (*.wav *.flac *.mp3)")
