@@ -1557,6 +1557,15 @@ def generate_single_step_audio_segment(step_data, global_settings, target_durati
     # 3. Combine
     single_iteration_audio_mix = binaural_mix + noise_mix
 
+    # 4. Post-mix normalization to prevent clipping
+    # When both binaural and noise are at high volumes, their sum can exceed 1.0.
+    # Apply a safety ceiling to ensure the final mix never clips.
+    SAFETY_CEILING = 0.99  # Leave minimal headroom for float->PCM conversion
+    combined_peak = np.max(np.abs(single_iteration_audio_mix))
+    if combined_peak > SAFETY_CEILING:
+        # Scale down to prevent clipping while preserving the binaural/noise ratio
+        single_iteration_audio_mix *= (SAFETY_CEILING / combined_peak)
+
     # Fill the output_audio_segment by looping/truncating the single_iteration_audio_mix
     if step_generation_samples == 0:
         print("    Error: Step has zero generation samples, cannot loop.")
