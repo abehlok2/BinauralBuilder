@@ -93,6 +93,11 @@ except Exception:  # pragma: no cover - allow headless operation
         def setInterval(self, ms): pass
         @property
         def timeout(self): return _DummySignal()
+        @staticmethod
+        def singleShot(ms, callback):
+            # In headless mode, just call the callback immediately
+            if callable(callback):
+                callback()
 
     class _DummyQMutex:
         def lock(self): pass
@@ -547,40 +552,41 @@ class AudioGeneratorWorker(QObject):
         while self._running:
             if QThread.currentThread().isInterruptionRequested():
                 break
-                
+
+            # Always process events to ensure signals are delivered (e.g., stop, seek)
+            if QCoreApplication is not None:
+                QCoreApplication.processEvents()
+
             if self._paused:
                 QThread.msleep(50)
                 continue
-                
+
             # Check buffer level
             target_bytes = int(self._ring_buffer_seconds * self._sample_rate * _BYTES_PER_FRAME)
             current_bytes = self._buffer_device.queued_bytes()
-            
+
             if current_bytes >= target_bytes:
                 # Buffer full, sleep a bit
                 QThread.msleep(10)
                 continue
-            
+
             # Generate a chunk
             chunk_size = 4096 # approx 100ms
             chunk = self._generate_next_chunk(self._playback_sample, chunk_size, self._playback_step_states)
-            
+
             if chunk is not None:
                 self._playback_sample += chunk.shape[0]
                 self._enqueue_audio_chunk(chunk)
-                
+
                 # Check if done
                 if self._playback_sample >= self._total_samples_estimate:
                     # End of stream
                     # Don't stop running, just idle until seek or stop
-                     QThread.msleep(100)
+                    QThread.msleep(100)
             else:
                 # End of stream or error
                 QThread.msleep(100)
-                
-            if QCoreApplication is not None:
-                QCoreApplication.processEvents()
-            
+
         self.finished.emit()
 
     def _enqueue_audio_chunk(self, chunk: np.ndarray) -> None:
@@ -940,19 +946,28 @@ class SessionStreamPlayer(QObject):  # type: ignore[misc]
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
-    def _wait_for_initial_buffer(self, min_seconds: float = 0.5, timeout_seconds: float = 2.0) -> None:
+    def _wait_for_initial_buffer(self, min_seconds: float = 1.0, timeout_seconds: float = 5.0) -> None:
+        """Wait for the audio buffer to fill before starting playback.
+
+        On first play, audio generation may be slow due to JIT compilation,
+        lazy imports, and memory allocation. We wait longer (5s timeout) to
+        ensure enough data is buffered before playback begins, reducing the
+        chance of immediate buffer underruns.
+        """
         if not self._buffer_device:
             return
 
-        target_seconds = max(min_seconds, min(self._ring_buffer_seconds, 1.0))
+        # Target 1.5 seconds of audio (or half the ring buffer, whichever is larger)
+        # to provide adequate headroom for initial generation slowness
+        target_seconds = max(min_seconds, min(self._ring_buffer_seconds / 2.0, 1.5))
         target_bytes = int(target_seconds * self._sample_rate * _BYTES_PER_FRAME)
         deadline = time.monotonic() + timeout_seconds
 
         while self._buffer_device.queued_bytes() < target_bytes and time.monotonic() < deadline:
             try:
-                QThread.msleep(5)
+                QThread.msleep(10)
             except Exception:
-                time.sleep(0.005)
+                time.sleep(0.010)
 
     def _render_full_stream_headless(self) -> None:
         """Render the entire stream synchronously when Qt threads are unavailable."""
@@ -1006,9 +1021,37 @@ class SessionStreamPlayer(QObject):  # type: ignore[misc]
         if not self._audio_output:
             return
         if state == QAudio.IdleState and not self._use_prebuffer:
-             # Buffer underrun or finished?
-             # If finished, we could stop.
-             pass
+            # Buffer underrun or finished - check if there's more data coming
+            # and resume if needed. This handles the case where initial audio
+            # generation is slow and causes a temporary underrun.
+            if self._worker and self._worker.current_sample < self._worker.total_samples:
+                # Worker is still generating, wait a bit for data and resume
+                if self._buffer_device and self._buffer_device.queued_bytes() > 0:
+                    # Data is available, resume immediately
+                    if hasattr(self._audio_output, 'resume'):
+                        self._audio_output.resume()
+                else:
+                    # Wait briefly for worker to generate more data, then restart
+                    QTimer.singleShot(50, self._try_resume_after_underrun)
+
+    def _try_resume_after_underrun(self) -> None:  # pragma: no cover - Qt runtime
+        """Attempt to resume audio output after a buffer underrun."""
+        if not self._audio_output or not self._buffer_device:
+            return
+
+        # Check if we have data now
+        if self._buffer_device.queued_bytes() > 0:
+            # Restart the audio output with the buffer device
+            # Some Qt versions need stop/start rather than just resume
+            state = self._audio_output.state() if hasattr(self._audio_output, 'state') else None
+            if state == QAudio.IdleState or state == QAudio.StoppedState:
+                self._audio_output.stop()
+                self._audio_output.start(self._buffer_device)
+            elif hasattr(self._audio_output, 'resume'):
+                self._audio_output.resume()
+        elif self._worker and self._worker.current_sample < self._worker.total_samples:
+            # Still waiting for data, try again shortly
+            QTimer.singleShot(50, self._try_resume_after_underrun)
 
 
 __all__ = ["SessionStreamPlayer"]
