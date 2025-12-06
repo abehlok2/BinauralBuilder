@@ -303,3 +303,101 @@ def test_noise_normalization_consistent_across_chunks():
     if max_peak > 0:
         peak_ratio = max_peak / (min_peak + 1e-10)
         assert peak_ratio < 10.0, f"Peak variation too large: {peaks}"
+
+
+def test_no_clipping_at_maximum_settings():
+    """Test that audio never clips even with max normalization and volumes.
+
+    This regression test verifies that when:
+    - normalization_level is at maximum (0.75)
+    - binaural_volume is 1.0
+    - noise_volume is 1.0
+
+    The combined audio output never exceeds 1.0 (which would cause clipping).
+    """
+    sample_rate = 4000
+    step_duration = 0.5
+
+    step_data = {
+        "duration": step_duration,
+        "voices": [
+            # Binaural voice
+            {
+                "synth_function_name": "binaural_beat",
+                "voice_type": "binaural",
+                "params": {"carrier_freq": 200, "beat_freq": 10},
+            },
+            # Noise voice
+            {
+                "synth_function_name": "binaural_beat",
+                "voice_type": "noise",
+                "params": {"carrier_freq": 300, "beat_freq": 5},
+            },
+        ],
+        # Maximum settings that would cause clipping before the fix
+        "normalization_level": 0.75,
+        "binaural_volume": 1.0,
+        "noise_volume": 1.0,
+    }
+    global_settings = {"sample_rate": sample_rate}
+
+    audio = generate_single_step_audio_segment(
+        step_data,
+        global_settings,
+        step_duration,
+    )
+
+    # The audio should NEVER exceed 1.0 in absolute value
+    peak = np.max(np.abs(audio))
+    assert peak <= 1.0, f"Audio clipped! Peak value: {peak}"
+
+    # Also verify audio was actually generated (not silent)
+    assert peak > 0.1, f"Audio is unexpectedly quiet: peak = {peak}"
+
+
+def test_no_clipping_with_multiple_voices():
+    """Test that audio doesn't clip with multiple binaural and noise voices."""
+    sample_rate = 4000
+    step_duration = 0.5
+
+    step_data = {
+        "duration": step_duration,
+        "voices": [
+            # Multiple binaural voices
+            {
+                "synth_function_name": "binaural_beat",
+                "voice_type": "binaural",
+                "params": {"carrier_freq": 100, "beat_freq": 4},
+            },
+            {
+                "synth_function_name": "binaural_beat",
+                "voice_type": "binaural",
+                "params": {"carrier_freq": 200, "beat_freq": 8},
+            },
+            # Multiple noise voices
+            {
+                "synth_function_name": "binaural_beat",
+                "voice_type": "noise",
+                "params": {"carrier_freq": 300, "beat_freq": 12},
+            },
+            {
+                "synth_function_name": "binaural_beat",
+                "voice_type": "noise",
+                "params": {"carrier_freq": 400, "beat_freq": 16},
+            },
+        ],
+        "normalization_level": 0.75,
+        "binaural_volume": 1.0,
+        "noise_volume": 1.0,
+    }
+    global_settings = {"sample_rate": sample_rate}
+
+    audio = generate_single_step_audio_segment(
+        step_data,
+        global_settings,
+        step_duration,
+    )
+
+    # Even with many voices, audio should never clip
+    peak = np.max(np.abs(audio))
+    assert peak <= 1.0, f"Audio clipped with multiple voices! Peak value: {peak}"
