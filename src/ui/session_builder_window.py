@@ -612,6 +612,17 @@ class SessionBuilderWindow(QMainWindow):
 
         self._current_assembler = None
 
+    def _refresh_step_model(self, *, preserve_selection: bool = True, select_index: Optional[int] = None) -> None:
+        """Refresh the step model and keep the current editing row highlighted."""
+
+        if preserve_selection and select_index is None:
+            select_index = self._selected_step_index()
+
+        self.step_model.refresh(self._session.steps)
+
+        if select_index is not None and 0 <= select_index < len(self._session.steps):
+            self.step_table.selectRow(select_index)
+
     def _load_session(self, session: Session) -> None:
         self._session = session
         self._invalidate_assembler()
@@ -830,7 +841,7 @@ class SessionBuilderWindow(QMainWindow):
         preset_id = self.preset_combo.itemData(index)
         if preset_id:
             step.binaural_preset_id = preset_id
-            self.step_model.refresh(self._session.steps)
+            self._refresh_step_model()
             self._invalidate_assembler()
 
     def _on_noise_changed(self, index: int) -> None:
@@ -876,7 +887,7 @@ class SessionBuilderWindow(QMainWindow):
         if step is None:
             return
         step.duration = float(value)
-        self.step_model.refresh(self._session.steps)
+        self._refresh_step_model()
         self._invalidate_assembler()
 
     def _sync_step_crossfade_spin_from_slider(self, value: int) -> None:
@@ -923,7 +934,7 @@ class SessionBuilderWindow(QMainWindow):
         if step is None:
             return
         step.description = self.description_edit.toPlainText()
-        self.step_model.refresh(self._session.steps)
+        self._refresh_step_model()
         self._invalidate_assembler()
 
     # ------------------------------------------------------------------
@@ -976,8 +987,7 @@ class SessionBuilderWindow(QMainWindow):
             description=self.description_edit.toPlainText(),
         )
         self._session.steps.append(step)
-        self.step_model.refresh(self._session.steps)
-        self.step_table.selectRow(len(self._session.steps) - 1)
+        self._refresh_step_model(select_index=len(self._session.steps) - 1)
         self._invalidate_assembler()
 
     def _remove_step(self) -> None:
@@ -986,10 +996,8 @@ class SessionBuilderWindow(QMainWindow):
             return
         if 0 <= index < len(self._session.steps):
             del self._session.steps[index]
-            self.step_model.refresh(self._session.steps)
-            if self._session.steps:
-                self.step_table.selectRow(min(index, len(self._session.steps) - 1))
-            else:
+            self._refresh_step_model(select_index=min(index, len(self._session.steps) - 1))
+            if not self._session.steps:
                 self._clear_step_editors()
             self._invalidate_assembler()
 
@@ -1002,8 +1010,7 @@ class SessionBuilderWindow(QMainWindow):
             return
         steps = self._session.steps
         steps[index], steps[new_index] = steps[new_index], steps[index]
-        self.step_model.refresh(steps)
-        self.step_table.selectRow(new_index)
+        self._refresh_step_model(select_index=new_index)
         self._invalidate_assembler()
 
     # ------------------------------------------------------------------
