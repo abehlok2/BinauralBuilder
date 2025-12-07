@@ -505,7 +505,12 @@ def generate_voice_audio(voice_data, duration, sample_rate, global_start_time):
     # --- Generate base audio ---
     try:
         print(f"  Calling: {actual_func_name}(duration={duration}, sample_rate={sample_rate}, **{cleaned_params})")
-        audio = synth_func(duration=duration, sample_rate=sample_rate, **cleaned_params)
+        result = synth_func(duration=duration, sample_rate=sample_rate, **cleaned_params)
+        # Handle synth functions that return (audio, state) tuples for streaming support
+        if isinstance(result, tuple) and len(result) >= 1:
+            audio = result[0]
+        else:
+            audio = result
     except Exception as e:
         print(f"Error calling synth function '{actual_func_name}' with params {cleaned_params}:")
         traceback.print_exc()
