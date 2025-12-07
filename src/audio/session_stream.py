@@ -194,7 +194,7 @@ class _StepPlaybackInfo:
 
 class _PCMBufferDevice(QIODevice):
     """Sequential ``QIODevice`` backed by a FIFO queue of PCM frames.
-    
+
     This class is thread-safe.
     """
 
@@ -204,6 +204,8 @@ class _PCMBufferDevice(QIODevice):
         self._current: bytes = b""
         self._offset: int = 0
         self._mutex = QMutex()
+        # Track total bytes consumed by audio output for accurate position tracking
+        self._total_bytes_consumed: int = 0
 
     def isSequential(self) -> bool:  # pragma: no cover - Qt hook
         return True
@@ -243,6 +245,8 @@ class _PCMBufferDevice(QIODevice):
                 break
             self._current = self._queue.popleft()
             self._offset = 0
+        # Track bytes consumed for accurate position reporting
+        self._total_bytes_consumed += len(result)
         return bytes(result)
 
     def writeData(self, data: bytes) -> int:  # pragma: no cover - Qt hook
@@ -261,11 +265,23 @@ class _PCMBufferDevice(QIODevice):
             locker.unlock()
             self.readyRead.emit()
 
-    def clear(self) -> None:
+    def clear(self, reset_consumed: bool = False) -> None:
         locker = QMutexLocker(self._mutex)
         self._queue.clear()
         self._current = b""
         self._offset = 0
+        if reset_consumed:
+            self._total_bytes_consumed = 0
+
+    def total_bytes_consumed(self) -> int:
+        """Return total bytes consumed by audio output (thread-safe)."""
+        locker = QMutexLocker(self._mutex)
+        return self._total_bytes_consumed
+
+    def reset_consumed_counter(self, value: int = 0) -> None:
+        """Reset the consumed counter, optionally to a specific value."""
+        locker = QMutexLocker(self._mutex)
+        self._total_bytes_consumed = value
 
     def queued_bytes(self) -> int:
         locker = QMutexLocker(self._mutex)
@@ -532,13 +548,16 @@ class AudioGeneratorWorker(QObject):
         target_sample = int(time_seconds * self._sample_rate)
         # Clamp to valid range
         target_sample = max(0, min(target_sample, self._total_samples_estimate))
-        
+
         self._playback_sample = target_sample
         # Reset states on seek (simplification)
-        self._playback_step_states = {} 
-        
-        # Clear buffer to ensure immediate response
-        self._buffer_device.clear()
+        self._playback_step_states = {}
+
+        # Clear buffer and reset consumed counter to seek position
+        self._buffer_device.clear(reset_consumed=False)
+        # Set consumed counter to reflect the new playback position
+        seek_bytes = target_sample * _BYTES_PER_FRAME
+        self._buffer_device.reset_consumed_counter(seek_bytes)
 
     @property
     def total_samples(self):
@@ -549,11 +568,22 @@ class AudioGeneratorWorker(QObject):
         return self._playback_sample
 
     def _process_loop(self):
+        # Use a consistent chunk size that's a power of 2 for audio alignment
+        # 2048 samples at 44100 Hz ~= 46.4ms per chunk
+        chunk_size = 2048
+
+        # Calculate timing parameters based on sample rate
+        # We want to generate audio at a rate that keeps the buffer filled
+        # but doesn't overfill it. Target keeping buffer between 50-100% full.
+        min_buffer_seconds = self._ring_buffer_seconds * 0.5
+        target_buffer_seconds = self._ring_buffer_seconds * 0.75
+        chunk_duration_ms = int((chunk_size / self._sample_rate) * 1000)
+
         while self._running:
             if QThread.currentThread().isInterruptionRequested():
                 break
 
-            # Always process events to ensure signals are delivered (e.g., stop, seek)
+            # Process Qt events for signal delivery (stop, seek, pause)
             if QCoreApplication is not None:
                 QCoreApplication.processEvents()
 
@@ -561,31 +591,63 @@ class AudioGeneratorWorker(QObject):
                 QThread.msleep(50)
                 continue
 
-            # Check buffer level
-            target_bytes = int(self._ring_buffer_seconds * self._sample_rate * _BYTES_PER_FRAME)
+            # Check buffer level and calculate optimal sleep time
             current_bytes = self._buffer_device.queued_bytes()
+            current_seconds = current_bytes / (self._sample_rate * _BYTES_PER_FRAME)
 
-            if current_bytes >= target_bytes:
-                # Buffer full, sleep a bit
-                QThread.msleep(10)
+            if current_seconds >= self._ring_buffer_seconds:
+                # Buffer is full - sleep for approximately the time it takes
+                # to consume one chunk, so we wake up right when space is available
+                sleep_ms = max(5, min(chunk_duration_ms, 50))
+                QThread.msleep(sleep_ms)
                 continue
 
-            # Generate a chunk
-            chunk_size = 4096 # approx 100ms
-            chunk = self._generate_next_chunk(self._playback_sample, chunk_size, self._playback_step_states)
+            # Check if we've reached the end of the stream
+            if self._playback_sample >= self._total_samples_estimate:
+                # End of stream - idle but stay responsive
+                QThread.msleep(50)
+                continue
 
-            if chunk is not None:
+            # Calculate how many chunks we should generate to maintain buffer level
+            # Generate enough to reach target buffer level
+            deficit_seconds = max(0, target_buffer_seconds - current_seconds)
+            deficit_samples = int(deficit_seconds * self._sample_rate)
+
+            # Generate at least one chunk, but cap at a reasonable number
+            # to avoid blocking the thread for too long
+            samples_to_generate = max(chunk_size, min(deficit_samples, chunk_size * 4))
+
+            # Generate audio in chunk_size increments for consistency
+            samples_generated = 0
+            while samples_generated < samples_to_generate and self._running and not self._paused:
+                remaining = self._total_samples_estimate - self._playback_sample
+                if remaining <= 0:
+                    break
+
+                this_chunk_size = min(chunk_size, remaining)
+                chunk = self._generate_next_chunk(
+                    self._playback_sample,
+                    this_chunk_size,
+                    self._playback_step_states
+                )
+
+                if chunk is None:
+                    break
+
                 self._playback_sample += chunk.shape[0]
+                samples_generated += chunk.shape[0]
                 self._enqueue_audio_chunk(chunk)
 
-                # Check if done
-                if self._playback_sample >= self._total_samples_estimate:
-                    # End of stream
-                    # Don't stop running, just idle until seek or stop
-                    QThread.msleep(100)
-            else:
-                # End of stream or error
-                QThread.msleep(100)
+                # Brief yield to allow other operations (seek, stop)
+                if QCoreApplication is not None:
+                    QCoreApplication.processEvents()
+
+            # If buffer is below minimum, don't sleep - keep generating
+            if current_seconds >= min_buffer_seconds and samples_generated > 0:
+                # Sleep proportionally to how much audio we just generated
+                # This helps maintain consistent generation rate
+                sleep_ms = max(2, chunk_duration_ms // 2)
+                QThread.msleep(sleep_ms)
 
         self.finished.emit()
 
@@ -878,8 +940,14 @@ class SessionStreamPlayer(QObject):  # type: ignore[misc]
 
     @property
     def position(self) -> float:
-        """Current playback position in seconds (approximate)."""
+        """Current playback position in seconds based on actual audio consumed."""
+        if self._buffer_device:
+            # Use actual bytes consumed by audio output for accurate position
+            consumed_bytes = self._buffer_device.total_bytes_consumed()
+            consumed_samples = consumed_bytes // _BYTES_PER_FRAME
+            return consumed_samples / self._sample_rate
         if self._worker:
+            # Fallback to generation position if buffer not available
             return self._worker.current_sample / self._sample_rate
         return 0.0
 
@@ -916,7 +984,7 @@ class SessionStreamPlayer(QObject):  # type: ignore[misc]
         if self._audio_output:
             self._audio_output.stop()
             self._audio_output = None
-            
+
         if self._worker:
             self._worker.stop_generation()
             if self._worker_thread:
@@ -925,12 +993,12 @@ class SessionStreamPlayer(QObject):  # type: ignore[misc]
                 self._worker_thread.wait()
             self._worker = None
             self._worker_thread = None
-            
+
         if self._buffer_device:
             self._buffer_device.close()
-            self._buffer_device.clear()
+            self._buffer_device.clear(reset_consumed=True)
             self._buffer_device = None
-            
+
         if self._prebuffer_device:
             self._prebuffer_device.close()
             self._prebuffer_device = None
@@ -964,6 +1032,9 @@ class SessionStreamPlayer(QObject):  # type: ignore[misc]
         deadline = time.monotonic() + timeout_seconds
 
         while self._buffer_device.queued_bytes() < target_bytes and time.monotonic() < deadline:
+            # Process Qt events to keep UI responsive during initial buffering
+            if QCoreApplication is not None:
+                QCoreApplication.processEvents()
             try:
                 QThread.msleep(10)
             except Exception:
@@ -974,11 +1045,17 @@ class SessionStreamPlayer(QObject):  # type: ignore[misc]
         if not self._worker or not self._buffer_device:
             return
 
-        chunk_size = 4096 * 4
+        # Use consistent chunk size matching the threaded process loop
+        chunk_size = 2048
         while True:
+            remaining = self._worker.total_samples - self._worker._playback_sample
+            if remaining <= 0:
+                break
+
+            this_chunk_size = min(chunk_size, remaining)
             chunk = self._worker._generate_next_chunk(
                 self._worker._playback_sample,
-                chunk_size,
+                this_chunk_size,
                 self._worker._playback_step_states,
             )
             if chunk is None:
@@ -1025,33 +1102,44 @@ class SessionStreamPlayer(QObject):  # type: ignore[misc]
             # and resume if needed. This handles the case where initial audio
             # generation is slow and causes a temporary underrun.
             if self._worker and self._worker.current_sample < self._worker.total_samples:
-                # Worker is still generating, wait a bit for data and resume
-                if self._buffer_device and self._buffer_device.queued_bytes() > 0:
-                    # Data is available, resume immediately
-                    if hasattr(self._audio_output, 'resume'):
-                        self._audio_output.resume()
+                # Worker is still generating - need to wait for sufficient buffer
+                # before resuming to prevent immediate re-underrun
+                min_resume_bytes = int(0.25 * self._sample_rate * _BYTES_PER_FRAME)  # 250ms
+                if self._buffer_device and self._buffer_device.queued_bytes() >= min_resume_bytes:
+                    # Enough data available, restart playback
+                    self._restart_audio_output()
                 else:
-                    # Wait briefly for worker to generate more data, then restart
-                    QTimer.singleShot(50, self._try_resume_after_underrun)
+                    # Wait for buffer to fill before resuming
+                    QTimer.singleShot(25, self._try_resume_after_underrun)
+
+    def _restart_audio_output(self) -> None:  # pragma: no cover - Qt runtime
+        """Restart audio output after underrun with fresh buffer connection."""
+        if not self._audio_output or not self._buffer_device:
+            return
+
+        state = self._audio_output.state() if hasattr(self._audio_output, 'state') else None
+        if state == QAudio.IdleState or state == QAudio.StoppedState:
+            # Full restart for clean state
+            self._audio_output.stop()
+            self._audio_output.start(self._buffer_device)
+        elif hasattr(self._audio_output, 'resume'):
+            self._audio_output.resume()
 
     def _try_resume_after_underrun(self) -> None:  # pragma: no cover - Qt runtime
         """Attempt to resume audio output after a buffer underrun."""
         if not self._audio_output or not self._buffer_device:
             return
 
-        # Check if we have data now
-        if self._buffer_device.queued_bytes() > 0:
-            # Restart the audio output with the buffer device
-            # Some Qt versions need stop/start rather than just resume
-            state = self._audio_output.state() if hasattr(self._audio_output, 'state') else None
-            if state == QAudio.IdleState or state == QAudio.StoppedState:
-                self._audio_output.stop()
-                self._audio_output.start(self._buffer_device)
-            elif hasattr(self._audio_output, 'resume'):
-                self._audio_output.resume()
+        # Require minimum buffer before resuming to prevent stuttering
+        min_resume_bytes = int(0.25 * self._sample_rate * _BYTES_PER_FRAME)  # 250ms
+        current_bytes = self._buffer_device.queued_bytes()
+
+        if current_bytes >= min_resume_bytes:
+            # Sufficient buffer built up, restart playback
+            self._restart_audio_output()
         elif self._worker and self._worker.current_sample < self._worker.total_samples:
-            # Still waiting for data, try again shortly
-            QTimer.singleShot(50, self._try_resume_after_underrun)
+            # Still waiting for buffer to fill - use shorter interval for responsiveness
+            QTimer.singleShot(20, self._try_resume_after_underrun)
 
 
 __all__ = ["SessionStreamPlayer"]
