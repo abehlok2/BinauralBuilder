@@ -485,8 +485,10 @@ def _apply_static_notches(stereo_output, sample_rate, static_notches):
 
 def _prepare_static_sweeps(sweeps):
     """Convert a ``sweeps`` specification into arrays for the notch helpers."""
-    if not sweeps:
+    if sweeps is None:
         return [(1000.0, 10000.0)], [25.0], [10]
+    if not sweeps:
+        return [], [], []
 
     filter_sweeps = []
     q_vals = []
@@ -523,9 +525,11 @@ def _prepare_static_sweeps(sweeps):
 
 
 def _prepare_transition_sweeps(sweeps):
-    if not sweeps:
+    if sweeps is None:
         defaults = [(1000.0, 10000.0)]
         return defaults, defaults, [25.0], [25.0], [10], [10]
+    if not sweeps:
+        return [], [], [], [], [], []
 
     start_sweeps = []
     end_sweeps = []
@@ -1498,8 +1502,12 @@ def noise_generator(
         else:
             casc_vals = [int(max(1, _safe_int(cascade_count, 10)))] * len(sweeps_cfg)
 
-    notch_arg = q_vals if len(q_vals) > 1 else q_vals[0]
-    casc_arg = casc_vals if len(casc_vals) > 1 else casc_vals[0]
+    if len(sweeps_cfg) == 0:
+        notch_arg = []
+        casc_arg = []
+    else:
+        notch_arg = q_vals if len(q_vals) > 1 else q_vals[0]
+        casc_arg = casc_vals if len(casc_vals) > 1 else casc_vals[0]
 
     stereo_output, _ = _generate_swept_notch_arrays(
         duration,
@@ -1675,10 +1683,16 @@ def noise_generator_transition(
         else:
             end_casc_vals = [int(max(1, _safe_int(end_cascade_count, start_casc_vals[i])))] * len(start_sweeps)
 
-    start_notch_arg = start_q_vals if len(start_q_vals) > 1 else start_q_vals[0]
-    end_notch_arg = end_q_vals if len(end_q_vals) > 1 else end_q_vals[0]
-    start_casc_arg = start_casc_vals if len(start_casc_vals) > 1 else start_casc_vals[0]
-    end_casc_arg = end_casc_vals if len(end_casc_vals) > 1 else end_casc_vals[0]
+    if len(start_sweeps) == 0:
+        start_notch_arg = []
+        end_notch_arg = []
+        start_casc_arg = []
+        end_casc_arg = []
+    else:
+        start_notch_arg = start_q_vals if len(start_q_vals) > 1 else start_q_vals[0]
+        end_notch_arg = end_q_vals if len(end_q_vals) > 1 else end_q_vals[0]
+        start_casc_arg = start_casc_vals if len(start_casc_vals) > 1 else start_casc_vals[0]
+        end_casc_arg = end_casc_vals if len(end_casc_vals) > 1 else end_casc_vals[0]
 
     stereo_output, _ = _generate_swept_notch_arrays_transition(
         duration,

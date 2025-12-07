@@ -106,12 +106,12 @@ class NoiseGeneratorDialog(QDialog):
         # LFO freq start/end
         lfo_layout = QHBoxLayout()
         self.lfo_start_spin = QDoubleSpinBox()
-        self.lfo_start_spin.setRange(0.001, 10.0)
+        self.lfo_start_spin.setRange(0.0, 10.0)
         self.lfo_start_spin.setDecimals(4)
         self.lfo_start_spin.setValue(1.0 / 12.0)
         self.lfo_start_spin.setToolTip("Start LFO frequency")
         self.lfo_end_spin = QDoubleSpinBox()
-        self.lfo_end_spin.setRange(0.001, 10.0)
+        self.lfo_end_spin.setRange(0.0, 10.0)
         self.lfo_end_spin.setDecimals(4)
         self.lfo_end_spin.setValue(1.0 / 12.0)
         self.lfo_end_spin.setToolTip("End LFO frequency")
@@ -124,7 +124,7 @@ class NoiseGeneratorDialog(QDialog):
         # Number of sweeps
         self._max_sweeps = 4
         self.num_sweeps_spin = QSpinBox()
-        self.num_sweeps_spin.setRange(1, self._max_sweeps)
+        self.num_sweeps_spin.setRange(0, self._max_sweeps)
         self.num_sweeps_spin.setValue(1)
         self.num_sweeps_spin.setToolTip("How many independent sweeps to apply")
         self.num_sweeps_spin.valueChanged.connect(self.update_sweep_visibility)
@@ -386,7 +386,7 @@ class NoiseGeneratorDialog(QDialog):
         start_freq = params.start_lfo_freq if params.transition else params.lfo_freq
         self.lfo_start_spin.setValue(start_freq)
         self.lfo_end_spin.setValue(params.end_lfo_freq)
-        requested_sweeps = max(1, len(params.sweeps))
+        requested_sweeps = max(0, len(params.sweeps))
         self.num_sweeps_spin.setValue(min(self._max_sweeps, requested_sweeps))
         for i, (
             _, s_min, e_min, s_max, e_max, s_q, e_q, s_casc, e_casc
