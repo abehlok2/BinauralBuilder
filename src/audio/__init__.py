@@ -11,6 +11,11 @@ from .session_model import (
 from .session_engine import SessionAssembler
 from .session_builder_launcher import launch_session_builder
 from .session_stream import SessionStreamPlayer
+from .rust_stream_player import (
+    RustStreamPlayer,
+    HybridStreamPlayer,
+    is_rust_backend_available,
+)
 
 __all__ = [
     "Session",
@@ -21,5 +26,8 @@ __all__ = [
     "session_to_track_data",
     "SessionAssembler",
     "SessionStreamPlayer",
+    "RustStreamPlayer",
+    "HybridStreamPlayer",
+    "is_rust_backend_available",
     "launch_session_builder",
 ]

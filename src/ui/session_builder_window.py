@@ -40,6 +40,11 @@ from src.audio.session_model import Session, SessionPresetChoice, SessionStep
 from PyQt5.QtWidgets import QApplication
 
 from src.audio.session_stream import SessionStreamPlayer
+from src.audio.rust_stream_player import (
+    HybridStreamPlayer,
+    RustStreamPlayer,
+    is_rust_backend_available,
+)
 from src.models.models import StepModel
 from . import themes
 from .defaults_dialog import DefaultsDialog, load_defaults
@@ -150,8 +155,12 @@ class SessionBuilderWindow(QMainWindow):
             self._session.crossfade_duration = float(self._defaults.get("crossfade_duration", 10.0))
 
         self._assembler_factory = assembler_factory or (lambda s, b, n, **opts: SessionAssembler(s, b, n, **opts))
-        self._stream_player_factory = stream_player_factory or (lambda track_data: SessionStreamPlayer(track_data, self))
+        # Use HybridStreamPlayer which prefers Rust backend when available
+        self._stream_player_factory = stream_player_factory or (
+            lambda track_data: HybridStreamPlayer.create(track_data, self, prefer_rust=True)
+        )
         self._stream_player: Optional[SessionStreamPlayer] = None
+        self._using_rust_backend = is_rust_backend_available()
         self._current_assembler: Optional[SessionAssembler] = None
 
         self._init_actions()
@@ -524,7 +533,9 @@ class SessionBuilderWindow(QMainWindow):
 
         main_layout.addWidget(playback_panel)
 
-        self.status_label = QLabel("Ready", central)
+        # Status label with backend indicator
+        backend_type = "Rust" if self._using_rust_backend else "Python"
+        self.status_label = QLabel(f"Ready (Streaming: {backend_type} backend)", central)
         self.status_label.setStyleSheet("color: #888888; margin-top: 5px;")
         main_layout.addWidget(self.status_label)
 
@@ -1089,13 +1100,16 @@ class SessionBuilderWindow(QMainWindow):
 
         self._stream_player = self._stream_player_factory(track_data)
         self._stream_player.set_volume(self.vol_slider.value() / 100.0)
-        
+
         # Use prebuffer for scrubbable playback
         self._stream_player.start(use_prebuffer=False)
-        
+
         self._playback_timer.start()
         self.play_pause_btn.setIcon(self.style().standardIcon(QStyle.SP_MediaPause))
-        self.status_label.setText("Playing...")
+
+        # Indicate which backend is being used
+        backend_name = "Rust" if isinstance(self._stream_player, RustStreamPlayer) else "Python"
+        self.status_label.setText(f"Playing... ({backend_name} backend)")
 
     def _stop_playback(self) -> None:
         if self._stream_player:
@@ -1105,7 +1119,8 @@ class SessionBuilderWindow(QMainWindow):
         self.play_pause_btn.setIcon(self.style().standardIcon(QStyle.SP_MediaPlay))
         self.seek_slider.setValue(0)
         self.time_label.setText("00:00")
-        self.status_label.setText("Stopped")
+        backend_type = "Rust" if self._using_rust_backend else "Python"
+        self.status_label.setText(f"Stopped (Streaming: {backend_type} backend)")
 
     def _on_seek_pressed(self) -> None:
         self._is_seeking = True
