@@ -141,6 +141,7 @@ pub struct BinauralBeatVoice {
     base_freq: f32,
     beat_freq: f32,
     force_mono: bool,
+    left_high: bool,
     start_phase_l: f32,
     start_phase_r: f32,
     amp_osc_depth_l: f32,
@@ -180,6 +181,7 @@ pub struct BinauralBeatTransitionVoice {
     end_beat_freq: f32,
     start_force_mono: bool,
     end_force_mono: bool,
+    left_high: bool,
     start_start_phase_l: f32,
     end_start_phase_l: f32,
     start_start_phase_r: f32,
@@ -261,6 +263,10 @@ pub struct IsochronicToneVoice {
     ramp_percent: f32,
     gap_percent: f32,
     pan: f32,
+    pan_range_min: f32,
+    pan_range_max: f32,
+    pan_freq: f32,
+    pan_phase: f32,
     phase_l: f32,
     phase_r: f32,
     beat_phase: f32,
@@ -320,9 +326,19 @@ pub struct IsochronicToneTransitionVoice {
     end_amp_osc_skew_l: f32,
     start_amp_osc_skew_r: f32,
     end_amp_osc_skew_r: f32,
-    ramp_percent: f32,
-    gap_percent: f32,
+    start_ramp_percent: f32,
+    end_ramp_percent: f32,
+    start_gap_percent: f32,
+    end_gap_percent: f32,
     pan: f32,
+    start_pan_range_min: f32,
+    end_pan_range_min: f32,
+    start_pan_range_max: f32,
+    end_pan_range_max: f32,
+    start_pan_freq: f32,
+    end_pan_freq: f32,
+    start_pan_phase: f32,
+    end_pan_phase: f32,
     curve: TransitionCurve,
     initial_offset: f32,
     post_offset: f32,
@@ -819,6 +835,7 @@ impl BinauralBeatVoice {
         let base_freq = get_f32(params, "baseFreq", 200.0);
         let beat_freq = get_f32(params, "beatFreq", 4.0);
         let force_mono = get_bool(params, "forceMono", false);
+        let left_high = get_bool(params, "leftHigh", false);
         let start_phase_l = get_f32(params, "startPhaseL", 0.0);
         let start_phase_r = get_f32(params, "startPhaseR", 0.0);
         let amp_osc_depth_l = get_f32(params, "ampOscDepthL", 0.0);
@@ -853,6 +870,7 @@ impl BinauralBeatVoice {
             base_freq,
             beat_freq,
             force_mono,
+            left_high,
             start_phase_l,
             start_phase_r,
             amp_osc_depth_l,
@@ -899,6 +917,7 @@ impl BinauralBeatTransitionVoice {
             get_bool(params, "forceMono", false),
         );
         let end_force_mono = get_bool(params, "endForceMono", start_force_mono);
+        let left_high = get_bool(params, "leftHigh", false);
         let start_start_phase_l = get_f32(
             params,
             "startStartPhaseL",
@@ -1032,6 +1051,7 @@ impl BinauralBeatTransitionVoice {
             end_beat_freq,
             start_force_mono,
             end_force_mono,
+            left_high,
             start_start_phase_l,
             end_start_phase_l,
             start_start_phase_r,
@@ -1117,6 +1137,10 @@ impl IsochronicToneVoice {
         let ramp_percent = get_f32(params, "rampPercent", 0.2);
         let gap_percent = get_f32(params, "gapPercent", 0.15);
         let pan = get_f32(params, "pan", 0.0);
+        let pan_range_min = get_f32(params, "panRangeMin", pan).clamp(-1.0, 1.0);
+        let pan_range_max = get_f32(params, "panRangeMax", pan).clamp(-1.0, 1.0);
+        let pan_freq = get_f32(params, "panFreq", 0.0);
+        let pan_phase = get_f32(params, "panPhase", 0.0);
 
         let total_samples = (duration * sample_rate) as usize;
 
@@ -1149,6 +1173,10 @@ impl IsochronicToneVoice {
             ramp_percent,
             gap_percent,
             pan,
+            pan_range_min,
+            pan_range_max,
+            pan_freq,
+            pan_phase,
             phase_l: start_phase_l,
             phase_r: start_phase_r,
             beat_phase: 0.0,
@@ -1212,9 +1240,19 @@ impl IsochronicToneTransitionVoice {
         let end_amp_osc_skew_l = get_f32(params, "endAmpOscSkewL", start_amp_osc_skew_l);
         let start_amp_osc_skew_r = get_f32(params, "startAmpOscSkewR", get_f32(params, "ampOscSkewR", 0.0));
         let end_amp_osc_skew_r = get_f32(params, "endAmpOscSkewR", start_amp_osc_skew_r);
-        let ramp_percent = get_f32(params, "rampPercent", 0.2);
-        let gap_percent = get_f32(params, "gapPercent", 0.15);
+        let start_ramp_percent = get_f32(params, "startRampPercent", get_f32(params, "rampPercent", 0.2));
+        let end_ramp_percent = get_f32(params, "endRampPercent", start_ramp_percent);
+        let start_gap_percent = get_f32(params, "startGapPercent", get_f32(params, "gapPercent", 0.15));
+        let end_gap_percent = get_f32(params, "endGapPercent", start_gap_percent);
         let pan = get_f32(params, "pan", 0.0);
+        let start_pan_range_min = get_f32(params, "startPanRangeMin", get_f32(params, "panRangeMin", pan)).clamp(-1.0, 1.0);
+        let end_pan_range_min = get_f32(params, "endPanRangeMin", start_pan_range_min).clamp(-1.0, 1.0);
+        let start_pan_range_max = get_f32(params, "startPanRangeMax", get_f32(params, "panRangeMax", pan)).clamp(-1.0, 1.0);
+        let end_pan_range_max = get_f32(params, "endPanRangeMax", start_pan_range_max).clamp(-1.0, 1.0);
+        let start_pan_freq = get_f32(params, "startPanFreq", get_f32(params, "panFreq", 0.0));
+        let end_pan_freq = get_f32(params, "endPanFreq", start_pan_freq);
+        let start_pan_phase = get_f32(params, "startPanPhase", get_f32(params, "panPhase", 0.0));
+        let end_pan_phase = get_f32(params, "endPanPhase", start_pan_phase);
         let curve = TransitionCurve::from_str(
             params
                 .get("transition_curve")
@@ -1277,9 +1315,19 @@ impl IsochronicToneTransitionVoice {
             end_amp_osc_skew_l,
             start_amp_osc_skew_r,
             end_amp_osc_skew_r,
-            ramp_percent,
-            gap_percent,
+            start_ramp_percent,
+            end_ramp_percent,
+            start_gap_percent,
+            end_gap_percent,
             pan,
+            start_pan_range_min,
+            end_pan_range_min,
+            start_pan_range_max,
+            end_pan_range_max,
+            start_pan_freq,
+            end_pan_freq,
+            start_pan_phase,
+            end_pan_phase,
             curve,
             initial_offset,
             post_offset,
@@ -1915,8 +1963,14 @@ impl Voice for BinauralBeatVoice {
                     LfoShape::Sine =>
                         skewed_sine_phase(phase_r_vib.fract(), self.freq_osc_skew_r),
                 };
-            let mut freq_l = self.base_freq - half_beat + vib_l;
-            let mut freq_r = self.base_freq + half_beat + vib_r;
+            // Apply left_high to determine which ear gets the higher frequency
+            let (freq_base_l, freq_base_r) = if self.left_high {
+                (self.base_freq + half_beat, self.base_freq - half_beat)
+            } else {
+                (self.base_freq - half_beat, self.base_freq + half_beat)
+            };
+            let mut freq_l = freq_base_l + vib_l;
+            let mut freq_r = freq_base_r + vib_r;
 
             if self.force_mono || self.beat_freq == 0.0 {
                 freq_l = self.base_freq.max(0.0);
@@ -2083,8 +2137,14 @@ impl Voice for BinauralBeatTransitionVoice {
                     LfoShape::Sine =>
                         skewed_sine_phase(phase_r_vib.fract(), freq_osc_skew_r),
                 };
-            let mut freq_l = base_freq - half_beat + vib_l;
-            let mut freq_r = base_freq + half_beat + vib_r;
+            // Apply left_high to determine which ear gets the higher frequency
+            let (freq_base_l, freq_base_r) = if self.left_high {
+                (base_freq + half_beat, base_freq - half_beat)
+            } else {
+                (base_freq - half_beat, base_freq + half_beat)
+            };
+            let mut freq_l = freq_base_l + vib_l;
+            let mut freq_r = freq_base_r + vib_r;
 
             if force_mono || beat_freq == 0.0 {
                 freq_l = base_freq.max(0.0);
@@ -2214,9 +2274,23 @@ impl Voice for IsochronicToneVoice {
             let mut sample_l = sin_lut(ph_l) * env_l * self.amp_l * iso_env;
             let mut sample_r = sin_lut(ph_r) * env_r * self.amp_r * iso_env;
 
-            if self.pan != 0.0 {
+            // Calculate time-varying pan based on pan envelope parameters
+            let pan_min = self.pan_range_min.min(self.pan_range_max);
+            let pan_max = self.pan_range_min.max(self.pan_range_max);
+            let pan_center = (pan_min + pan_max) * 0.5;
+            let pan_range = (pan_max - pan_min) * 0.5;
+            let current_pan = if self.pan_freq != 0.0 && pan_range > 0.0 {
+                // Oscillating pan using sine wave
+                let pan_osc = sin_lut(2.0 * std::f32::consts::PI * self.pan_freq * t + self.pan_phase);
+                (pan_center + pan_range * pan_osc).clamp(-1.0, 1.0)
+            } else {
+                // Static pan
+                pan_center
+            };
+
+            if current_pan.abs() > 1e-6 {
                 let mono = 0.5 * (sample_l + sample_r);
-                let (pl, pr) = pan2(mono, self.pan);
+                let (pl, pr) = pan2(mono, current_pan);
                 sample_l = pl;
                 sample_r = pr;
             }
@@ -2306,6 +2380,10 @@ impl Voice for IsochronicToneTransitionVoice {
                 + (self.end_amp_osc_skew_l - self.start_amp_osc_skew_l) * alpha;
             let amp_osc_skew_r = self.start_amp_osc_skew_r
                 + (self.end_amp_osc_skew_r - self.start_amp_osc_skew_r) * alpha;
+            let ramp_percent = self.start_ramp_percent
+                + (self.end_ramp_percent - self.start_ramp_percent) * alpha;
+            let gap_percent = self.start_gap_percent
+                + (self.end_gap_percent - self.start_gap_percent) * alpha;
 
             let phase_l_vib = freq_osc_freq_l * t
                 + freq_osc_phase_offset_l / (2.0 * std::f32::consts::PI);
@@ -2332,7 +2410,7 @@ impl Voice for IsochronicToneTransitionVoice {
 
             let cycle_len = if beat_freq > 0.0 { 1.0 / beat_freq } else { 0.0 };
             let t_in_cycle = self.beat_phase * cycle_len;
-            let iso_env = trapezoid_envelope(t_in_cycle, cycle_len, self.ramp_percent, self.gap_percent);
+            let iso_env = trapezoid_envelope(t_in_cycle, cycle_len, ramp_percent, gap_percent);
 
             self.phase_l += 2.0 * std::f32::consts::PI * freq_l * dt;
             self.phase_l = self.phase_l.rem_euclid(2.0 * std::f32::consts::PI);
@@ -2368,9 +2446,30 @@ impl Voice for IsochronicToneTransitionVoice {
             let mut sample_l = sin_lut(ph_l) * env_l * amp_l * iso_env;
             let mut sample_r = sin_lut(ph_r) * env_r * amp_r * iso_env;
 
-            if self.pan != 0.0 {
+            // Calculate time-varying pan based on interpolated pan envelope parameters
+            let pan_range_min = self.start_pan_range_min
+                + (self.end_pan_range_min - self.start_pan_range_min) * alpha;
+            let pan_range_max = self.start_pan_range_max
+                + (self.end_pan_range_max - self.start_pan_range_max) * alpha;
+            let pan_freq = self.start_pan_freq
+                + (self.end_pan_freq - self.start_pan_freq) * alpha;
+            let pan_phase = self.start_pan_phase
+                + (self.end_pan_phase - self.start_pan_phase) * alpha;
+
+            let pan_min = pan_range_min.min(pan_range_max);
+            let pan_max = pan_range_min.max(pan_range_max);
+            let pan_center = (pan_min + pan_max) * 0.5;
+            let pan_range = (pan_max - pan_min) * 0.5;
+            let current_pan = if pan_freq != 0.0 && pan_range > 0.0 {
+                let pan_osc = sin_lut(2.0 * std::f32::consts::PI * pan_freq * t + pan_phase);
+                (pan_center + pan_range * pan_osc).clamp(-1.0, 1.0)
+            } else {
+                pan_center
+            };
+
+            if current_pan.abs() > 1e-6 {
                 let mono = 0.5 * (sample_l + sample_r);
-                let (pl, pr) = pan2(mono, self.pan);
+                let (pl, pr) = pan2(mono, current_pan);
                 sample_l = pl;
                 sample_r = pr;
             }
