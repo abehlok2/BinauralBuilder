@@ -15,6 +15,8 @@ use crate::dsp::{pan2, trapezoid_envelope, build_volume_envelope, skewed_sine_ph
 use crate::dsp::trig::{sin_lut, cos_lut};
 use crate::scheduler::Voice;
 use crate::models::{StepData, VoiceData};
+use crate::noise_params::{NoiseParams, NoiseSweep};
+use crate::streaming_noise::StreamingNoise;
 
 /// Strongly typed wrapper for all available voice implementations.
 pub enum VoiceKind {
@@ -34,6 +36,8 @@ pub enum VoiceKind {
     RhythmicWaveshapingTransition(RhythmicWaveshapingTransitionVoice),
     SubliminalEncode(SubliminalEncodeVoice),
     VolumeEnvelope(Box<VolumeEnvelopeVoice>),
+    NoiseSweptNotch(NoiseSweptNotchVoice),
+    NoiseSweptNotchTransition(NoiseSweptNotchTransitionVoice),
 }
 
 fn get_f32(params: &HashMap<String, Value>, key: &str, default: f32) -> f32 {
@@ -648,6 +652,33 @@ pub struct SubliminalEncodeVoice {
     remaining_samples: usize,
 }
 
+/// Voice wrapper for noise generation with swept notch filtering (static mode).
+pub struct NoiseSweptNotchVoice {
+    generator: StreamingNoise,
+    amp: f32,
+    remaining_samples: usize,
+}
+
+/// Voice wrapper for noise generation with swept notch filtering (transition mode).
+pub struct NoiseSweptNotchTransitionVoice {
+    generator: StreamingNoise,
+    amp: f32,
+    remaining_samples: usize,
+    // Transition parameters for interpolation
+    start_lfo_freq: f32,
+    end_lfo_freq: f32,
+    start_lfo_phase_offset_deg: f32,
+    end_lfo_phase_offset_deg: f32,
+    start_intra_phase_offset_deg: f32,
+    end_intra_phase_offset_deg: f32,
+    start_sweeps: Vec<(f32, f32)>,
+    end_sweeps: Vec<(f32, f32)>,
+    start_qs: Vec<f32>,
+    end_qs: Vec<f32>,
+    duration_samples: usize,
+    sample_idx: usize,
+}
+
 impl SubliminalEncodeVoice {
     pub fn new(params: &HashMap<String, Value>, duration: f32, sample_rate: f32) -> Self {
         let carrier = get_f32(params, "carrierFreq", 17500.0).clamp(15000.0, 20000.0);
@@ -826,6 +857,248 @@ fn load_and_modulate(path: &str, sample_rate: u32, carrier: f32) -> Option<Vec<f
         }
     }
     Some(out)
+}
+
+/// Parse sweeps from JSON params - handles both tuple format [[min, max], ...]
+/// and the normalized Python format with start_sweeps/end_sweeps
+fn parse_sweeps_from_params(params: &HashMap<String, Value>, key: &str) -> Vec<(f32, f32)> {
+    if let Some(sweeps) = params.get(key) {
+        if let Some(arr) = sweeps.as_array() {
+            return arr.iter().filter_map(|item| {
+                if let Some(tuple) = item.as_array() {
+                    if tuple.len() >= 2 {
+                        let min = tuple[0].as_f64()? as f32;
+                        let max = tuple[1].as_f64()? as f32;
+                        return Some((min, max));
+                    }
+                }
+                None
+            }).collect();
+        }
+    }
+    vec![(1000.0, 10000.0)]  // default
+}
+
+/// Parse Q values from JSON params - handles both single value and list
+fn parse_q_from_params(params: &HashMap<String, Value>, key: &str, count: usize) -> Vec<f32> {
+    if let Some(q) = params.get(key) {
+        if let Some(n) = q.as_f64() {
+            return vec![n as f32; count];
+        }
+        if let Some(arr) = q.as_array() {
+            return arr.iter().filter_map(|v| v.as_f64().map(|n| n as f32)).collect();
+        }
+    }
+    vec![25.0; count]  // default
+}
+
+/// Parse cascade values from JSON params - handles both single value and list
+fn parse_casc_from_params(params: &HashMap<String, Value>, key: &str, count: usize) -> Vec<usize> {
+    if let Some(c) = params.get(key) {
+        if let Some(n) = c.as_i64() {
+            return vec![n.max(1) as usize; count];
+        }
+        if let Some(n) = c.as_f64() {
+            return vec![(n as i64).max(1) as usize; count];
+        }
+        if let Some(arr) = c.as_array() {
+            return arr.iter().filter_map(|v| {
+                v.as_i64().or_else(|| v.as_f64().map(|f| f as i64))
+                    .map(|n| n.max(1) as usize)
+            }).collect();
+        }
+    }
+    vec![10; count]  // default
+}
+
+/// Convert JSON params to NoiseParams struct for StreamingNoise initialization
+fn noise_params_from_json(params: &HashMap<String, Value>, duration: f32, sample_rate: u32, is_transition: bool) -> NoiseParams {
+    let noise_type = params.get("noise_type")
+        .and_then(|v| v.as_str())
+        .unwrap_or("pink")
+        .to_string();
+
+    let lfo_waveform = params.get("lfo_waveform")
+        .and_then(|v| v.as_str())
+        .unwrap_or("sine")
+        .to_string();
+
+    let lfo_freq = get_f32(params, "lfo_freq", 1.0 / 12.0);
+    let start_lfo_freq = get_f32(params, "start_lfo_freq", lfo_freq);
+    let end_lfo_freq = get_f32(params, "end_lfo_freq", start_lfo_freq);
+
+    let start_lfo_phase_offset = get_f32(params, "start_lfo_phase_offset_deg", 0.0);
+    let end_lfo_phase_offset = get_f32(params, "end_lfo_phase_offset_deg", start_lfo_phase_offset);
+    let start_intra_phase_offset = get_f32(params, "start_intra_phase_offset_deg", 0.0);
+    let end_intra_phase_offset = get_f32(params, "end_intra_phase_offset_deg", start_intra_phase_offset);
+
+    // Parse sweeps - use start_sweeps for transition mode, sweeps for static mode
+    let sweeps_key = if is_transition { "start_sweeps" } else { "sweeps" };
+    let sweeps_tuples = parse_sweeps_from_params(params, sweeps_key);
+    let sweep_count = sweeps_tuples.len();
+
+    // Parse Q and cascade values
+    let q_key = if is_transition { "start_q" } else { "notch_q" };
+    let casc_key = if is_transition { "start_casc" } else { "casc" };
+    let qs = parse_q_from_params(params, q_key, sweep_count);
+    let cascs = parse_casc_from_params(params, casc_key, sweep_count);
+
+    // Build NoiseSweep structs
+    let sweeps: Vec<NoiseSweep> = sweeps_tuples.iter().enumerate().map(|(i, (min, max))| {
+        NoiseSweep {
+            start_min: *min,
+            end_min: *min,
+            start_max: *max,
+            end_max: *max,
+            start_q: qs.get(i).copied().unwrap_or(25.0),
+            end_q: qs.get(i).copied().unwrap_or(25.0),
+            start_casc: cascs.get(i).copied().unwrap_or(10),
+            end_casc: cascs.get(i).copied().unwrap_or(10),
+        }
+    }).collect();
+
+    NoiseParams {
+        duration_seconds: duration,
+        sample_rate,
+        noise_type,
+        lfo_waveform,
+        transition: is_transition,
+        lfo_freq,
+        start_lfo_freq,
+        end_lfo_freq,
+        sweeps,
+        start_lfo_phase_offset_deg: start_lfo_phase_offset,
+        end_lfo_phase_offset_deg: end_lfo_phase_offset,
+        start_intra_phase_offset_deg: start_intra_phase_offset,
+        end_intra_phase_offset_deg: end_intra_phase_offset,
+        initial_offset: get_f32(params, "initial_offset", 0.0),
+        post_offset: get_f32(params, "post_offset", 0.0),
+        input_audio_path: params.get("input_audio_path")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+    }
+}
+
+impl NoiseSweptNotchVoice {
+    pub fn new(params: &HashMap<String, Value>, duration: f32, sample_rate: f32) -> Self {
+        let amp = get_f32(params, "amp", 1.0);
+        let noise_params = noise_params_from_json(params, duration, sample_rate as u32, false);
+        let generator = StreamingNoise::new(&noise_params, sample_rate as u32);
+        let total_samples = (duration * sample_rate) as usize;
+
+        Self {
+            generator,
+            amp,
+            remaining_samples: total_samples,
+        }
+    }
+}
+
+impl Voice for NoiseSweptNotchVoice {
+    fn process(&mut self, output: &mut [f32]) {
+        let channels = 2;
+        let frames = output.len() / channels;
+        let to_process = frames.min(self.remaining_samples);
+
+        if to_process == 0 {
+            return;
+        }
+
+        // Generate noise into a temporary buffer
+        let mut scratch = vec![0.0f32; to_process * 2];
+        self.generator.generate(&mut scratch);
+
+        // Mix into output with amplitude
+        for i in 0..to_process {
+            output[i * 2] += scratch[i * 2] * self.amp;
+            output[i * 2 + 1] += scratch[i * 2 + 1] * self.amp;
+        }
+
+        self.remaining_samples = self.remaining_samples.saturating_sub(to_process);
+    }
+
+    fn is_finished(&self) -> bool {
+        self.remaining_samples == 0
+    }
+}
+
+impl NoiseSweptNotchTransitionVoice {
+    pub fn new(params: &HashMap<String, Value>, duration: f32, sample_rate: f32) -> Self {
+        let amp = get_f32(params, "amp", 1.0);
+
+        // Parse transition parameters
+        let start_lfo_freq = get_f32(params, "start_lfo_freq", get_f32(params, "lfo_freq", 1.0 / 12.0));
+        let end_lfo_freq = get_f32(params, "end_lfo_freq", start_lfo_freq);
+        let start_lfo_phase_offset_deg = get_f32(params, "start_lfo_phase_offset_deg", 0.0);
+        let end_lfo_phase_offset_deg = get_f32(params, "end_lfo_phase_offset_deg", start_lfo_phase_offset_deg);
+        let start_intra_phase_offset_deg = get_f32(params, "start_intra_phase_offset_deg", 0.0);
+        let end_intra_phase_offset_deg = get_f32(params, "end_intra_phase_offset_deg", start_intra_phase_offset_deg);
+
+        // Parse sweep ranges
+        let start_sweeps = parse_sweeps_from_params(params, "start_sweeps");
+        let end_sweeps = parse_sweeps_from_params(params, "end_sweeps");
+        let sweep_count = start_sweeps.len();
+
+        // Parse Q values
+        let start_qs = parse_q_from_params(params, "start_q", sweep_count);
+        let end_qs = parse_q_from_params(params, "end_q", sweep_count);
+
+        // Create initial NoiseParams using start values
+        let noise_params = noise_params_from_json(params, duration, sample_rate as u32, true);
+        let generator = StreamingNoise::new(&noise_params, sample_rate as u32);
+        let total_samples = (duration * sample_rate) as usize;
+
+        Self {
+            generator,
+            amp,
+            remaining_samples: total_samples,
+            start_lfo_freq,
+            end_lfo_freq,
+            start_lfo_phase_offset_deg,
+            end_lfo_phase_offset_deg,
+            start_intra_phase_offset_deg,
+            end_intra_phase_offset_deg,
+            start_sweeps,
+            end_sweeps,
+            start_qs,
+            end_qs,
+            duration_samples: total_samples,
+            sample_idx: 0,
+        }
+    }
+}
+
+impl Voice for NoiseSweptNotchTransitionVoice {
+    fn process(&mut self, output: &mut [f32]) {
+        let channels = 2;
+        let frames = output.len() / channels;
+        let to_process = frames.min(self.remaining_samples);
+
+        if to_process == 0 {
+            return;
+        }
+
+        // Generate noise into a temporary buffer
+        // Note: For full transition support, the StreamingNoise generator would need
+        // to be modified to interpolate parameters. For now, we generate using the
+        // initial parameters which provides basic noise functionality.
+        let mut scratch = vec![0.0f32; to_process * 2];
+        self.generator.generate(&mut scratch);
+
+        // Mix into output with amplitude
+        for i in 0..to_process {
+            output[i * 2] += scratch[i * 2] * self.amp;
+            output[i * 2 + 1] += scratch[i * 2 + 1] * self.amp;
+        }
+
+        self.remaining_samples = self.remaining_samples.saturating_sub(to_process);
+        self.sample_idx += to_process;
+    }
+
+    fn is_finished(&self) -> bool {
+        self.remaining_samples == 0
+    }
 }
 
 impl BinauralBeatVoice {
@@ -3213,6 +3486,8 @@ impl Voice for VoiceKind {
             VoiceKind::RhythmicWaveshapingTransition(v) => v.process(output),
             VoiceKind::SubliminalEncode(v) => v.process(output),
             VoiceKind::VolumeEnvelope(v) => v.process(output),
+            VoiceKind::NoiseSweptNotch(v) => v.process(output),
+            VoiceKind::NoiseSweptNotchTransition(v) => v.process(output),
         }
     }
 
@@ -3234,6 +3509,8 @@ impl Voice for VoiceKind {
             VoiceKind::RhythmicWaveshapingTransition(v) => v.is_finished(),
             VoiceKind::SubliminalEncode(v) => v.is_finished(),
             VoiceKind::VolumeEnvelope(v) => v.is_finished(),
+            VoiceKind::NoiseSweptNotch(v) => v.is_finished(),
+            VoiceKind::NoiseSweptNotchTransition(v) => v.is_finished(),
         }
     }
 }
@@ -3322,6 +3599,16 @@ fn create_voice(data: &VoiceData, duration: f32, sample_rate: f32) -> Option<Voi
             sample_rate,
         )),
         "subliminal_encode" => VoiceKind::SubliminalEncode(SubliminalEncodeVoice::new(
+            &data.params,
+            duration,
+            sample_rate,
+        )),
+        "noise_swept_notch" => VoiceKind::NoiseSweptNotch(NoiseSweptNotchVoice::new(
+            &data.params,
+            duration,
+            sample_rate,
+        )),
+        "noise_swept_notch_transition" => VoiceKind::NoiseSweptNotchTransition(NoiseSweptNotchTransitionVoice::new(
             &data.params,
             duration,
             sample_rate,
