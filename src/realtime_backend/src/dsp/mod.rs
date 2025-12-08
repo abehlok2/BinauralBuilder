@@ -1,11 +1,14 @@
 use rand::Rng;
+use rand_distr::{Distribution, Normal};
 
 pub mod noise_flanger;
 pub mod trig;
 
 pub fn generate_pink_noise_samples(n_samples: usize) -> Vec<f32> {
-    // Simple approximation of pink noise using Voss-McCartney algorithm
+    // Pink noise via Paul Kellett filter with Gaussian input
+    // This matches Python's implementation which uses np.random.randn()
     let mut rng = rand::thread_rng();
+    let normal = Normal::new(0.0f32, 1.0f32).unwrap();
     let mut b0 = 0.0f32;
     let mut b1 = 0.0f32;
     let mut b2 = 0.0f32;
@@ -14,7 +17,7 @@ pub fn generate_pink_noise_samples(n_samples: usize) -> Vec<f32> {
     let mut b5 = 0.0f32;
     let mut out = Vec::with_capacity(n_samples);
     for _ in 0..n_samples {
-        let w = rng.gen::<f32>();
+        let w: f32 = normal.sample(&mut rng);
         b0 = 0.99886 * b0 + w * 0.0555179;
         b1 = 0.99332 * b1 + w * 0.0750759;
         b2 = 0.96900 * b2 + w * 0.1538520;
@@ -27,13 +30,17 @@ pub fn generate_pink_noise_samples(n_samples: usize) -> Vec<f32> {
 }
 
 pub fn generate_brown_noise_samples(n_samples: usize) -> Vec<f32> {
+    // Brown noise via cumulative sum of Gaussian white noise
+    // This matches Python's implementation: np.cumsum(np.random.randn(n))
     let mut rng = rand::thread_rng();
+    let normal = Normal::new(0.0f32, 1.0f32).unwrap();
     let mut cumulative = 0.0f32;
     let mut out = Vec::with_capacity(n_samples);
     for _ in 0..n_samples {
-        cumulative += rng.gen::<f32>() - 0.5;
+        cumulative += normal.sample(&mut rng);
         out.push(cumulative);
     }
+    // Normalize to [-1, 1] range (same as Python)
     let max_abs = out.iter().cloned().fold(0.0f32, |a, b| a.max(b.abs()));
     if max_abs > 0.0 {
         for v in &mut out {
