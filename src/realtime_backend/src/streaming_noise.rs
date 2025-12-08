@@ -1,6 +1,7 @@
 use rand::Rng;
 use rand::rngs::StdRng;
 use rand::SeedableRng;
+use rand_distr::{Distribution, Normal};
 use crate::noise_params::NoiseParams;
 
 #[derive(Clone, Copy)]
@@ -89,9 +90,12 @@ pub struct StreamingNoise {
     b3: f32,
     b4: f32,
     b5: f32,
-    // state for brown noise
+    // state for brown noise (leaky integrator to prevent drift)
     brown: f32,
+    brown_decay: f32,
+    brown_scale: f32,
     rng: StdRng,
+    normal: Normal<f32>,
     // filter states
     states_main_l: Vec<Vec<BiquadState>>,
     states_extra_l: Vec<Vec<BiquadState>>,
@@ -168,7 +172,14 @@ impl StreamingNoise {
             b4: 0.0,
             b5: 0.0,
             brown: 0.0,
+            // Leaky integrator decay ~0.9999 at 44100Hz gives ~1Hz cutoff
+            // This prevents drift while preserving brown noise spectrum at audio frequencies
+            brown_decay: 0.9999,
+            // Scale factor to normalize output to roughly [-1, 1] range
+            // Empirically tuned to match Python's normalized output amplitude
+            brown_scale: 0.02,
             rng: StdRng::from_entropy(),
+            normal: Normal::new(0.0, 1.0).unwrap(),
             states_main_l,
             states_extra_l,
             states_main_r,
@@ -207,13 +218,22 @@ impl StreamingNoise {
     }
 
     fn next_base(&mut self) -> f32 {
+        // Use Gaussian distribution (same as Python's np.random.randn)
+        let gaussian: f32 = self.normal.sample(&mut self.rng);
+
         match self.noise_type.to_lowercase().as_str() {
             "brown" => {
-                self.brown += self.rng.gen::<f32>() - 0.5;
+                // Brown noise via leaky integrator with Gaussian input
+                // The leaky integrator prevents unbounded drift while preserving
+                // the 1/f^2 spectrum at audio frequencies
+                // Formula: brown = decay * brown + gaussian * scale
+                self.brown = self.brown_decay * self.brown + gaussian * self.brown_scale;
                 self.brown
             }
             _ => {
-                let w = self.rng.gen::<f32>();
+                // Pink noise via Paul Kellett filter with Gaussian input
+                // This matches the Python implementation which uses np.random.randn()
+                let w = gaussian;
                 self.b0 = 0.99886 * self.b0 + w * 0.0555179;
                 self.b1 = 0.99332 * self.b1 + w * 0.0750759;
                 self.b2 = 0.96900 * self.b2 + w * 0.1538520;
