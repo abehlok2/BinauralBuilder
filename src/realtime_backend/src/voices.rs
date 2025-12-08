@@ -2104,18 +2104,6 @@ impl Voice for BinauralBeatTransitionVoice {
                 + (self.end_amp_osc_skew_l - self.start_amp_osc_skew_l) * alpha;
             let amp_osc_skew_r = self.start_amp_osc_skew_r
                 + (self.end_amp_osc_skew_r - self.start_amp_osc_skew_r) * alpha;
-            let freq_osc_skew_l = self.start_freq_osc_skew_l
-                + (self.end_freq_osc_skew_l - self.start_freq_osc_skew_l) * alpha;
-            let freq_osc_skew_r = self.start_freq_osc_skew_r
-                + (self.end_freq_osc_skew_r - self.start_freq_osc_skew_r) * alpha;
-            let freq_osc_phase_offset_l = self.start_freq_osc_phase_offset_l
-                + (self.end_freq_osc_phase_offset_l - self.start_freq_osc_phase_offset_l) * alpha;
-            let freq_osc_phase_offset_r = self.start_freq_osc_phase_offset_r
-                + (self.end_freq_osc_phase_offset_r - self.start_freq_osc_phase_offset_r) * alpha;
-            let amp_osc_skew_l = self.start_amp_osc_skew_l
-                + (self.end_amp_osc_skew_l - self.start_amp_osc_skew_l) * alpha;
-            let amp_osc_skew_r = self.start_amp_osc_skew_r
-                + (self.end_amp_osc_skew_r - self.start_amp_osc_skew_r) * alpha;
 
             // instantaneous frequencies
             let half_beat = beat_freq * 0.5;
