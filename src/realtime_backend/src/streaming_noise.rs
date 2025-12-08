@@ -1,4 +1,6 @@
 use rand::Rng;
+use rand::rngs::StdRng;
+use rand::SeedableRng;
 use crate::noise_params::NoiseParams;
 
 #[derive(Clone, Copy)]
@@ -89,7 +91,7 @@ pub struct StreamingNoise {
     b5: f32,
     // state for brown noise
     brown: f32,
-    rng: rand::rngs::ThreadRng,
+    rng: StdRng,
     // filter states
     states_main_l: Vec<Vec<BiquadState>>,
     states_extra_l: Vec<Vec<BiquadState>>,
@@ -166,7 +168,7 @@ impl StreamingNoise {
             b4: 0.0,
             b5: 0.0,
             brown: 0.0,
-            rng: rand::thread_rng(),
+            rng: StdRng::from_entropy(),
             states_main_l,
             states_extra_l,
             states_main_r,
