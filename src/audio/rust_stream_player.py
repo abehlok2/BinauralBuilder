@@ -53,7 +53,7 @@ class RustStreamPlayer(QObject if QT_AVAILABLE else object):
         if QT_AVAILABLE and QObject is not object:
             super().__init__(parent)
 
-        self._track_data = dict(track_data or {})
+        self._track_data = self._prepare_track_data(track_data or {})
         self._track_json = json.dumps(self._track_data)
 
         # Calculate duration from track data
@@ -103,6 +103,29 @@ class RustStreamPlayer(QObject if QT_AVAILABLE else object):
             prev_crossfade = step_crossfade
 
         return total_time
+
+    def _prepare_track_data(self, track_data: Dict[str, object]) -> Dict[str, object]:
+        """Normalize track data for the Rust backend.
+
+        The Rust models treat ``clips`` and ``overlay_clips`` as aliases. If
+        both keys are present in the JSON payload, Serde will raise a duplicate
+        field error. Merge any clip aliases into a single ``clips`` entry and
+        drop the redundant key before serializing.
+        """
+
+        normalized: Dict[str, object] = dict(track_data)
+
+        overlay_clips = normalized.pop("overlay_clips", None)
+        clips = normalized.get("clips")
+
+        merged_clips: list = []
+        if isinstance(clips, list):
+            merged_clips.extend(clips)
+        if isinstance(overlay_clips, list):
+            merged_clips.extend(overlay_clips)
+
+        normalized["clips"] = merged_clips
+        return normalized
 
     def set_progress_callback(self, callback: Optional[Callable[[float], None]]) -> None:
         """Set callback for progress updates (0.0 - 1.0)."""
@@ -233,7 +256,7 @@ class RustStreamPlayer(QObject if QT_AVAILABLE else object):
         if not RUST_BACKEND_AVAILABLE:
             return
 
-        self._track_data = dict(track_data)
+        self._track_data = self._prepare_track_data(track_data)
         self._track_json = json.dumps(self._track_data)
         self._duration = self._calculate_duration()
 
