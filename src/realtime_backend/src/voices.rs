@@ -977,7 +977,17 @@ fn noise_params_from_json(params: &HashMap<String, Value>, duration: f32, sample
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string(),
+        exponent: get_f32_opt(params, "exponent"),
+        high_exponent: get_f32_opt(params, "high_exponent"),
+        distribution_curve: get_f32_opt(params, "distribution_curve"),
+        lowcut: get_f32_opt(params, "lowcut"),
+        highcut: get_f32_opt(params, "highcut"),
+        amplitude: get_f32_opt(params, "amplitude"),
     }
+}
+
+fn get_f32_opt(params: &HashMap<String, Value>, key: &str) -> Option<f32> {
+    params.get(key).and_then(|v| v.as_f64()).map(|n| n as f32)
 }
 
 impl NoiseSweptNotchVoice {
@@ -3603,12 +3613,12 @@ fn create_voice(data: &VoiceData, duration: f32, sample_rate: f32) -> Option<Voi
             duration,
             sample_rate,
         )),
-        "noise_swept_notch" => VoiceKind::NoiseSweptNotch(NoiseSweptNotchVoice::new(
+        "noise_swept_notch" | "noise" => VoiceKind::NoiseSweptNotch(NoiseSweptNotchVoice::new(
             &data.params,
             duration,
             sample_rate,
         )),
-        "noise_swept_notch_transition" => VoiceKind::NoiseSweptNotchTransition(NoiseSweptNotchTransitionVoice::new(
+        "noise_swept_notch_transition" | "noise_transition" => VoiceKind::NoiseSweptNotchTransition(NoiseSweptNotchTransitionVoice::new(
             &data.params,
             duration,
             sample_rate,

@@ -28,13 +28,24 @@ Remaining tasks (see `REALTIME_BACKEND_PLAN.md` for full roadmap):
 
 ## Building the Python Extension
 
-Install [maturin](https://github.com/PyO3/maturin) and compile the library as a Python module:
+To enable the high-performance streaming audio engine in the **Session Builder GUI**, you must build and install this Rust package.
+
+### Prerequisites
+1. **Rust Installer**: Ensure you have Rust and Cargo installed (get it at [rustup.rs](https://rustup.rs/)).
+2. **Maturin**: Install the build tool:
+   ```bash
+   pip install maturin
+   ```
+
+### Installation Steps
+From the root of the `binauralbuilder` repository:
 
 ```bash
-pip install maturin
-cd src/audio/realtime_backend
+cd src/realtime_backend
 maturin develop --release
 ```
+
+This compiles the Rust code and installs it directly into your active Python environment. The `session_builder_window` will automatically detect the `realtime_backend` module and use it for playback.
 
 This produces a `realtime_backend` extension that can be imported from Python:
 

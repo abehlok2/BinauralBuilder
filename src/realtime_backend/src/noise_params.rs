@@ -54,6 +54,18 @@ pub struct NoiseParams {
     pub post_offset: f32,
     #[serde(default)]
     pub input_audio_path: String,
+    #[serde(default)]
+    pub exponent: Option<f32>,
+    #[serde(default)]
+    pub high_exponent: Option<f32>,
+    #[serde(default)]
+    pub distribution_curve: Option<f32>,
+    #[serde(default)]
+    pub lowcut: Option<f32>,
+    #[serde(default)]
+    pub highcut: Option<f32>,
+    #[serde(default)]
+    pub amplitude: Option<f32>,
 }
 
 pub fn load_noise_params(path: &str) -> Result<NoiseParams, Box<dyn std::error::Error>> {
