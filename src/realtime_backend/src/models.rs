@@ -13,6 +13,22 @@ fn default_crossfade_curve() -> String {
     "linear".to_string()
 }
 
+fn default_binaural_volume() -> f32 {
+    1.0
+}
+
+fn default_noise_volume() -> f32 {
+    1.0
+}
+
+fn default_normalization() -> f32 {
+    0.95
+}
+
+fn default_voice_type() -> String {
+    "binaural".to_string()
+}
+
 #[derive(Deserialize, Debug, Clone)]
 pub struct VolumeEnvelope {
     #[serde(rename = "type")]
@@ -32,6 +48,8 @@ pub struct VoiceData {
     pub is_transition: bool,
     #[serde(default)]
     pub description: String,
+    #[serde(default = "default_voice_type", alias = "voice_type")]
+    pub voice_type: String,
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -40,7 +58,15 @@ pub struct StepData {
     pub duration: f64,
     #[serde(default)]
     pub description: String,
+    #[serde(default)]
+    pub start: Option<f64>,
     pub voices: Vec<VoiceData>,
+    #[serde(default = "default_binaural_volume", alias = "binaural_volume")]
+    pub binaural_volume: f32,
+    #[serde(default = "default_noise_volume", alias = "noise_volume")]
+    pub noise_volume: f32,
+    #[serde(default = "default_normalization", alias = "normalization_level")]
+    pub normalization_level: f32,
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -53,6 +79,8 @@ pub struct GlobalSettings {
     pub crossfade_curve: String,
     #[serde(default, alias = "outputFilename")]
     pub output_filename: Option<String>,
+    #[serde(default = "default_normalization", alias = "normalization_level")]
+    pub normalization_level: f32,
 }
 
 #[derive(Deserialize, Debug, Clone)]

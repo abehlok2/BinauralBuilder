@@ -166,6 +166,10 @@ class RustStreamPlayer(QObject if QT_AVAILABLE else object):
 
         # Start the Rust audio stream
         _rust_backend.start_stream(self._track_json, 0.0)
+        try:
+            _rust_backend.set_master_gain(self._volume)
+        except Exception:
+            pass
 
         self._is_playing = True
         self._is_paused = False
@@ -239,11 +243,15 @@ class RustStreamPlayer(QObject if QT_AVAILABLE else object):
     def set_volume(self, volume: float) -> None:
         """Set playback volume (0.0 - 1.0).
 
-        Note: The Rust backend uses the system's native volume control.
-        This method stores the volume locally for compatibility but
-        doesn't directly control the Rust backend's volume.
+        When the Rust backend is active, propagate the volume directly
+        so the GUI slider controls the streaming output level.
         """
         self._volume = max(0.0, min(1.0, volume))
+        if RUST_BACKEND_AVAILABLE and self._is_playing:
+            try:
+                _rust_backend.set_master_gain(self._volume)
+            except Exception:
+                pass
 
     def update_track(self, track_data: Dict[str, object]) -> None:
         """Update the track data while playing.
