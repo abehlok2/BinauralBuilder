@@ -11,11 +11,14 @@ use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
 use symphonia::default::{get_codecs, get_probe};
 
-use crate::dsp::{pan2, trapezoid_envelope, build_volume_envelope, skewed_sine_phase, skewed_triangle_phase};
-use crate::dsp::trig::{sin_lut, cos_lut};
-use crate::scheduler::Voice;
+use crate::dsp::trig::{cos_lut, sin_lut};
+use crate::dsp::{
+    build_volume_envelope, pan2, skewed_sine_phase, skewed_triangle_phase, trapezoid_envelope,
+};
 use crate::models::{StepData, VoiceData};
 use crate::noise_params::{NoiseParams, NoiseSweep};
+use crate::scheduler::Voice;
+use crate::scheduler::{StepVoice, VoiceType};
 use crate::streaming_noise::StreamingNoise;
 
 /// Strongly typed wrapper for all available voice implementations.
@@ -476,7 +479,6 @@ pub struct QamBeatTransitionVoice {
     cross_idx: usize,
 }
 
-
 pub struct StereoAmIndependentVoice {
     amp: f32,
     carrier_freq: f32,
@@ -783,12 +785,24 @@ fn load_audio_file(path: &str) -> Result<(Vec<f32>, u32), Box<dyn std::error::Er
     let file = File::open(path)?;
     let mss = MediaSourceStream::new(Box::new(file), Default::default());
     let hint = Hint::new();
-    let probed = get_probe().format(&hint, mss, &FormatOptions::default(), &MetadataOptions::default())?;
+    let probed = get_probe().format(
+        &hint,
+        mss,
+        &FormatOptions::default(),
+        &MetadataOptions::default(),
+    )?;
     let mut format = probed.format;
     let track = format.default_track().ok_or("no default track")?;
     let mut decoder = get_codecs().make(&track.codec_params, &DecoderOptions::default())?;
-    let sample_rate = track.codec_params.sample_rate.ok_or("unknown sample rate")?;
-    let channels = track.codec_params.channels.ok_or("unknown channel count")?.count();
+    let sample_rate = track
+        .codec_params
+        .sample_rate
+        .ok_or("unknown sample rate")?;
+    let channels = track
+        .codec_params
+        .channels
+        .ok_or("unknown channel count")?
+        .count();
 
     let mut sample_buf: Option<SampleBuffer<f32>> = None;
     let mut samples = Vec::new();
@@ -804,7 +818,10 @@ fn load_audio_file(path: &str) -> Result<(Vec<f32>, u32), Box<dyn std::error::Er
         };
         let decoded = decoder.decode(&packet)?;
         if sample_buf.is_none() {
-            sample_buf = Some(SampleBuffer::<f32>::new(decoded.capacity() as u64, *decoded.spec()));
+            sample_buf = Some(SampleBuffer::<f32>::new(
+                decoded.capacity() as u64,
+                *decoded.spec(),
+            ));
         }
         let sbuf = sample_buf.as_mut().unwrap();
         sbuf.copy_interleaved_ref(decoded);
@@ -830,7 +847,11 @@ fn resample_linear(input: &[f32], src_rate: u32, dst_rate: u32) -> Vec<f32> {
         let idx = pos.floor() as usize;
         let frac = pos - idx as f64;
         let x0 = input[idx];
-        let x1 = if idx + 1 < input.len() { input[idx + 1] } else { x0 };
+        let x1 = if idx + 1 < input.len() {
+            input[idx + 1]
+        } else {
+            x0
+        };
         out.push(((1.0 - frac) * x0 as f64 + frac * x1 as f64) as f32);
     }
     out
@@ -864,19 +885,22 @@ fn load_and_modulate(path: &str, sample_rate: u32, carrier: f32) -> Option<Vec<f
 fn parse_sweeps_from_params(params: &HashMap<String, Value>, key: &str) -> Vec<(f32, f32)> {
     if let Some(sweeps) = params.get(key) {
         if let Some(arr) = sweeps.as_array() {
-            return arr.iter().filter_map(|item| {
-                if let Some(tuple) = item.as_array() {
-                    if tuple.len() >= 2 {
-                        let min = tuple[0].as_f64()? as f32;
-                        let max = tuple[1].as_f64()? as f32;
-                        return Some((min, max));
+            return arr
+                .iter()
+                .filter_map(|item| {
+                    if let Some(tuple) = item.as_array() {
+                        if tuple.len() >= 2 {
+                            let min = tuple[0].as_f64()? as f32;
+                            let max = tuple[1].as_f64()? as f32;
+                            return Some((min, max));
+                        }
                     }
-                }
-                None
-            }).collect();
+                    None
+                })
+                .collect();
         }
     }
-    vec![(1000.0, 10000.0)]  // default
+    vec![(1000.0, 10000.0)] // default
 }
 
 /// Parse Q values from JSON params - handles both single value and list
@@ -886,10 +910,13 @@ fn parse_q_from_params(params: &HashMap<String, Value>, key: &str, count: usize)
             return vec![n as f32; count];
         }
         if let Some(arr) = q.as_array() {
-            return arr.iter().filter_map(|v| v.as_f64().map(|n| n as f32)).collect();
+            return arr
+                .iter()
+                .filter_map(|v| v.as_f64().map(|n| n as f32))
+                .collect();
         }
     }
-    vec![25.0; count]  // default
+    vec![25.0; count] // default
 }
 
 /// Parse cascade values from JSON params - handles both single value and list
@@ -902,23 +929,34 @@ fn parse_casc_from_params(params: &HashMap<String, Value>, key: &str, count: usi
             return vec![(n as i64).max(1) as usize; count];
         }
         if let Some(arr) = c.as_array() {
-            return arr.iter().filter_map(|v| {
-                v.as_i64().or_else(|| v.as_f64().map(|f| f as i64))
-                    .map(|n| n.max(1) as usize)
-            }).collect();
+            return arr
+                .iter()
+                .filter_map(|v| {
+                    v.as_i64()
+                        .or_else(|| v.as_f64().map(|f| f as i64))
+                        .map(|n| n.max(1) as usize)
+                })
+                .collect();
         }
     }
-    vec![10; count]  // default
+    vec![10; count] // default
 }
 
 /// Convert JSON params to NoiseParams struct for StreamingNoise initialization
-fn noise_params_from_json(params: &HashMap<String, Value>, duration: f32, sample_rate: u32, is_transition: bool) -> NoiseParams {
-    let noise_type = params.get("noise_type")
+fn noise_params_from_json(
+    params: &HashMap<String, Value>,
+    duration: f32,
+    sample_rate: u32,
+    is_transition: bool,
+) -> NoiseParams {
+    let noise_type = params
+        .get("noise_type")
         .and_then(|v| v.as_str())
         .unwrap_or("pink")
         .to_string();
 
-    let lfo_waveform = params.get("lfo_waveform")
+    let lfo_waveform = params
+        .get("lfo_waveform")
         .and_then(|v| v.as_str())
         .unwrap_or("sine")
         .to_string();
@@ -930,10 +968,18 @@ fn noise_params_from_json(params: &HashMap<String, Value>, duration: f32, sample
     let start_lfo_phase_offset = get_f32(params, "start_lfo_phase_offset_deg", 0.0);
     let end_lfo_phase_offset = get_f32(params, "end_lfo_phase_offset_deg", start_lfo_phase_offset);
     let start_intra_phase_offset = get_f32(params, "start_intra_phase_offset_deg", 0.0);
-    let end_intra_phase_offset = get_f32(params, "end_intra_phase_offset_deg", start_intra_phase_offset);
+    let end_intra_phase_offset = get_f32(
+        params,
+        "end_intra_phase_offset_deg",
+        start_intra_phase_offset,
+    );
 
     // Parse sweeps - use start_sweeps for transition mode, sweeps for static mode
-    let sweeps_key = if is_transition { "start_sweeps" } else { "sweeps" };
+    let sweeps_key = if is_transition {
+        "start_sweeps"
+    } else {
+        "sweeps"
+    };
     let sweeps_tuples = parse_sweeps_from_params(params, sweeps_key);
     let sweep_count = sweeps_tuples.len();
 
@@ -944,8 +990,10 @@ fn noise_params_from_json(params: &HashMap<String, Value>, duration: f32, sample
     let cascs = parse_casc_from_params(params, casc_key, sweep_count);
 
     // Build NoiseSweep structs
-    let sweeps: Vec<NoiseSweep> = sweeps_tuples.iter().enumerate().map(|(i, (min, max))| {
-        NoiseSweep {
+    let sweeps: Vec<NoiseSweep> = sweeps_tuples
+        .iter()
+        .enumerate()
+        .map(|(i, (min, max))| NoiseSweep {
             start_min: *min,
             end_min: *min,
             start_max: *max,
@@ -954,8 +1002,8 @@ fn noise_params_from_json(params: &HashMap<String, Value>, duration: f32, sample
             end_q: qs.get(i).copied().unwrap_or(25.0),
             start_casc: cascs.get(i).copied().unwrap_or(10),
             end_casc: cascs.get(i).copied().unwrap_or(10),
-        }
-    }).collect();
+        })
+        .collect();
 
     NoiseParams {
         duration_seconds: duration,
@@ -973,7 +1021,8 @@ fn noise_params_from_json(params: &HashMap<String, Value>, duration: f32, sample
         end_intra_phase_offset_deg: end_intra_phase_offset,
         initial_offset: get_f32(params, "initial_offset", 0.0),
         post_offset: get_f32(params, "post_offset", 0.0),
-        input_audio_path: params.get("input_audio_path")
+        input_audio_path: params
+            .get("input_audio_path")
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string(),
@@ -1038,12 +1087,24 @@ impl NoiseSweptNotchTransitionVoice {
         let amp = get_f32(params, "amp", 1.0);
 
         // Parse transition parameters
-        let start_lfo_freq = get_f32(params, "start_lfo_freq", get_f32(params, "lfo_freq", 1.0 / 12.0));
+        let start_lfo_freq = get_f32(
+            params,
+            "start_lfo_freq",
+            get_f32(params, "lfo_freq", 1.0 / 12.0),
+        );
         let end_lfo_freq = get_f32(params, "end_lfo_freq", start_lfo_freq);
         let start_lfo_phase_offset_deg = get_f32(params, "start_lfo_phase_offset_deg", 0.0);
-        let end_lfo_phase_offset_deg = get_f32(params, "end_lfo_phase_offset_deg", start_lfo_phase_offset_deg);
+        let end_lfo_phase_offset_deg = get_f32(
+            params,
+            "end_lfo_phase_offset_deg",
+            start_lfo_phase_offset_deg,
+        );
         let start_intra_phase_offset_deg = get_f32(params, "start_intra_phase_offset_deg", 0.0);
-        let end_intra_phase_offset_deg = get_f32(params, "end_intra_phase_offset_deg", start_intra_phase_offset_deg);
+        let end_intra_phase_offset_deg = get_f32(
+            params,
+            "end_intra_phase_offset_deg",
+            start_intra_phase_offset_deg,
+        );
 
         // Parse sweep ranges
         let start_sweeps = parse_sweeps_from_params(params, "start_sweeps");
@@ -1293,17 +1354,49 @@ impl BinauralBeatTransitionVoice {
             get_f32(params, "freqOscFreqR", 0.0),
         );
         let end_freq_osc_freq_r = get_f32(params, "endFreqOscFreqR", start_freq_osc_freq_r);
-        let start_freq_osc_skew_l = get_f32(params, "startFreqOscSkewL", get_f32(params, "freqOscSkewL", 0.0));
+        let start_freq_osc_skew_l = get_f32(
+            params,
+            "startFreqOscSkewL",
+            get_f32(params, "freqOscSkewL", 0.0),
+        );
         let end_freq_osc_skew_l = get_f32(params, "endFreqOscSkewL", start_freq_osc_skew_l);
-        let start_freq_osc_skew_r = get_f32(params, "startFreqOscSkewR", get_f32(params, "freqOscSkewR", 0.0));
+        let start_freq_osc_skew_r = get_f32(
+            params,
+            "startFreqOscSkewR",
+            get_f32(params, "freqOscSkewR", 0.0),
+        );
         let end_freq_osc_skew_r = get_f32(params, "endFreqOscSkewR", start_freq_osc_skew_r);
-        let start_freq_osc_phase_offset_l = get_f32(params, "startFreqOscPhaseOffsetL", get_f32(params, "freqOscPhaseOffsetL", 0.0));
-        let end_freq_osc_phase_offset_l = get_f32(params, "endFreqOscPhaseOffsetL", start_freq_osc_phase_offset_l);
-        let start_freq_osc_phase_offset_r = get_f32(params, "startFreqOscPhaseOffsetR", get_f32(params, "freqOscPhaseOffsetR", 0.0));
-        let end_freq_osc_phase_offset_r = get_f32(params, "endFreqOscPhaseOffsetR", start_freq_osc_phase_offset_r);
-        let start_amp_osc_skew_l = get_f32(params, "startAmpOscSkewL", get_f32(params, "ampOscSkewL", 0.0));
+        let start_freq_osc_phase_offset_l = get_f32(
+            params,
+            "startFreqOscPhaseOffsetL",
+            get_f32(params, "freqOscPhaseOffsetL", 0.0),
+        );
+        let end_freq_osc_phase_offset_l = get_f32(
+            params,
+            "endFreqOscPhaseOffsetL",
+            start_freq_osc_phase_offset_l,
+        );
+        let start_freq_osc_phase_offset_r = get_f32(
+            params,
+            "startFreqOscPhaseOffsetR",
+            get_f32(params, "freqOscPhaseOffsetR", 0.0),
+        );
+        let end_freq_osc_phase_offset_r = get_f32(
+            params,
+            "endFreqOscPhaseOffsetR",
+            start_freq_osc_phase_offset_r,
+        );
+        let start_amp_osc_skew_l = get_f32(
+            params,
+            "startAmpOscSkewL",
+            get_f32(params, "ampOscSkewL", 0.0),
+        );
         let end_amp_osc_skew_l = get_f32(params, "endAmpOscSkewL", start_amp_osc_skew_l);
-        let start_amp_osc_skew_r = get_f32(params, "startAmpOscSkewR", get_f32(params, "ampOscSkewR", 0.0));
+        let start_amp_osc_skew_r = get_f32(
+            params,
+            "startAmpOscSkewR",
+            get_f32(params, "ampOscSkewR", 0.0),
+        );
         let end_amp_osc_skew_r = get_f32(params, "endAmpOscSkewR", start_amp_osc_skew_r);
         let freq_osc_shape = LfoShape::from_str(
             params
@@ -1481,57 +1574,177 @@ impl IsochronicToneTransitionVoice {
         let end_base_freq = get_f32(params, "endBaseFreq", start_base_freq);
         let start_beat_freq = get_f32(params, "startBeatFreq", 4.0);
         let end_beat_freq = get_f32(params, "endBeatFreq", start_beat_freq);
-        let start_force_mono = get_bool(params, "startForceMono", get_bool(params, "forceMono", false));
+        let start_force_mono = get_bool(
+            params,
+            "startForceMono",
+            get_bool(params, "forceMono", false),
+        );
         let end_force_mono = get_bool(params, "endForceMono", start_force_mono);
-        let start_start_phase_l = get_f32(params, "startStartPhaseL", get_f32(params, "startPhaseL", 0.0));
+        let start_start_phase_l = get_f32(
+            params,
+            "startStartPhaseL",
+            get_f32(params, "startPhaseL", 0.0),
+        );
         let end_start_phase_l = get_f32(params, "endStartPhaseL", start_start_phase_l);
-        let start_start_phase_r = get_f32(params, "startStartPhaseR", get_f32(params, "startPhaseR", 0.0));
+        let start_start_phase_r = get_f32(
+            params,
+            "startStartPhaseR",
+            get_f32(params, "startPhaseR", 0.0),
+        );
         let end_start_phase_r = get_f32(params, "endStartPhaseR", start_start_phase_r);
-        let start_phase_osc_freq = get_f32(params, "startPhaseOscFreq", get_f32(params, "phaseOscFreq", 0.0));
+        let start_phase_osc_freq = get_f32(
+            params,
+            "startPhaseOscFreq",
+            get_f32(params, "phaseOscFreq", 0.0),
+        );
         let end_phase_osc_freq = get_f32(params, "endPhaseOscFreq", start_phase_osc_freq);
-        let start_phase_osc_range = get_f32(params, "startPhaseOscRange", get_f32(params, "phaseOscRange", 0.0));
+        let start_phase_osc_range = get_f32(
+            params,
+            "startPhaseOscRange",
+            get_f32(params, "phaseOscRange", 0.0),
+        );
         let end_phase_osc_range = get_f32(params, "endPhaseOscRange", start_phase_osc_range);
-        let start_amp_osc_depth_l = get_f32(params, "startAmpOscDepthL", get_f32(params, "ampOscDepthL", 0.0));
+        let start_amp_osc_depth_l = get_f32(
+            params,
+            "startAmpOscDepthL",
+            get_f32(params, "ampOscDepthL", 0.0),
+        );
         let end_amp_osc_depth_l = get_f32(params, "endAmpOscDepthL", start_amp_osc_depth_l);
-        let start_amp_osc_freq_l = get_f32(params, "startAmpOscFreqL", get_f32(params, "ampOscFreqL", 0.0));
+        let start_amp_osc_freq_l = get_f32(
+            params,
+            "startAmpOscFreqL",
+            get_f32(params, "ampOscFreqL", 0.0),
+        );
         let end_amp_osc_freq_l = get_f32(params, "endAmpOscFreqL", start_amp_osc_freq_l);
-        let start_amp_osc_depth_r = get_f32(params, "startAmpOscDepthR", get_f32(params, "ampOscDepthR", 0.0));
+        let start_amp_osc_depth_r = get_f32(
+            params,
+            "startAmpOscDepthR",
+            get_f32(params, "ampOscDepthR", 0.0),
+        );
         let end_amp_osc_depth_r = get_f32(params, "endAmpOscDepthR", start_amp_osc_depth_r);
-        let start_amp_osc_freq_r = get_f32(params, "startAmpOscFreqR", get_f32(params, "ampOscFreqR", 0.0));
+        let start_amp_osc_freq_r = get_f32(
+            params,
+            "startAmpOscFreqR",
+            get_f32(params, "ampOscFreqR", 0.0),
+        );
         let end_amp_osc_freq_r = get_f32(params, "endAmpOscFreqR", start_amp_osc_freq_r);
-        let start_amp_osc_phase_offset_l = get_f32(params, "startAmpOscPhaseOffsetL", get_f32(params, "ampOscPhaseOffsetL", 0.0));
-        let end_amp_osc_phase_offset_l = get_f32(params, "endAmpOscPhaseOffsetL", start_amp_osc_phase_offset_l);
-        let start_amp_osc_phase_offset_r = get_f32(params, "startAmpOscPhaseOffsetR", get_f32(params, "ampOscPhaseOffsetR", 0.0));
-        let end_amp_osc_phase_offset_r = get_f32(params, "endAmpOscPhaseOffsetR", start_amp_osc_phase_offset_r);
-        let start_freq_osc_range_l = get_f32(params, "startFreqOscRangeL", get_f32(params, "freqOscRangeL", 0.0));
+        let start_amp_osc_phase_offset_l = get_f32(
+            params,
+            "startAmpOscPhaseOffsetL",
+            get_f32(params, "ampOscPhaseOffsetL", 0.0),
+        );
+        let end_amp_osc_phase_offset_l = get_f32(
+            params,
+            "endAmpOscPhaseOffsetL",
+            start_amp_osc_phase_offset_l,
+        );
+        let start_amp_osc_phase_offset_r = get_f32(
+            params,
+            "startAmpOscPhaseOffsetR",
+            get_f32(params, "ampOscPhaseOffsetR", 0.0),
+        );
+        let end_amp_osc_phase_offset_r = get_f32(
+            params,
+            "endAmpOscPhaseOffsetR",
+            start_amp_osc_phase_offset_r,
+        );
+        let start_freq_osc_range_l = get_f32(
+            params,
+            "startFreqOscRangeL",
+            get_f32(params, "freqOscRangeL", 0.0),
+        );
         let end_freq_osc_range_l = get_f32(params, "endFreqOscRangeL", start_freq_osc_range_l);
-        let start_freq_osc_freq_l = get_f32(params, "startFreqOscFreqL", get_f32(params, "freqOscFreqL", 0.0));
+        let start_freq_osc_freq_l = get_f32(
+            params,
+            "startFreqOscFreqL",
+            get_f32(params, "freqOscFreqL", 0.0),
+        );
         let end_freq_osc_freq_l = get_f32(params, "endFreqOscFreqL", start_freq_osc_freq_l);
-        let start_freq_osc_range_r = get_f32(params, "startFreqOscRangeR", get_f32(params, "freqOscRangeR", 0.0));
+        let start_freq_osc_range_r = get_f32(
+            params,
+            "startFreqOscRangeR",
+            get_f32(params, "freqOscRangeR", 0.0),
+        );
         let end_freq_osc_range_r = get_f32(params, "endFreqOscRangeR", start_freq_osc_range_r);
-        let start_freq_osc_freq_r = get_f32(params, "startFreqOscFreqR", get_f32(params, "freqOscFreqR", 0.0));
+        let start_freq_osc_freq_r = get_f32(
+            params,
+            "startFreqOscFreqR",
+            get_f32(params, "freqOscFreqR", 0.0),
+        );
         let end_freq_osc_freq_r = get_f32(params, "endFreqOscFreqR", start_freq_osc_freq_r);
-        let start_freq_osc_skew_l = get_f32(params, "startFreqOscSkewL", get_f32(params, "freqOscSkewL", 0.0));
+        let start_freq_osc_skew_l = get_f32(
+            params,
+            "startFreqOscSkewL",
+            get_f32(params, "freqOscSkewL", 0.0),
+        );
         let end_freq_osc_skew_l = get_f32(params, "endFreqOscSkewL", start_freq_osc_skew_l);
-        let start_freq_osc_skew_r = get_f32(params, "startFreqOscSkewR", get_f32(params, "freqOscSkewR", 0.0));
+        let start_freq_osc_skew_r = get_f32(
+            params,
+            "startFreqOscSkewR",
+            get_f32(params, "freqOscSkewR", 0.0),
+        );
         let end_freq_osc_skew_r = get_f32(params, "endFreqOscSkewR", start_freq_osc_skew_r);
-        let start_freq_osc_phase_offset_l = get_f32(params, "startFreqOscPhaseOffsetL", get_f32(params, "freqOscPhaseOffsetL", 0.0));
-        let end_freq_osc_phase_offset_l = get_f32(params, "endFreqOscPhaseOffsetL", start_freq_osc_phase_offset_l);
-        let start_freq_osc_phase_offset_r = get_f32(params, "startFreqOscPhaseOffsetR", get_f32(params, "freqOscPhaseOffsetR", 0.0));
-        let end_freq_osc_phase_offset_r = get_f32(params, "endFreqOscPhaseOffsetR", start_freq_osc_phase_offset_r);
-        let start_amp_osc_skew_l = get_f32(params, "startAmpOscSkewL", get_f32(params, "ampOscSkewL", 0.0));
+        let start_freq_osc_phase_offset_l = get_f32(
+            params,
+            "startFreqOscPhaseOffsetL",
+            get_f32(params, "freqOscPhaseOffsetL", 0.0),
+        );
+        let end_freq_osc_phase_offset_l = get_f32(
+            params,
+            "endFreqOscPhaseOffsetL",
+            start_freq_osc_phase_offset_l,
+        );
+        let start_freq_osc_phase_offset_r = get_f32(
+            params,
+            "startFreqOscPhaseOffsetR",
+            get_f32(params, "freqOscPhaseOffsetR", 0.0),
+        );
+        let end_freq_osc_phase_offset_r = get_f32(
+            params,
+            "endFreqOscPhaseOffsetR",
+            start_freq_osc_phase_offset_r,
+        );
+        let start_amp_osc_skew_l = get_f32(
+            params,
+            "startAmpOscSkewL",
+            get_f32(params, "ampOscSkewL", 0.0),
+        );
         let end_amp_osc_skew_l = get_f32(params, "endAmpOscSkewL", start_amp_osc_skew_l);
-        let start_amp_osc_skew_r = get_f32(params, "startAmpOscSkewR", get_f32(params, "ampOscSkewR", 0.0));
+        let start_amp_osc_skew_r = get_f32(
+            params,
+            "startAmpOscSkewR",
+            get_f32(params, "ampOscSkewR", 0.0),
+        );
         let end_amp_osc_skew_r = get_f32(params, "endAmpOscSkewR", start_amp_osc_skew_r);
-        let start_ramp_percent = get_f32(params, "startRampPercent", get_f32(params, "rampPercent", 0.2));
+        let start_ramp_percent = get_f32(
+            params,
+            "startRampPercent",
+            get_f32(params, "rampPercent", 0.2),
+        );
         let end_ramp_percent = get_f32(params, "endRampPercent", start_ramp_percent);
-        let start_gap_percent = get_f32(params, "startGapPercent", get_f32(params, "gapPercent", 0.15));
+        let start_gap_percent = get_f32(
+            params,
+            "startGapPercent",
+            get_f32(params, "gapPercent", 0.15),
+        );
         let end_gap_percent = get_f32(params, "endGapPercent", start_gap_percent);
         let pan = get_f32(params, "pan", 0.0);
-        let start_pan_range_min = get_f32(params, "startPanRangeMin", get_f32(params, "panRangeMin", pan)).clamp(-1.0, 1.0);
-        let end_pan_range_min = get_f32(params, "endPanRangeMin", start_pan_range_min).clamp(-1.0, 1.0);
-        let start_pan_range_max = get_f32(params, "startPanRangeMax", get_f32(params, "panRangeMax", pan)).clamp(-1.0, 1.0);
-        let end_pan_range_max = get_f32(params, "endPanRangeMax", start_pan_range_max).clamp(-1.0, 1.0);
+        let start_pan_range_min = get_f32(
+            params,
+            "startPanRangeMin",
+            get_f32(params, "panRangeMin", pan),
+        )
+        .clamp(-1.0, 1.0);
+        let end_pan_range_min =
+            get_f32(params, "endPanRangeMin", start_pan_range_min).clamp(-1.0, 1.0);
+        let start_pan_range_max = get_f32(
+            params,
+            "startPanRangeMax",
+            get_f32(params, "panRangeMax", pan),
+        )
+        .clamp(-1.0, 1.0);
+        let end_pan_range_max =
+            get_f32(params, "endPanRangeMax", start_pan_range_max).clamp(-1.0, 1.0);
         let start_pan_freq = get_f32(params, "startPanFreq", get_f32(params, "panFreq", 0.0));
         let end_pan_freq = get_f32(params, "endPanFreq", start_pan_freq);
         let start_pan_phase = get_f32(params, "startPanPhase", get_f32(params, "panPhase", 0.0));
@@ -1726,56 +1939,157 @@ impl QamBeatTransitionVoice {
         let end_amp_l = get_f32(params, "endAmpL", start_amp_l);
         let start_amp_r = get_f32(params, "startAmpR", get_f32(params, "ampR", 0.5));
         let end_amp_r = get_f32(params, "endAmpR", start_amp_r);
-        let start_base_freq_l = get_f32(params, "startBaseFreqL", get_f32(params, "baseFreqL", 200.0));
+        let start_base_freq_l = get_f32(
+            params,
+            "startBaseFreqL",
+            get_f32(params, "baseFreqL", 200.0),
+        );
         let end_base_freq_l = get_f32(params, "endBaseFreqL", start_base_freq_l);
-        let start_base_freq_r = get_f32(params, "startBaseFreqR", get_f32(params, "baseFreqR", 204.0));
+        let start_base_freq_r = get_f32(
+            params,
+            "startBaseFreqR",
+            get_f32(params, "baseFreqR", 204.0),
+        );
         let end_base_freq_r = get_f32(params, "endBaseFreqR", start_base_freq_r);
-        let start_qam_am_freq_l = get_f32(params, "startQamAmFreqL", get_f32(params, "qamAmFreqL", 4.0));
+        let start_qam_am_freq_l = get_f32(
+            params,
+            "startQamAmFreqL",
+            get_f32(params, "qamAmFreqL", 4.0),
+        );
         let end_qam_am_freq_l = get_f32(params, "endQamAmFreqL", start_qam_am_freq_l);
-        let start_qam_am_freq_r = get_f32(params, "startQamAmFreqR", get_f32(params, "qamAmFreqR", 4.0));
+        let start_qam_am_freq_r = get_f32(
+            params,
+            "startQamAmFreqR",
+            get_f32(params, "qamAmFreqR", 4.0),
+        );
         let end_qam_am_freq_r = get_f32(params, "endQamAmFreqR", start_qam_am_freq_r);
-        let start_qam_am_depth_l = get_f32(params, "startQamAmDepthL", get_f32(params, "qamAmDepthL", 0.5));
+        let start_qam_am_depth_l = get_f32(
+            params,
+            "startQamAmDepthL",
+            get_f32(params, "qamAmDepthL", 0.5),
+        );
         let end_qam_am_depth_l = get_f32(params, "endQamAmDepthL", start_qam_am_depth_l);
-        let start_qam_am_depth_r = get_f32(params, "startQamAmDepthR", get_f32(params, "qamAmDepthR", 0.5));
+        let start_qam_am_depth_r = get_f32(
+            params,
+            "startQamAmDepthR",
+            get_f32(params, "qamAmDepthR", 0.5),
+        );
         let end_qam_am_depth_r = get_f32(params, "endQamAmDepthR", start_qam_am_depth_r);
-        let start_qam_am_phase_offset_l = get_f32(params, "startQamAmPhaseOffsetL", get_f32(params, "qamAmPhaseOffsetL", 0.0));
-        let end_qam_am_phase_offset_l = get_f32(params, "endQamAmPhaseOffsetL", start_qam_am_phase_offset_l);
-        let start_qam_am_phase_offset_r = get_f32(params, "startQamAmPhaseOffsetR", get_f32(params, "qamAmPhaseOffsetR", 0.0));
-        let end_qam_am_phase_offset_r = get_f32(params, "endQamAmPhaseOffsetR", start_qam_am_phase_offset_r);
-        let start_qam_am2_freq_l = get_f32(params, "startQamAm2FreqL", get_f32(params, "qamAm2FreqL", 0.0));
+        let start_qam_am_phase_offset_l = get_f32(
+            params,
+            "startQamAmPhaseOffsetL",
+            get_f32(params, "qamAmPhaseOffsetL", 0.0),
+        );
+        let end_qam_am_phase_offset_l =
+            get_f32(params, "endQamAmPhaseOffsetL", start_qam_am_phase_offset_l);
+        let start_qam_am_phase_offset_r = get_f32(
+            params,
+            "startQamAmPhaseOffsetR",
+            get_f32(params, "qamAmPhaseOffsetR", 0.0),
+        );
+        let end_qam_am_phase_offset_r =
+            get_f32(params, "endQamAmPhaseOffsetR", start_qam_am_phase_offset_r);
+        let start_qam_am2_freq_l = get_f32(
+            params,
+            "startQamAm2FreqL",
+            get_f32(params, "qamAm2FreqL", 0.0),
+        );
         let end_qam_am2_freq_l = get_f32(params, "endQamAm2FreqL", start_qam_am2_freq_l);
-        let start_qam_am2_freq_r = get_f32(params, "startQamAm2FreqR", get_f32(params, "qamAm2FreqR", 0.0));
+        let start_qam_am2_freq_r = get_f32(
+            params,
+            "startQamAm2FreqR",
+            get_f32(params, "qamAm2FreqR", 0.0),
+        );
         let end_qam_am2_freq_r = get_f32(params, "endQamAm2FreqR", start_qam_am2_freq_r);
-        let start_qam_am2_depth_l = get_f32(params, "startQamAm2DepthL", get_f32(params, "qamAm2DepthL", 0.0));
+        let start_qam_am2_depth_l = get_f32(
+            params,
+            "startQamAm2DepthL",
+            get_f32(params, "qamAm2DepthL", 0.0),
+        );
         let end_qam_am2_depth_l = get_f32(params, "endQamAm2DepthL", start_qam_am2_depth_l);
-        let start_qam_am2_depth_r = get_f32(params, "startQamAm2DepthR", get_f32(params, "qamAm2DepthR", 0.0));
+        let start_qam_am2_depth_r = get_f32(
+            params,
+            "startQamAm2DepthR",
+            get_f32(params, "qamAm2DepthR", 0.0),
+        );
         let end_qam_am2_depth_r = get_f32(params, "endQamAm2DepthR", start_qam_am2_depth_r);
-        let start_qam_am2_phase_offset_l = get_f32(params, "startQamAm2PhaseOffsetL", get_f32(params, "qamAm2PhaseOffsetL", 0.0));
-        let end_qam_am2_phase_offset_l = get_f32(params, "endQamAm2PhaseOffsetL", start_qam_am2_phase_offset_l);
-        let start_qam_am2_phase_offset_r = get_f32(params, "startQamAm2PhaseOffsetR", get_f32(params, "qamAm2PhaseOffsetR", 0.0));
-        let end_qam_am2_phase_offset_r = get_f32(params, "endQamAm2PhaseOffsetR", start_qam_am2_phase_offset_r);
-        let start_mod_shape_l = get_f32(params, "startModShapeL", get_f32(params, "modShapeL", 1.0));
+        let start_qam_am2_phase_offset_l = get_f32(
+            params,
+            "startQamAm2PhaseOffsetL",
+            get_f32(params, "qamAm2PhaseOffsetL", 0.0),
+        );
+        let end_qam_am2_phase_offset_l = get_f32(
+            params,
+            "endQamAm2PhaseOffsetL",
+            start_qam_am2_phase_offset_l,
+        );
+        let start_qam_am2_phase_offset_r = get_f32(
+            params,
+            "startQamAm2PhaseOffsetR",
+            get_f32(params, "qamAm2PhaseOffsetR", 0.0),
+        );
+        let end_qam_am2_phase_offset_r = get_f32(
+            params,
+            "endQamAm2PhaseOffsetR",
+            start_qam_am2_phase_offset_r,
+        );
+        let start_mod_shape_l =
+            get_f32(params, "startModShapeL", get_f32(params, "modShapeL", 1.0));
         let end_mod_shape_l = get_f32(params, "endModShapeL", start_mod_shape_l);
-        let start_mod_shape_r = get_f32(params, "startModShapeR", get_f32(params, "modShapeR", 1.0));
+        let start_mod_shape_r =
+            get_f32(params, "startModShapeR", get_f32(params, "modShapeR", 1.0));
         let end_mod_shape_r = get_f32(params, "endModShapeR", start_mod_shape_r);
-        let start_cross_mod_depth = get_f32(params, "startCrossModDepth", get_f32(params, "crossModDepth", 0.0));
+        let start_cross_mod_depth = get_f32(
+            params,
+            "startCrossModDepth",
+            get_f32(params, "crossModDepth", 0.0),
+        );
         let end_cross_mod_depth = get_f32(params, "endCrossModDepth", start_cross_mod_depth);
         let cross_mod_delay = get_f32(params, "crossModDelay", 0.0);
         let cross_mod_delay_samples = (cross_mod_delay * sample_rate) as usize;
         let harmonic_ratio = get_f32(params, "harmonicRatio", 2.0);
-        let start_harmonic_depth = get_f32(params, "startHarmonicDepth", get_f32(params, "harmonicDepth", 0.0));
+        let start_harmonic_depth = get_f32(
+            params,
+            "startHarmonicDepth",
+            get_f32(params, "harmonicDepth", 0.0),
+        );
         let end_harmonic_depth = get_f32(params, "endHarmonicDepth", start_harmonic_depth);
-        let start_sub_harmonic_freq = get_f32(params, "startSubHarmonicFreq", get_f32(params, "subHarmonicFreq", 0.0));
+        let start_sub_harmonic_freq = get_f32(
+            params,
+            "startSubHarmonicFreq",
+            get_f32(params, "subHarmonicFreq", 0.0),
+        );
         let end_sub_harmonic_freq = get_f32(params, "endSubHarmonicFreq", start_sub_harmonic_freq);
-        let start_sub_harmonic_depth = get_f32(params, "startSubHarmonicDepth", get_f32(params, "subHarmonicDepth", 0.0));
-        let end_sub_harmonic_depth = get_f32(params, "endSubHarmonicDepth", start_sub_harmonic_depth);
-        let start_phase_osc_freq = get_f32(params, "startPhaseOscFreq", get_f32(params, "phaseOscFreq", 0.0));
+        let start_sub_harmonic_depth = get_f32(
+            params,
+            "startSubHarmonicDepth",
+            get_f32(params, "subHarmonicDepth", 0.0),
+        );
+        let end_sub_harmonic_depth =
+            get_f32(params, "endSubHarmonicDepth", start_sub_harmonic_depth);
+        let start_phase_osc_freq = get_f32(
+            params,
+            "startPhaseOscFreq",
+            get_f32(params, "phaseOscFreq", 0.0),
+        );
         let end_phase_osc_freq = get_f32(params, "endPhaseOscFreq", start_phase_osc_freq);
-        let start_phase_osc_range = get_f32(params, "startPhaseOscRange", get_f32(params, "phaseOscRange", 0.0));
+        let start_phase_osc_range = get_f32(
+            params,
+            "startPhaseOscRange",
+            get_f32(params, "phaseOscRange", 0.0),
+        );
         let end_phase_osc_range = get_f32(params, "endPhaseOscRange", start_phase_osc_range);
-        let start_start_phase_l = get_f32(params, "startStartPhaseL", get_f32(params, "startPhaseL", 0.0));
+        let start_start_phase_l = get_f32(
+            params,
+            "startStartPhaseL",
+            get_f32(params, "startPhaseL", 0.0),
+        );
         let end_start_phase_l = get_f32(params, "endStartPhaseL", start_start_phase_l);
-        let start_start_phase_r = get_f32(params, "startStartPhaseR", get_f32(params, "startPhaseR", 0.0));
+        let start_start_phase_r = get_f32(
+            params,
+            "startStartPhaseR",
+            get_f32(params, "startPhaseR", 0.0),
+        );
         let end_start_phase_r = get_f32(params, "endStartPhaseR", start_start_phase_r);
         let phase_osc_phase_offset = get_f32(params, "phaseOscPhaseOffset", 0.0);
         let beating_sidebands = get_bool(params, "beatingSidebands", false);
@@ -1877,7 +2191,6 @@ impl QamBeatTransitionVoice {
         }
     }
 }
-
 
 impl StereoAmIndependentVoice {
     pub fn new(params: &HashMap<String, Value>, duration: f32, sample_rate: f32) -> Self {
@@ -2026,7 +2339,8 @@ impl WaveShapeStereoAmTransitionVoice {
         let end_stereo_mod_freq_r = get_f32(params, "endStereoModFreqR", 6.1);
         let start_stereo_mod_depth_r = get_f32(params, "startStereoModDepthR", 0.9);
         let end_stereo_mod_depth_r = get_f32(params, "endStereoModDepthR", 0.9);
-        let stereo_mod_phase_r = get_f32(params, "startStereoModPhaseR", std::f32::consts::FRAC_PI_2);
+        let stereo_mod_phase_r =
+            get_f32(params, "startStereoModPhaseR", std::f32::consts::FRAC_PI_2);
         let curve = TransitionCurve::from_str(
             params
                 .get("transition_curve")
@@ -2097,14 +2411,19 @@ impl SpatialAngleModulationVoice {
 impl SpatialAngleModulationTransitionVoice {
     pub fn new(params: &HashMap<String, Value>, duration: f32, sample_rate: f32) -> Self {
         let amp = get_f32(params, "amp", 0.7);
-        let start_carrier_freq =
-            get_f32(params, "startCarrierFreq", get_f32(params, "carrierFreq", 440.0));
+        let start_carrier_freq = get_f32(
+            params,
+            "startCarrierFreq",
+            get_f32(params, "carrierFreq", 440.0),
+        );
         let end_carrier_freq = get_f32(params, "endCarrierFreq", start_carrier_freq);
-        let start_beat_freq =
-            get_f32(params, "startBeatFreq", get_f32(params, "beatFreq", 4.0));
+        let start_beat_freq = get_f32(params, "startBeatFreq", get_f32(params, "beatFreq", 4.0));
         let end_beat_freq = get_f32(params, "endBeatFreq", start_beat_freq);
-        let start_path_radius =
-            get_f32(params, "startPathRadius", get_f32(params, "pathRadius", 1.0));
+        let start_path_radius = get_f32(
+            params,
+            "startPathRadius",
+            get_f32(params, "pathRadius", 1.0),
+        );
         let end_path_radius = get_f32(params, "endPathRadius", start_path_radius);
 
         let curve = TransitionCurve::from_str(
@@ -2169,15 +2488,21 @@ impl RhythmicWaveshapingVoice {
 impl RhythmicWaveshapingTransitionVoice {
     pub fn new(params: &HashMap<String, Value>, duration: f32, sample_rate: f32) -> Self {
         let amp = get_f32(params, "amp", 0.25);
-        let start_carrier_freq =
-            get_f32(params, "startCarrierFreq", get_f32(params, "carrierFreq", 200.0));
+        let start_carrier_freq = get_f32(
+            params,
+            "startCarrierFreq",
+            get_f32(params, "carrierFreq", 200.0),
+        );
         let end_carrier_freq = get_f32(params, "endCarrierFreq", start_carrier_freq);
         let start_mod_freq = get_f32(params, "startModFreq", get_f32(params, "modFreq", 4.0));
         let end_mod_freq = get_f32(params, "endModFreq", start_mod_freq);
         let start_mod_depth = get_f32(params, "startModDepth", get_f32(params, "modDepth", 1.0));
         let end_mod_depth = get_f32(params, "endModDepth", start_mod_depth);
-        let start_shape_amount =
-            get_f32(params, "startShapeAmount", get_f32(params, "shapeAmount", 5.0));
+        let start_shape_amount = get_f32(
+            params,
+            "startShapeAmount",
+            get_f32(params, "shapeAmount", 5.0),
+        );
         let end_shape_amount = get_f32(params, "endShapeAmount", start_shape_amount);
         let pan = get_f32(params, "pan", 0.0);
 
@@ -2234,17 +2559,17 @@ impl Voice for BinauralBeatVoice {
                 + self.freq_osc_phase_offset_r / (2.0 * std::f32::consts::PI);
             let vib_l = (self.freq_osc_range_l * 0.5)
                 * match self.freq_osc_shape {
-                    LfoShape::Triangle =>
-                        skewed_triangle_phase(phase_l_vib.fract(), self.freq_osc_skew_l),
-                    LfoShape::Sine =>
-                        skewed_sine_phase(phase_l_vib.fract(), self.freq_osc_skew_l),
+                    LfoShape::Triangle => {
+                        skewed_triangle_phase(phase_l_vib.fract(), self.freq_osc_skew_l)
+                    }
+                    LfoShape::Sine => skewed_sine_phase(phase_l_vib.fract(), self.freq_osc_skew_l),
                 };
             let vib_r = (self.freq_osc_range_r * 0.5)
                 * match self.freq_osc_shape {
-                    LfoShape::Triangle =>
-                        skewed_triangle_phase(phase_r_vib.fract(), self.freq_osc_skew_r),
-                    LfoShape::Sine =>
-                        skewed_sine_phase(phase_r_vib.fract(), self.freq_osc_skew_r),
+                    LfoShape::Triangle => {
+                        skewed_triangle_phase(phase_r_vib.fract(), self.freq_osc_skew_r)
+                    }
+                    LfoShape::Sine => skewed_sine_phase(phase_r_vib.fract(), self.freq_osc_skew_r),
                 };
             // Apply left_high to determine which ear gets the higher frequency
             let (freq_base_l, freq_base_r) = if self.left_high {
@@ -2291,14 +2616,10 @@ impl Voice for BinauralBeatVoice {
                 + self.amp_osc_phase_offset_r / (2.0 * std::f32::consts::PI);
             let env_l = 1.0
                 - self.amp_osc_depth_l
-                    * (0.5
-                        * (1.0
-                            + skewed_sine_phase(amp_phase_l.fract(), self.amp_osc_skew_l)));
+                    * (0.5 * (1.0 + skewed_sine_phase(amp_phase_l.fract(), self.amp_osc_skew_l)));
             let env_r = 1.0
                 - self.amp_osc_depth_r
-                    * (0.5
-                        * (1.0
-                            + skewed_sine_phase(amp_phase_r.fract(), self.amp_osc_skew_r)));
+                    * (0.5 * (1.0 + skewed_sine_phase(amp_phase_r.fract(), self.amp_osc_skew_r)));
 
             let sample_l = sin_lut(ph_l) * env_l * self.amp_l;
             let sample_r = sin_lut(ph_r) * env_r * self.amp_r;
@@ -2390,23 +2711,23 @@ impl Voice for BinauralBeatTransitionVoice {
 
             // instantaneous frequencies
             let half_beat = beat_freq * 0.5;
-            let phase_l_vib = freq_osc_freq_l * t
-                + freq_osc_phase_offset_l / (2.0 * std::f32::consts::PI);
-            let phase_r_vib = freq_osc_freq_r * t
-                + freq_osc_phase_offset_r / (2.0 * std::f32::consts::PI);
+            let phase_l_vib =
+                freq_osc_freq_l * t + freq_osc_phase_offset_l / (2.0 * std::f32::consts::PI);
+            let phase_r_vib =
+                freq_osc_freq_r * t + freq_osc_phase_offset_r / (2.0 * std::f32::consts::PI);
             let vib_l = (freq_osc_range_l * 0.5)
                 * match self.freq_osc_shape {
-                    LfoShape::Triangle =>
-                        skewed_triangle_phase(phase_l_vib.fract(), freq_osc_skew_l),
-                    LfoShape::Sine =>
-                        skewed_sine_phase(phase_l_vib.fract(), freq_osc_skew_l),
+                    LfoShape::Triangle => {
+                        skewed_triangle_phase(phase_l_vib.fract(), freq_osc_skew_l)
+                    }
+                    LfoShape::Sine => skewed_sine_phase(phase_l_vib.fract(), freq_osc_skew_l),
                 };
             let vib_r = (freq_osc_range_r * 0.5)
                 * match self.freq_osc_shape {
-                    LfoShape::Triangle =>
-                        skewed_triangle_phase(phase_r_vib.fract(), freq_osc_skew_r),
-                    LfoShape::Sine =>
-                        skewed_sine_phase(phase_r_vib.fract(), freq_osc_skew_r),
+                    LfoShape::Triangle => {
+                        skewed_triangle_phase(phase_r_vib.fract(), freq_osc_skew_r)
+                    }
+                    LfoShape::Sine => skewed_sine_phase(phase_r_vib.fract(), freq_osc_skew_r),
                 };
             // Apply left_high to determine which ear gets the higher frequency
             let (freq_base_l, freq_base_r) = if self.left_high {
@@ -2442,20 +2763,16 @@ impl Voice for BinauralBeatTransitionVoice {
                 ph_r += dphi;
             }
 
-            let amp_phase_l = amp_osc_freq_l * t
-                + amp_osc_phase_offset_l / (2.0 * std::f32::consts::PI);
-            let amp_phase_r = amp_osc_freq_r * t
-                + amp_osc_phase_offset_r / (2.0 * std::f32::consts::PI);
+            let amp_phase_l =
+                amp_osc_freq_l * t + amp_osc_phase_offset_l / (2.0 * std::f32::consts::PI);
+            let amp_phase_r =
+                amp_osc_freq_r * t + amp_osc_phase_offset_r / (2.0 * std::f32::consts::PI);
             let env_l = 1.0
                 - amp_osc_depth_l
-                    * (0.5
-                        * (1.0
-                            + skewed_sine_phase(amp_phase_l.fract(), amp_osc_skew_l)));
+                    * (0.5 * (1.0 + skewed_sine_phase(amp_phase_l.fract(), amp_osc_skew_l)));
             let env_r = 1.0
                 - amp_osc_depth_r
-                    * (0.5
-                        * (1.0
-                            + skewed_sine_phase(amp_phase_r.fract(), amp_osc_skew_r)));
+                    * (0.5 * (1.0 + skewed_sine_phase(amp_phase_r.fract(), amp_osc_skew_r)));
 
             let sample_l = sin_lut(ph_l) * env_l * amp_l;
             let sample_r = sin_lut(ph_r) * env_r * amp_r;
@@ -2507,9 +2824,14 @@ impl Voice for IsochronicToneVoice {
                 }
             }
 
-            let cycle_len = if self.beat_freq > 0.0 { 1.0 / self.beat_freq } else { 0.0 };
+            let cycle_len = if self.beat_freq > 0.0 {
+                1.0 / self.beat_freq
+            } else {
+                0.0
+            };
             let t_in_cycle = self.beat_phase * cycle_len;
-            let iso_env = trapezoid_envelope(t_in_cycle, cycle_len, self.ramp_percent, self.gap_percent);
+            let iso_env =
+                trapezoid_envelope(t_in_cycle, cycle_len, self.ramp_percent, self.gap_percent);
 
             self.phase_l += 2.0 * std::f32::consts::PI * freq_l * dt;
             self.phase_l = self.phase_l.rem_euclid(2.0 * std::f32::consts::PI);
@@ -2533,14 +2855,10 @@ impl Voice for IsochronicToneVoice {
                 + self.amp_osc_phase_offset_r / (2.0 * std::f32::consts::PI);
             let env_l = 1.0
                 - self.amp_osc_depth_l
-                    * (0.5
-                        * (1.0
-                            + skewed_sine_phase(amp_phase_l.fract(), self.amp_osc_skew_l)));
+                    * (0.5 * (1.0 + skewed_sine_phase(amp_phase_l.fract(), self.amp_osc_skew_l)));
             let env_r = 1.0
                 - self.amp_osc_depth_r
-                    * (0.5
-                        * (1.0
-                            + skewed_sine_phase(amp_phase_r.fract(), self.amp_osc_skew_r)));
+                    * (0.5 * (1.0 + skewed_sine_phase(amp_phase_r.fract(), self.amp_osc_skew_r)));
 
             let mut sample_l = sin_lut(ph_l) * env_l * self.amp_l * iso_env;
             let mut sample_r = sin_lut(ph_r) * env_r * self.amp_r * iso_env;
@@ -2552,7 +2870,8 @@ impl Voice for IsochronicToneVoice {
             let pan_range = (pan_max - pan_min) * 0.5;
             let current_pan = if self.pan_freq != 0.0 && pan_range > 0.0 {
                 // Oscillating pan using sine wave
-                let pan_osc = sin_lut(2.0 * std::f32::consts::PI * self.pan_freq * t + self.pan_phase);
+                let pan_osc =
+                    sin_lut(2.0 * std::f32::consts::PI * self.pan_freq * t + self.pan_phase);
                 (pan_center + pan_range * pan_osc).clamp(-1.0, 1.0)
             } else {
                 // Static pan
@@ -2614,8 +2933,8 @@ impl Voice for IsochronicToneTransitionVoice {
             } else {
                 alpha >= 0.5
             };
-            let phase_osc_freq =
-                self.start_phase_osc_freq + (self.end_phase_osc_freq - self.start_phase_osc_freq) * alpha;
+            let phase_osc_freq = self.start_phase_osc_freq
+                + (self.end_phase_osc_freq - self.start_phase_osc_freq) * alpha;
             let phase_osc_range = self.start_phase_osc_range
                 + (self.end_phase_osc_range - self.start_phase_osc_range) * alpha;
             let amp_osc_depth_l = self.start_amp_osc_depth_l
@@ -2651,19 +2970,19 @@ impl Voice for IsochronicToneTransitionVoice {
                 + (self.end_amp_osc_skew_l - self.start_amp_osc_skew_l) * alpha;
             let amp_osc_skew_r = self.start_amp_osc_skew_r
                 + (self.end_amp_osc_skew_r - self.start_amp_osc_skew_r) * alpha;
-            let ramp_percent = self.start_ramp_percent
-                + (self.end_ramp_percent - self.start_ramp_percent) * alpha;
-            let gap_percent = self.start_gap_percent
-                + (self.end_gap_percent - self.start_gap_percent) * alpha;
+            let ramp_percent =
+                self.start_ramp_percent + (self.end_ramp_percent - self.start_ramp_percent) * alpha;
+            let gap_percent =
+                self.start_gap_percent + (self.end_gap_percent - self.start_gap_percent) * alpha;
 
-            let phase_l_vib = freq_osc_freq_l * t
-                + freq_osc_phase_offset_l / (2.0 * std::f32::consts::PI);
-            let phase_r_vib = freq_osc_freq_r * t
-                + freq_osc_phase_offset_r / (2.0 * std::f32::consts::PI);
-            let vib_l = (freq_osc_range_l * 0.5)
-                * skewed_sine_phase(phase_l_vib.fract(), freq_osc_skew_l);
-            let vib_r = (freq_osc_range_r * 0.5)
-                * skewed_sine_phase(phase_r_vib.fract(), freq_osc_skew_r);
+            let phase_l_vib =
+                freq_osc_freq_l * t + freq_osc_phase_offset_l / (2.0 * std::f32::consts::PI);
+            let phase_r_vib =
+                freq_osc_freq_r * t + freq_osc_phase_offset_r / (2.0 * std::f32::consts::PI);
+            let vib_l =
+                (freq_osc_range_l * 0.5) * skewed_sine_phase(phase_l_vib.fract(), freq_osc_skew_l);
+            let vib_r =
+                (freq_osc_range_r * 0.5) * skewed_sine_phase(phase_r_vib.fract(), freq_osc_skew_r);
             let mut freq_l = base_freq + vib_l;
             let mut freq_r = base_freq + vib_r;
 
@@ -2679,7 +2998,11 @@ impl Voice for IsochronicToneTransitionVoice {
                 }
             }
 
-            let cycle_len = if beat_freq > 0.0 { 1.0 / beat_freq } else { 0.0 };
+            let cycle_len = if beat_freq > 0.0 {
+                1.0 / beat_freq
+            } else {
+                0.0
+            };
             let t_in_cycle = self.beat_phase * cycle_len;
             let iso_env = trapezoid_envelope(t_in_cycle, cycle_len, ramp_percent, gap_percent);
 
@@ -2699,20 +3022,16 @@ impl Voice for IsochronicToneTransitionVoice {
                 ph_r += dphi;
             }
 
-            let amp_phase_l = amp_osc_freq_l * t
-                + amp_osc_phase_offset_l / (2.0 * std::f32::consts::PI);
-            let amp_phase_r = amp_osc_freq_r * t
-                + amp_osc_phase_offset_r / (2.0 * std::f32::consts::PI);
+            let amp_phase_l =
+                amp_osc_freq_l * t + amp_osc_phase_offset_l / (2.0 * std::f32::consts::PI);
+            let amp_phase_r =
+                amp_osc_freq_r * t + amp_osc_phase_offset_r / (2.0 * std::f32::consts::PI);
             let env_l = 1.0
                 - amp_osc_depth_l
-                    * (0.5
-                        * (1.0
-                            + skewed_sine_phase(amp_phase_l.fract(), amp_osc_skew_l)));
+                    * (0.5 * (1.0 + skewed_sine_phase(amp_phase_l.fract(), amp_osc_skew_l)));
             let env_r = 1.0
                 - amp_osc_depth_r
-                    * (0.5
-                        * (1.0
-                            + skewed_sine_phase(amp_phase_r.fract(), amp_osc_skew_r)));
+                    * (0.5 * (1.0 + skewed_sine_phase(amp_phase_r.fract(), amp_osc_skew_r)));
 
             let mut sample_l = sin_lut(ph_l) * env_l * amp_l * iso_env;
             let mut sample_r = sin_lut(ph_r) * env_r * amp_r * iso_env;
@@ -2722,10 +3041,9 @@ impl Voice for IsochronicToneTransitionVoice {
                 + (self.end_pan_range_min - self.start_pan_range_min) * alpha;
             let pan_range_max = self.start_pan_range_max
                 + (self.end_pan_range_max - self.start_pan_range_max) * alpha;
-            let pan_freq = self.start_pan_freq
-                + (self.end_pan_freq - self.start_pan_freq) * alpha;
-            let pan_phase = self.start_pan_phase
-                + (self.end_pan_phase - self.start_pan_phase) * alpha;
+            let pan_freq = self.start_pan_freq + (self.end_pan_freq - self.start_pan_freq) * alpha;
+            let pan_phase =
+                self.start_pan_phase + (self.end_pan_phase - self.start_pan_phase) * alpha;
 
             let pan_min = pan_range_min.min(pan_range_max);
             let pan_max = pan_range_min.max(pan_range_max);
@@ -2771,7 +3089,8 @@ impl Voice for QamBeatVoice {
 
             let mut env_l = 1.0;
             if self.qam_am_freq_l != 0.0 && self.qam_am_depth_l != 0.0 {
-                let phase = 2.0 * std::f32::consts::PI * self.qam_am_freq_l * t + self.qam_am_phase_offset_l;
+                let phase = 2.0 * std::f32::consts::PI * self.qam_am_freq_l * t
+                    + self.qam_am_phase_offset_l;
                 let mod_l1 = if self.mod_shape_l == 1.0 {
                     cos_lut(phase)
                 } else {
@@ -2783,7 +3102,8 @@ impl Voice for QamBeatVoice {
 
             let mut env_r = 1.0;
             if self.qam_am_freq_r != 0.0 && self.qam_am_depth_r != 0.0 {
-                let phase = 2.0 * std::f32::consts::PI * self.qam_am_freq_r * t + self.qam_am_phase_offset_r;
+                let phase = 2.0 * std::f32::consts::PI * self.qam_am_freq_r * t
+                    + self.qam_am_phase_offset_r;
                 let mod_r1 = if self.mod_shape_r == 1.0 {
                     cos_lut(phase)
                 } else {
@@ -2796,14 +3116,18 @@ impl Voice for QamBeatVoice {
             if self.qam_am2_freq_l != 0.0 && self.qam_am2_depth_l != 0.0 {
                 env_l *= 1.0
                     + self.qam_am2_depth_l
-                        * cos_lut(2.0 * std::f32::consts::PI * self.qam_am2_freq_l * t
-                            + self.qam_am2_phase_offset_l);
+                        * cos_lut(
+                            2.0 * std::f32::consts::PI * self.qam_am2_freq_l * t
+                                + self.qam_am2_phase_offset_l,
+                        );
             }
             if self.qam_am2_freq_r != 0.0 && self.qam_am2_depth_r != 0.0 {
                 env_r *= 1.0
                     + self.qam_am2_depth_r
-                        * cos_lut(2.0 * std::f32::consts::PI * self.qam_am2_freq_r * t
-                            + self.qam_am2_phase_offset_r);
+                        * cos_lut(
+                            2.0 * std::f32::consts::PI * self.qam_am2_freq_r * t
+                                + self.qam_am2_phase_offset_r,
+                        );
             }
 
             let base_env_l = env_l;
@@ -2832,8 +3156,10 @@ impl Voice for QamBeatVoice {
             let mut ph_r = self.phase_r;
             if self.phase_osc_freq != 0.0 || self.phase_osc_range != 0.0 {
                 let dphi = (self.phase_osc_range * 0.5)
-                    * sin_lut(2.0 * std::f32::consts::PI * self.phase_osc_freq * t
-                        + self.phase_osc_phase_offset);
+                    * sin_lut(
+                        2.0 * std::f32::consts::PI * self.phase_osc_freq * t
+                            + self.phase_osc_phase_offset,
+                    );
                 ph_l -= dphi;
                 ph_r += dphi;
             }
@@ -2905,26 +3231,26 @@ impl Voice for QamBeatTransitionVoice {
                 self.start_base_freq_l + (self.end_base_freq_l - self.start_base_freq_l) * alpha;
             let base_freq_r =
                 self.start_base_freq_r + (self.end_base_freq_r - self.start_base_freq_r) * alpha;
-            let qam_am_freq_l =
-                self.start_qam_am_freq_l + (self.end_qam_am_freq_l - self.start_qam_am_freq_l) * alpha;
-            let qam_am_freq_r =
-                self.start_qam_am_freq_r + (self.end_qam_am_freq_r - self.start_qam_am_freq_r) * alpha;
-            let qam_am_depth_l =
-                self.start_qam_am_depth_l + (self.end_qam_am_depth_l - self.start_qam_am_depth_l) * alpha;
-            let qam_am_depth_r =
-                self.start_qam_am_depth_r + (self.end_qam_am_depth_r - self.start_qam_am_depth_r) * alpha;
+            let qam_am_freq_l = self.start_qam_am_freq_l
+                + (self.end_qam_am_freq_l - self.start_qam_am_freq_l) * alpha;
+            let qam_am_freq_r = self.start_qam_am_freq_r
+                + (self.end_qam_am_freq_r - self.start_qam_am_freq_r) * alpha;
+            let qam_am_depth_l = self.start_qam_am_depth_l
+                + (self.end_qam_am_depth_l - self.start_qam_am_depth_l) * alpha;
+            let qam_am_depth_r = self.start_qam_am_depth_r
+                + (self.end_qam_am_depth_r - self.start_qam_am_depth_r) * alpha;
             let qam_am_phase_offset_l = self.start_qam_am_phase_offset_l
                 + (self.end_qam_am_phase_offset_l - self.start_qam_am_phase_offset_l) * alpha;
             let qam_am_phase_offset_r = self.start_qam_am_phase_offset_r
                 + (self.end_qam_am_phase_offset_r - self.start_qam_am_phase_offset_r) * alpha;
-            let qam_am2_freq_l =
-                self.start_qam_am2_freq_l + (self.end_qam_am2_freq_l - self.start_qam_am2_freq_l) * alpha;
-            let qam_am2_freq_r =
-                self.start_qam_am2_freq_r + (self.end_qam_am2_freq_r - self.start_qam_am2_freq_r) * alpha;
-            let qam_am2_depth_l =
-                self.start_qam_am2_depth_l + (self.end_qam_am2_depth_l - self.start_qam_am2_depth_l) * alpha;
-            let qam_am2_depth_r =
-                self.start_qam_am2_depth_r + (self.end_qam_am2_depth_r - self.start_qam_am2_depth_r) * alpha;
+            let qam_am2_freq_l = self.start_qam_am2_freq_l
+                + (self.end_qam_am2_freq_l - self.start_qam_am2_freq_l) * alpha;
+            let qam_am2_freq_r = self.start_qam_am2_freq_r
+                + (self.end_qam_am2_freq_r - self.start_qam_am2_freq_r) * alpha;
+            let qam_am2_depth_l = self.start_qam_am2_depth_l
+                + (self.end_qam_am2_depth_l - self.start_qam_am2_depth_l) * alpha;
+            let qam_am2_depth_r = self.start_qam_am2_depth_r
+                + (self.end_qam_am2_depth_r - self.start_qam_am2_depth_r) * alpha;
             let qam_am2_phase_offset_l = self.start_qam_am2_phase_offset_l
                 + (self.end_qam_am2_phase_offset_l - self.start_qam_am2_phase_offset_l) * alpha;
             let qam_am2_phase_offset_r = self.start_qam_am2_phase_offset_r
@@ -2933,16 +3259,16 @@ impl Voice for QamBeatTransitionVoice {
                 self.start_mod_shape_l + (self.end_mod_shape_l - self.start_mod_shape_l) * alpha;
             let mod_shape_r =
                 self.start_mod_shape_r + (self.end_mod_shape_r - self.start_mod_shape_r) * alpha;
-            let cross_mod_depth =
-                self.start_cross_mod_depth + (self.end_cross_mod_depth - self.start_cross_mod_depth) * alpha;
+            let cross_mod_depth = self.start_cross_mod_depth
+                + (self.end_cross_mod_depth - self.start_cross_mod_depth) * alpha;
             let harmonic_depth = self.start_harmonic_depth
                 + (self.end_harmonic_depth - self.start_harmonic_depth) * alpha;
             let sub_harmonic_freq = self.start_sub_harmonic_freq
                 + (self.end_sub_harmonic_freq - self.start_sub_harmonic_freq) * alpha;
             let sub_harmonic_depth = self.start_sub_harmonic_depth
                 + (self.end_sub_harmonic_depth - self.start_sub_harmonic_depth) * alpha;
-            let phase_osc_freq =
-                self.start_phase_osc_freq + (self.end_phase_osc_freq - self.start_phase_osc_freq) * alpha;
+            let phase_osc_freq = self.start_phase_osc_freq
+                + (self.end_phase_osc_freq - self.start_phase_osc_freq) * alpha;
             let phase_osc_range = self.start_phase_osc_range
                 + (self.end_phase_osc_range - self.start_phase_osc_range) * alpha;
 
@@ -2973,12 +3299,18 @@ impl Voice for QamBeatTransitionVoice {
             if qam_am2_freq_l != 0.0 && qam_am2_depth_l != 0.0 {
                 env_l *= 1.0
                     + qam_am2_depth_l
-                        * cos_lut(2.0 * std::f32::consts::PI * qam_am2_freq_l * t + qam_am2_phase_offset_l);
+                        * cos_lut(
+                            2.0 * std::f32::consts::PI * qam_am2_freq_l * t
+                                + qam_am2_phase_offset_l,
+                        );
             }
             if qam_am2_freq_r != 0.0 && qam_am2_depth_r != 0.0 {
                 env_r *= 1.0
                     + qam_am2_depth_r
-                        * cos_lut(2.0 * std::f32::consts::PI * qam_am2_freq_r * t + qam_am2_phase_offset_r);
+                        * cos_lut(
+                            2.0 * std::f32::consts::PI * qam_am2_freq_r * t
+                                + qam_am2_phase_offset_r,
+                        );
             }
 
             let base_env_l = env_l;
@@ -3007,7 +3339,10 @@ impl Voice for QamBeatTransitionVoice {
             let mut ph_r = self.phase_r;
             if phase_osc_freq != 0.0 || phase_osc_range != 0.0 {
                 let dphi = (phase_osc_range * 0.5)
-                    * sin_lut(2.0 * std::f32::consts::PI * phase_osc_freq * t + self.phase_osc_phase_offset);
+                    * sin_lut(
+                        2.0 * std::f32::consts::PI * phase_osc_freq * t
+                            + self.phase_osc_phase_offset,
+                    );
                 ph_l -= dphi;
                 ph_r += dphi;
             }
@@ -3049,7 +3384,6 @@ impl Voice for QamBeatTransitionVoice {
     }
 }
 
-
 impl Voice for StereoAmIndependentVoice {
     fn process(&mut self, output: &mut [f32]) {
         let frames = output.len() / 2;
@@ -3072,11 +3406,9 @@ impl Voice for StereoAmIndependentVoice {
             let freq_l = self.carrier_freq - self.stereo_width_hz * 0.5;
             let freq_r = self.carrier_freq + self.stereo_width_hz * 0.5;
             self.phase_carrier_l += 2.0 * std::f32::consts::PI * freq_l * dt;
-            self.phase_carrier_l =
-                self.phase_carrier_l.rem_euclid(2.0 * std::f32::consts::PI);
+            self.phase_carrier_l = self.phase_carrier_l.rem_euclid(2.0 * std::f32::consts::PI);
             self.phase_carrier_r += 2.0 * std::f32::consts::PI * freq_r * dt;
-            self.phase_carrier_r =
-                self.phase_carrier_r.rem_euclid(2.0 * std::f32::consts::PI);
+            self.phase_carrier_r = self.phase_carrier_r.rem_euclid(2.0 * std::f32::consts::PI);
             self.phase_mod_l += 2.0 * std::f32::consts::PI * self.mod_freq_l * dt;
             self.phase_mod_l = self.phase_mod_l.rem_euclid(2.0 * std::f32::consts::PI);
             self.phase_mod_r += 2.0 * std::f32::consts::PI * self.mod_freq_r * dt;
@@ -3117,8 +3449,8 @@ impl Voice for StereoAmIndependentTransitionVoice {
 
             let carrier_freq =
                 self.start_carrier_freq + (self.end_carrier_freq - self.start_carrier_freq) * alpha;
-            let stereo_width_hz =
-                self.start_stereo_width_hz + (self.end_stereo_width_hz - self.start_stereo_width_hz) * alpha;
+            let stereo_width_hz = self.start_stereo_width_hz
+                + (self.end_stereo_width_hz - self.start_stereo_width_hz) * alpha;
             let mod_freq_l =
                 self.start_mod_freq_l + (self.end_mod_freq_l - self.start_mod_freq_l) * alpha;
             let mod_freq_r =
@@ -3141,11 +3473,9 @@ impl Voice for StereoAmIndependentTransitionVoice {
             let freq_l = carrier_freq - stereo_width_hz * 0.5;
             let freq_r = carrier_freq + stereo_width_hz * 0.5;
             self.phase_carrier_l += 2.0 * std::f32::consts::PI * freq_l * dt;
-            self.phase_carrier_l =
-                self.phase_carrier_l.rem_euclid(2.0 * std::f32::consts::PI);
+            self.phase_carrier_l = self.phase_carrier_l.rem_euclid(2.0 * std::f32::consts::PI);
             self.phase_carrier_r += 2.0 * std::f32::consts::PI * freq_r * dt;
-            self.phase_carrier_r =
-                self.phase_carrier_r.rem_euclid(2.0 * std::f32::consts::PI);
+            self.phase_carrier_r = self.phase_carrier_r.rem_euclid(2.0 * std::f32::consts::PI);
             self.phase_mod_l += 2.0 * std::f32::consts::PI * mod_freq_l * dt;
             self.phase_mod_l = self.phase_mod_l.rem_euclid(2.0 * std::f32::consts::PI);
             self.phase_mod_r += 2.0 * std::f32::consts::PI * mod_freq_r * dt;
@@ -3229,20 +3559,20 @@ impl Voice for WaveShapeStereoAmTransitionVoice {
 
             let carrier_freq =
                 self.start_carrier_freq + (self.end_carrier_freq - self.start_carrier_freq) * alpha;
-            let shape_mod_freq =
-                self.start_shape_mod_freq + (self.end_shape_mod_freq - self.start_shape_mod_freq) * alpha;
-            let shape_mod_depth =
-                self.start_shape_mod_depth + (self.end_shape_mod_depth - self.start_shape_mod_depth) * alpha;
+            let shape_mod_freq = self.start_shape_mod_freq
+                + (self.end_shape_mod_freq - self.start_shape_mod_freq) * alpha;
+            let shape_mod_depth = self.start_shape_mod_depth
+                + (self.end_shape_mod_depth - self.start_shape_mod_depth) * alpha;
             let shape_amount =
                 self.start_shape_amount + (self.end_shape_amount - self.start_shape_amount) * alpha;
-            let stereo_mod_freq_l =
-                self.start_stereo_mod_freq_l + (self.end_stereo_mod_freq_l - self.start_stereo_mod_freq_l) * alpha;
-            let stereo_mod_freq_r =
-                self.start_stereo_mod_freq_r + (self.end_stereo_mod_freq_r - self.start_stereo_mod_freq_r) * alpha;
-            let stereo_mod_depth_l =
-                self.start_stereo_mod_depth_l + (self.end_stereo_mod_depth_l - self.start_stereo_mod_depth_l) * alpha;
-            let stereo_mod_depth_r =
-                self.start_stereo_mod_depth_r + (self.end_stereo_mod_depth_r - self.start_stereo_mod_depth_r) * alpha;
+            let stereo_mod_freq_l = self.start_stereo_mod_freq_l
+                + (self.end_stereo_mod_freq_l - self.start_stereo_mod_freq_l) * alpha;
+            let stereo_mod_freq_r = self.start_stereo_mod_freq_r
+                + (self.end_stereo_mod_freq_r - self.start_stereo_mod_freq_r) * alpha;
+            let stereo_mod_depth_l = self.start_stereo_mod_depth_l
+                + (self.end_stereo_mod_depth_l - self.start_stereo_mod_depth_l) * alpha;
+            let stereo_mod_depth_r = self.start_stereo_mod_depth_r
+                + (self.end_stereo_mod_depth_r - self.start_stereo_mod_depth_r) * alpha;
 
             let carrier = sin_lut(self.phase_carrier);
             let shape_lfo_wave = sin_lut(self.phase_shape);
@@ -3423,8 +3753,7 @@ impl Voice for RhythmicWaveshapingTransitionVoice {
 
             let carrier_freq =
                 self.start_carrier_freq + (self.end_carrier_freq - self.start_carrier_freq) * alpha;
-            let mod_freq =
-                self.start_mod_freq + (self.end_mod_freq - self.start_mod_freq) * alpha;
+            let mod_freq = self.start_mod_freq + (self.end_mod_freq - self.start_mod_freq) * alpha;
             let mod_depth =
                 self.start_mod_depth + (self.end_mod_depth - self.start_mod_depth) * alpha;
             let shape_amount =
@@ -3525,9 +3854,8 @@ impl Voice for VoiceKind {
     }
 }
 
-
-pub fn voices_for_step(step: &StepData, sample_rate: f32) -> Vec<VoiceKind> {
-    let mut out: Vec<VoiceKind> = Vec::new();
+pub fn voices_for_step(step: &StepData, sample_rate: f32) -> Vec<StepVoice> {
+    let mut out: Vec<StepVoice> = Vec::new();
     for voice in &step.voices {
         if let Some(v) = create_voice(voice, step.duration as f32, sample_rate) {
             out.push(v);
@@ -3536,99 +3864,90 @@ pub fn voices_for_step(step: &StepData, sample_rate: f32) -> Vec<VoiceKind> {
     out
 }
 
-fn create_voice(data: &VoiceData, duration: f32, sample_rate: f32) -> Option<VoiceKind> {
-    let mut voice = match data.synth_function_name.as_str() {
-        "binaural_beat" => VoiceKind::BinauralBeat(BinauralBeatVoice::new(
-            &data.params,
-            duration,
-            sample_rate,
-        )),
-        "binaural_beat_transition" => VoiceKind::BinauralBeatTransition(BinauralBeatTransitionVoice::new(
-            &data.params,
-            duration,
-            sample_rate,
-        )),
-        "isochronic_tone" => VoiceKind::IsochronicTone(IsochronicToneVoice::new(
-            &data.params,
-            duration,
-            sample_rate,
-        )),
-        "isochronic_tone_transition" => VoiceKind::IsochronicToneTransition(IsochronicToneTransitionVoice::new(
-            &data.params,
-            duration,
-            sample_rate,
-        )),
-        "qam_beat" => VoiceKind::QamBeat(QamBeatVoice::new(
-            &data.params,
-            duration,
-            sample_rate,
-        )),
-        "qam_beat_transition" => VoiceKind::QamBeatTransition(QamBeatTransitionVoice::new(
-            &data.params,
-            duration,
-            sample_rate,
-        )),
-        "rhythmic_waveshaping" => VoiceKind::RhythmicWaveshaping(RhythmicWaveshapingVoice::new(
-            &data.params,
-            duration,
-            sample_rate,
-        )),
-        "rhythmic_waveshaping_transition" => VoiceKind::RhythmicWaveshapingTransition(RhythmicWaveshapingTransitionVoice::new(
-            &data.params,
-            duration,
-            sample_rate,
-        )),
-        "stereo_am_independent" => VoiceKind::StereoAmIndependent(StereoAmIndependentVoice::new(
-            &data.params,
-            duration,
-            sample_rate,
-        )),
-        "stereo_am_independent_transition" => VoiceKind::StereoAmIndependentTransition(StereoAmIndependentTransitionVoice::new(
-            &data.params,
-            duration,
-            sample_rate,
-        )),
-        "wave_shape_stereo_am" => VoiceKind::WaveShapeStereoAm(WaveShapeStereoAmVoice::new(
-            &data.params,
-            duration,
-            sample_rate,
-        )),
-        "wave_shape_stereo_am_transition" => VoiceKind::WaveShapeStereoAmTransition(WaveShapeStereoAmTransitionVoice::new(
-            &data.params,
-            duration,
-            sample_rate,
-        )),
-        "spatial_angle_modulation" => VoiceKind::SpatialAngleModulation(SpatialAngleModulationVoice::new(
-            &data.params,
-            duration,
-            sample_rate,
-        )),
-        "spatial_angle_modulation_transition" => VoiceKind::SpatialAngleModulationTransition(SpatialAngleModulationTransitionVoice::new(
-            &data.params,
-            duration,
-            sample_rate,
-        )),
-        "subliminal_encode" => VoiceKind::SubliminalEncode(SubliminalEncodeVoice::new(
-            &data.params,
-            duration,
-            sample_rate,
-        )),
-        "noise_swept_notch" | "noise" => VoiceKind::NoiseSweptNotch(NoiseSweptNotchVoice::new(
-            &data.params,
-            duration,
-            sample_rate,
-        )),
-        "noise_swept_notch_transition" | "noise_transition" => VoiceKind::NoiseSweptNotchTransition(NoiseSweptNotchTransitionVoice::new(
-            &data.params,
-            duration,
-            sample_rate,
-        )),
-        _ => return None,
-    };
+fn create_voice(data: &VoiceData, duration: f32, sample_rate: f32) -> Option<StepVoice> {
+    let mut voice =
+        match data.synth_function_name.as_str() {
+            "binaural_beat" => {
+                VoiceKind::BinauralBeat(BinauralBeatVoice::new(&data.params, duration, sample_rate))
+            }
+            "binaural_beat_transition" => VoiceKind::BinauralBeatTransition(
+                BinauralBeatTransitionVoice::new(&data.params, duration, sample_rate),
+            ),
+            "isochronic_tone" => VoiceKind::IsochronicTone(IsochronicToneVoice::new(
+                &data.params,
+                duration,
+                sample_rate,
+            )),
+            "isochronic_tone_transition" => VoiceKind::IsochronicToneTransition(
+                IsochronicToneTransitionVoice::new(&data.params, duration, sample_rate),
+            ),
+            "qam_beat" => {
+                VoiceKind::QamBeat(QamBeatVoice::new(&data.params, duration, sample_rate))
+            }
+            "qam_beat_transition" => VoiceKind::QamBeatTransition(QamBeatTransitionVoice::new(
+                &data.params,
+                duration,
+                sample_rate,
+            )),
+            "rhythmic_waveshaping" => VoiceKind::RhythmicWaveshaping(
+                RhythmicWaveshapingVoice::new(&data.params, duration, sample_rate),
+            ),
+            "rhythmic_waveshaping_transition" => VoiceKind::RhythmicWaveshapingTransition(
+                RhythmicWaveshapingTransitionVoice::new(&data.params, duration, sample_rate),
+            ),
+            "stereo_am_independent" => VoiceKind::StereoAmIndependent(
+                StereoAmIndependentVoice::new(&data.params, duration, sample_rate),
+            ),
+            "stereo_am_independent_transition" => VoiceKind::StereoAmIndependentTransition(
+                StereoAmIndependentTransitionVoice::new(&data.params, duration, sample_rate),
+            ),
+            "wave_shape_stereo_am" => VoiceKind::WaveShapeStereoAm(WaveShapeStereoAmVoice::new(
+                &data.params,
+                duration,
+                sample_rate,
+            )),
+            "wave_shape_stereo_am_transition" => VoiceKind::WaveShapeStereoAmTransition(
+                WaveShapeStereoAmTransitionVoice::new(&data.params, duration, sample_rate),
+            ),
+            "spatial_angle_modulation" => VoiceKind::SpatialAngleModulation(
+                SpatialAngleModulationVoice::new(&data.params, duration, sample_rate),
+            ),
+            "spatial_angle_modulation_transition" => VoiceKind::SpatialAngleModulationTransition(
+                SpatialAngleModulationTransitionVoice::new(&data.params, duration, sample_rate),
+            ),
+            "subliminal_encode" => VoiceKind::SubliminalEncode(SubliminalEncodeVoice::new(
+                &data.params,
+                duration,
+                sample_rate,
+            )),
+            "noise_swept_notch" | "noise" => VoiceKind::NoiseSweptNotch(NoiseSweptNotchVoice::new(
+                &data.params,
+                duration,
+                sample_rate,
+            )),
+            "noise_swept_notch_transition" | "noise_transition" => {
+                VoiceKind::NoiseSweptNotchTransition(NoiseSweptNotchTransitionVoice::new(
+                    &data.params,
+                    duration,
+                    sample_rate,
+                ))
+            }
+            _ => return None,
+        };
 
     if let Some(env) = &data.volume_envelope {
         let env_vec = build_volume_envelope(env, duration, sample_rate as u32);
-        voice = VoiceKind::VolumeEnvelope(Box::new(VolumeEnvelopeVoice::new(Box::new(voice), env_vec)));
+        voice =
+            VoiceKind::VolumeEnvelope(Box::new(VolumeEnvelopeVoice::new(Box::new(voice), env_vec)));
     }
-    Some(voice)
+    let voice_type = match data.voice_type.to_lowercase().as_str() {
+        "noise" => VoiceType::Noise,
+        "binaural" => VoiceType::Binaural,
+        _ => VoiceType::Other,
+    };
+
+    Some(StepVoice {
+        kind: voice,
+        voice_type,
+    })
 }

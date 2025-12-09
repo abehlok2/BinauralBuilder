@@ -9,6 +9,12 @@ pub enum Command {
     SetPaused(bool),
     /// Seek to a new playback position in seconds
     StartFrom(f64),
+    /// Adjust the master output gain (0.0 - 1.0)
+    SetMasterGain(f32),
     /// Feed audio samples to a streaming overlay clip
-    PushClipSamples { index: usize, data: Vec<f32>, finished: bool },
+    PushClipSamples {
+        index: usize,
+        data: Vec<f32>,
+        finished: bool,
+    },
 }

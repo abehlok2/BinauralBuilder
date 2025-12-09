@@ -1,15 +1,15 @@
-use crate::streaming_noise::StreamingNoise;
-use crate::models::{StepData, TrackData};
-use crate::voices::{voices_for_step, VoiceKind};
-use crate::gpu::GpuMixer;
 use crate::config::CONFIG;
+use crate::gpu::GpuMixer;
+use crate::models::{StepData, TrackData};
+use crate::streaming_noise::StreamingNoise;
+use crate::voices::{voices_for_step, VoiceKind};
 use std::fs::File;
 
 use symphonia::core::audio::SampleBuffer;
 use symphonia::core::codecs::DecoderOptions;
 use symphonia::core::errors::Error as SymphoniaError;
 use symphonia::core::formats::FormatOptions;
-use symphonia::core::io::{MediaSourceStream, MediaSource};
+use symphonia::core::io::{MediaSource, MediaSourceStream};
 use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
 use symphonia::default::{get_codecs, get_probe};
@@ -30,12 +30,14 @@ impl CrossfadeCurve {
             CrossfadeCurve::Linear => (1.0 - ratio, ratio),
             CrossfadeCurve::EqualPower => {
                 let theta = ratio * std::f32::consts::FRAC_PI_2;
-                (crate::dsp::trig::cos_lut(theta), crate::dsp::trig::sin_lut(theta))
+                (
+                    crate::dsp::trig::cos_lut(theta),
+                    crate::dsp::trig::sin_lut(theta),
+                )
             }
         }
     }
 }
-
 
 fn steps_have_continuous_voices(a: &StepData, b: &StepData) -> bool {
     if a.voices.len() != b.voices.len() {
@@ -52,6 +54,9 @@ fn steps_have_continuous_voices(a: &StepData, b: &StepData) -> bool {
         if va.is_transition != vb.is_transition {
             return false;
         }
+        if va.voice_type.to_lowercase() != vb.voice_type.to_lowercase() {
+            return false;
+        }
     }
 
     true
@@ -61,8 +66,8 @@ pub struct TrackScheduler {
     pub track: TrackData,
     pub current_sample: usize,
     pub current_step: usize,
-    pub active_voices: Vec<VoiceKind>,
-    pub next_voices: Vec<VoiceKind>,
+    pub active_voices: Vec<StepVoice>,
+    pub next_voices: Vec<StepVoice>,
     pub sample_rate: f32,
     pub crossfade_samples: usize,
     pub current_crossfade_samples: usize,
@@ -83,8 +88,13 @@ pub struct TrackScheduler {
     pub voice_gain: f32,
     pub noise_gain: f32,
     pub clip_gain: f32,
+    pub master_gain: f32,
     #[cfg(feature = "gpu")]
     pub gpu: GpuMixer,
+    /// Temporary buffer for mixing per-voice output
+    voice_temp: Vec<f32>,
+    /// Temporary buffer for accumulating noise voices separately
+    noise_scratch: Vec<f32>,
 }
 
 pub enum ClipSamples {
@@ -104,12 +114,37 @@ pub struct BackgroundNoise {
     gain: f32,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum VoiceType {
+    Binaural,
+    Noise,
+    Other,
+}
+
+pub struct StepVoice {
+    pub kind: VoiceKind,
+    pub voice_type: VoiceType,
+}
+
+impl StepVoice {
+    fn process(&mut self, output: &mut [f32]) {
+        self.kind.process(output);
+    }
+
+    fn is_finished(&self) -> bool {
+        self.kind.is_finished()
+    }
+}
+
 use crate::command::Command;
-use std::io::Cursor;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine as _;
+use std::io::Cursor;
 
-fn decode_clip_reader<R: MediaSource + 'static>(reader: R, sample_rate: u32) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
+fn decode_clip_reader<R: MediaSource + 'static>(
+    reader: R,
+    sample_rate: u32,
+) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
     let mss = MediaSourceStream::new(Box::new(reader), Default::default());
     let probed = get_probe().format(
         &Hint::new(),
@@ -277,7 +312,10 @@ impl TrackScheduler {
         for c in &track.clips {
             let clip_samples = match load_clip_file(&c.file_path, device_rate) {
                 Ok(samples) => ClipSamples::Static(samples),
-                Err(_) => ClipSamples::Streaming { data: Vec::new(), finished: false },
+                Err(_) => ClipSamples::Streaming {
+                    data: Vec::new(),
+                    finished: false,
+                },
             };
             clips.push(LoadedClip {
                 samples: clip_samples,
@@ -291,13 +329,19 @@ impl TrackScheduler {
             if !noise_cfg.file_path.is_empty() && noise_cfg.file_path.ends_with(".noise") {
                 if let Ok(params) = crate::noise_params::load_noise_params(&noise_cfg.file_path) {
                     let gen = StreamingNoise::new(&params, device_rate);
-                    Some(BackgroundNoise { generator: gen, gain: noise_cfg.amp * cfg.noise_gain })
+                    Some(BackgroundNoise {
+                        generator: gen,
+                        gain: noise_cfg.amp * cfg.noise_gain,
+                    })
                 } else {
                     None
                 }
             } else if let Some(params) = &noise_cfg.params {
                 let gen = StreamingNoise::new(params, device_rate);
-                Some(BackgroundNoise { generator: gen, gain: noise_cfg.amp * cfg.noise_gain })
+                Some(BackgroundNoise {
+                    generator: gen,
+                    gain: noise_cfg.amp * cfg.noise_gain,
+                })
             } else {
                 None
             }
@@ -329,8 +373,11 @@ impl TrackScheduler {
             voice_gain: cfg.voice_gain,
             noise_gain: cfg.noise_gain,
             clip_gain: cfg.clip_gain,
+            master_gain: 1.0,
             #[cfg(feature = "gpu")]
             gpu: GpuMixer::new(),
+            voice_temp: Vec::new(),
+            noise_scratch: Vec::new(),
         };
 
         let start_samples = (start_time * sample_rate as f64) as usize;
@@ -348,8 +395,6 @@ impl TrackScheduler {
                 0
             };
         }
-
-
 
         let mut remaining = abs_samples;
         self.current_step = 0;
@@ -393,7 +438,10 @@ impl TrackScheduler {
         for c in &track.clips {
             let clip_samples = match load_clip_file(&c.file_path, self.sample_rate as u32) {
                 Ok(samples) => ClipSamples::Static(samples),
-                Err(_) => ClipSamples::Streaming { data: Vec::new(), finished: false },
+                Err(_) => ClipSamples::Streaming {
+                    data: Vec::new(),
+                    finished: false,
+                },
             };
             self.clips.push(LoadedClip {
                 samples: clip_samples,
@@ -407,13 +455,19 @@ impl TrackScheduler {
             if !noise_cfg.file_path.is_empty() && noise_cfg.file_path.ends_with(".noise") {
                 if let Ok(params) = crate::noise_params::load_noise_params(&noise_cfg.file_path) {
                     let gen = StreamingNoise::new(&params, self.sample_rate as u32);
-                    Some(BackgroundNoise { generator: gen, gain: noise_cfg.amp * self.noise_gain })
+                    Some(BackgroundNoise {
+                        generator: gen,
+                        gain: noise_cfg.amp * self.noise_gain,
+                    })
                 } else {
                     None
                 }
             } else if let Some(params) = &noise_cfg.params {
                 let gen = StreamingNoise::new(params, self.sample_rate as u32);
-                Some(BackgroundNoise { generator: gen, gain: noise_cfg.amp * self.noise_gain })
+                Some(BackgroundNoise {
+                    generator: gen,
+                    gain: noise_cfg.amp * self.noise_gain,
+                })
             } else {
                 None
             }
@@ -447,9 +501,20 @@ impl TrackScheduler {
                 let samples = (time * self.sample_rate as f64) as usize;
                 self.seek_samples(samples);
             }
-            Command::PushClipSamples { index, data, finished } => {
+            Command::SetMasterGain(gain) => {
+                self.master_gain = gain.clamp(0.0, 1.0);
+            }
+            Command::PushClipSamples {
+                index,
+                data,
+                finished,
+            } => {
                 if let Some(clip) = self.clips.get_mut(index) {
-                    if let ClipSamples::Streaming { data: buf, finished: fin } = &mut clip.samples {
+                    if let ClipSamples::Streaming {
+                        data: buf,
+                        finished: fin,
+                    } = &mut clip.samples
+                    {
                         buf.extend_from_slice(&data);
                         if finished {
                             *fin = true;
@@ -457,6 +522,87 @@ impl TrackScheduler {
                     }
                 }
             }
+        }
+    }
+
+    fn apply_gain_stage(buffer: &mut [f32], norm_target: f32, volume: f32, has_content: bool) {
+        if !has_content {
+            buffer.fill(0.0);
+            return;
+        }
+
+        let mut peak = 0.0f32;
+        for &s in buffer.iter() {
+            let a = s.abs();
+            if a > peak {
+                peak = a;
+            }
+        }
+
+        if peak > 1e-9 && norm_target > 0.0 {
+            let gain = norm_target / peak;
+            for s in buffer.iter_mut() {
+                *s *= gain;
+            }
+        }
+
+        if (volume - 1.0).abs() > f32::EPSILON {
+            for s in buffer.iter_mut() {
+                *s *= volume;
+            }
+        }
+    }
+
+    fn render_step_audio(&mut self, voices: &mut [StepVoice], step: &StepData, out: &mut [f32]) {
+        let len = out.len();
+        if self.scratch.len() != len {
+            self.scratch.resize(len, 0.0);
+        }
+        if self.noise_scratch.len() != len {
+            self.noise_scratch.resize(len, 0.0);
+        }
+        if self.voice_temp.len() != len {
+            self.voice_temp.resize(len, 0.0);
+        }
+
+        let binaural_buf = &mut self.scratch;
+        let noise_buf = &mut self.noise_scratch;
+        binaural_buf.fill(0.0);
+        noise_buf.fill(0.0);
+        let mut binaural_count = 0usize;
+        let mut noise_count = 0usize;
+
+        for voice in voices.iter_mut() {
+            self.voice_temp.fill(0.0);
+            voice.process(&mut self.voice_temp);
+            match voice.voice_type {
+                VoiceType::Noise => {
+                    noise_count += 1;
+                    for i in 0..len {
+                        noise_buf[i] += self.voice_temp[i];
+                    }
+                }
+                _ => {
+                    binaural_count += 1;
+                    for i in 0..len {
+                        binaural_buf[i] += self.voice_temp[i];
+                    }
+                }
+            }
+        }
+
+        let norm_target = step.normalization_level;
+        Self::apply_gain_stage(
+            binaural_buf,
+            norm_target,
+            step.binaural_volume,
+            binaural_count > 0,
+        );
+        Self::apply_gain_stage(noise_buf, norm_target, step.noise_volume, noise_count > 0);
+
+        out.fill(0.0);
+        for i in 0..len {
+            out[i] = binaural_buf[i] + noise_buf[i];
         }
     }
 
@@ -539,55 +685,11 @@ impl TrackScheduler {
             prev_buf.fill(0.0);
             next_buf.fill(0.0);
 
-            if self.gpu_enabled {
-                #[cfg(feature = "gpu")]
-                {
-                    let mut prev_locals: Vec<Vec<f32>> = Vec::with_capacity(self.active_voices.len());
-                    for voice in &mut self.active_voices {
-                        let mut local = vec![0.0f32; buffer.len()];
-                        voice.process(&mut local);
-                        prev_locals.push(local);
-                    }
-                    let prev_refs: Vec<&[f32]> = prev_locals.iter().map(|b| b.as_slice()).collect();
-                    self.gpu.mix(&prev_refs, prev_buf);
-
-                    let mut next_locals: Vec<Vec<f32>> = Vec::with_capacity(self.next_voices.len());
-                    for voice in &mut self.next_voices {
-                        let mut local = vec![0.0f32; buffer.len()];
-                        voice.process(&mut local);
-                        next_locals.push(local);
-                    }
-                    let next_refs: Vec<&[f32]> = next_locals.iter().map(|b| b.as_slice()).collect();
-                    self.gpu.mix(&next_refs, next_buf);
-                }
-                #[cfg(not(feature = "gpu"))]
-                {
-                    for v in &mut self.active_voices {
-                        v.process(prev_buf);
-                    }
-                    for v in &mut self.next_voices {
-                        v.process(next_buf);
-                    }
-                }
-            } else {
-                for v in &mut self.active_voices {
-                    v.process(prev_buf);
-                }
-                for v in &mut self.next_voices {
-                    v.process(next_buf);
-                }
-            }
-
-            let out_gain = if self.active_voices.is_empty() {
-                0.0
-            } else {
-                1.0 / self.active_voices.len() as f32
-            };
-            let in_gain = if self.next_voices.is_empty() {
-                0.0
-            } else {
-                1.0 / self.next_voices.len() as f32
-            };
+            let step = &self.track.steps[self.current_step];
+            self.render_step_audio(&mut self.active_voices, step, prev_buf);
+            let next_step_idx = (self.current_step + 1).min(self.track.steps.len() - 1);
+            let next_step = &self.track.steps[next_step_idx];
+            self.render_step_audio(&mut self.next_voices, next_step, next_buf);
 
             for i in 0..frames {
                 let idx = i * 2;
@@ -599,12 +701,11 @@ impl TrackScheduler {
                         progress as f32 / (self.current_crossfade_samples - 1) as f32
                     };
                     let (g_out, g_in) = self.crossfade_curve.gains(ratio);
-                    buffer[idx] = prev_buf[idx] * g_out * out_gain + next_buf[idx] * g_in * in_gain;
-                    buffer[idx + 1] =
-                        prev_buf[idx + 1] * g_out * out_gain + next_buf[idx + 1] * g_in * in_gain;
+                    buffer[idx] = prev_buf[idx] * g_out + next_buf[idx] * g_in;
+                    buffer[idx + 1] = prev_buf[idx + 1] * g_out + next_buf[idx + 1] * g_in;
                 } else {
-                    buffer[idx] = next_buf[idx] * in_gain;
-                    buffer[idx + 1] = next_buf[idx + 1] * in_gain;
+                    buffer[idx] = next_buf[idx];
+                    buffer[idx + 1] = next_buf[idx + 1];
                 }
             }
 
@@ -624,46 +725,9 @@ impl TrackScheduler {
                 self.current_crossfade_samples = 0;
             }
         } else {
-            // --- EFFICIENT GAIN STAGING FOR NORMAL PLAYBACK ---
-            let num_voices = self.active_voices.len();
-            if num_voices > 0 {
-                if self.scratch.len() != buffer.len() {
-                    self.scratch.resize(buffer.len(), 0.0);
-                }
-                if self.gpu_enabled {
-                    #[cfg(feature = "gpu")]
-                    {
-                        let mut voice_bufs: Vec<Vec<f32>> = Vec::with_capacity(num_voices);
-                        for voice in &mut self.active_voices {
-                            let mut local = vec![0.0f32; buffer.len()];
-                            voice.process(&mut local);
-                            voice_bufs.push(local);
-                        }
-                        let refs: Vec<&[f32]> = voice_bufs.iter().map(|b| b.as_slice()).collect();
-                        self.gpu.mix(&refs, buffer);
-                    }
-                    #[cfg(not(feature = "gpu"))]
-                    {
-                        // fallback to CPU mixing when GPU support is unavailable
-                        let gain = 1.0 / num_voices as f32;
-                        for voice in &mut self.active_voices {
-                            self.scratch.fill(0.0);
-                            voice.process(&mut self.scratch);
-                            for i in 0..buffer.len() {
-                                buffer[i] += self.scratch[i] * gain;
-                            }
-                        }
-                    }
-                } else {
-                    let gain = 1.0 / num_voices as f32;
-                    for voice in &mut self.active_voices {
-                        self.scratch.fill(0.0);
-                        voice.process(&mut self.scratch);
-                        for i in 0..buffer.len() {
-                            buffer[i] += self.scratch[i] * gain;
-                        }
-                    }
-                }
+            if !self.active_voices.is_empty() {
+                let step = &self.track.steps[self.current_step];
+                self.render_step_audio(&mut self.active_voices, step, buffer);
             }
 
             self.active_voices.retain(|v| !v.is_finished());
@@ -744,6 +808,12 @@ impl TrackScheduler {
                 }
             }
             clip.position = pos;
+        }
+
+        if (self.master_gain - 1.0).abs() > f32::EPSILON {
+            for v in buffer.iter_mut() {
+                *v *= self.master_gain;
+            }
         }
 
         // Normalize including noise and overlay clips to avoid clipping
