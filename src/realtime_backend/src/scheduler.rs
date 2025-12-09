@@ -1,15 +1,15 @@
-use crate::streaming_noise::StreamingNoise;
-use crate::models::{StepData, TrackData};
-use crate::voices::{voices_for_step, VoiceKind};
-use crate::gpu::GpuMixer;
 use crate::config::CONFIG;
+use crate::gpu::GpuMixer;
+use crate::models::{StepData, TrackData};
+use crate::streaming_noise::StreamingNoise;
+use crate::voices::{voices_for_step, VoiceKind};
 use std::fs::File;
 
 use symphonia::core::audio::SampleBuffer;
 use symphonia::core::codecs::DecoderOptions;
 use symphonia::core::errors::Error as SymphoniaError;
 use symphonia::core::formats::FormatOptions;
-use symphonia::core::io::{MediaSourceStream, MediaSource};
+use symphonia::core::io::{MediaSource, MediaSourceStream};
 use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
 use symphonia::default::{get_codecs, get_probe};
@@ -30,12 +30,14 @@ impl CrossfadeCurve {
             CrossfadeCurve::Linear => (1.0 - ratio, ratio),
             CrossfadeCurve::EqualPower => {
                 let theta = ratio * std::f32::consts::FRAC_PI_2;
-                (crate::dsp::trig::cos_lut(theta), crate::dsp::trig::sin_lut(theta))
+                (
+                    crate::dsp::trig::cos_lut(theta),
+                    crate::dsp::trig::sin_lut(theta),
+                )
             }
         }
     }
 }
-
 
 fn steps_have_continuous_voices(a: &StepData, b: &StepData) -> bool {
     if a.voices.len() != b.voices.len() {
@@ -83,6 +85,7 @@ pub struct TrackScheduler {
     pub voice_gain: f32,
     pub noise_gain: f32,
     pub clip_gain: f32,
+    pub output_gain: f32,
     #[cfg(feature = "gpu")]
     pub gpu: GpuMixer,
 }
@@ -105,11 +108,14 @@ pub struct BackgroundNoise {
 }
 
 use crate::command::Command;
-use std::io::Cursor;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine as _;
+use std::io::Cursor;
 
-fn decode_clip_reader<R: MediaSource + 'static>(reader: R, sample_rate: u32) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
+fn decode_clip_reader<R: MediaSource + 'static>(
+    reader: R,
+    sample_rate: u32,
+) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
     let mss = MediaSourceStream::new(Box::new(reader), Default::default());
     let probed = get_probe().format(
         &Hint::new(),
@@ -277,7 +283,10 @@ impl TrackScheduler {
         for c in &track.clips {
             let clip_samples = match load_clip_file(&c.file_path, device_rate) {
                 Ok(samples) => ClipSamples::Static(samples),
-                Err(_) => ClipSamples::Streaming { data: Vec::new(), finished: false },
+                Err(_) => ClipSamples::Streaming {
+                    data: Vec::new(),
+                    finished: false,
+                },
             };
             clips.push(LoadedClip {
                 samples: clip_samples,
@@ -291,13 +300,19 @@ impl TrackScheduler {
             if !noise_cfg.file_path.is_empty() && noise_cfg.file_path.ends_with(".noise") {
                 if let Ok(params) = crate::noise_params::load_noise_params(&noise_cfg.file_path) {
                     let gen = StreamingNoise::new(&params, device_rate);
-                    Some(BackgroundNoise { generator: gen, gain: noise_cfg.amp * cfg.noise_gain })
+                    Some(BackgroundNoise {
+                        generator: gen,
+                        gain: noise_cfg.amp * cfg.noise_gain,
+                    })
                 } else {
                     None
                 }
             } else if let Some(params) = &noise_cfg.params {
                 let gen = StreamingNoise::new(params, device_rate);
-                Some(BackgroundNoise { generator: gen, gain: noise_cfg.amp * cfg.noise_gain })
+                Some(BackgroundNoise {
+                    generator: gen,
+                    gain: noise_cfg.amp * cfg.noise_gain,
+                })
             } else {
                 None
             }
@@ -329,6 +344,7 @@ impl TrackScheduler {
             voice_gain: cfg.voice_gain,
             noise_gain: cfg.noise_gain,
             clip_gain: cfg.clip_gain,
+            output_gain: 1.0,
             #[cfg(feature = "gpu")]
             gpu: GpuMixer::new(),
         };
@@ -348,8 +364,6 @@ impl TrackScheduler {
                 0
             };
         }
-
-
 
         let mut remaining = abs_samples;
         self.current_step = 0;
@@ -393,7 +407,10 @@ impl TrackScheduler {
         for c in &track.clips {
             let clip_samples = match load_clip_file(&c.file_path, self.sample_rate as u32) {
                 Ok(samples) => ClipSamples::Static(samples),
-                Err(_) => ClipSamples::Streaming { data: Vec::new(), finished: false },
+                Err(_) => ClipSamples::Streaming {
+                    data: Vec::new(),
+                    finished: false,
+                },
             };
             self.clips.push(LoadedClip {
                 samples: clip_samples,
@@ -407,13 +424,19 @@ impl TrackScheduler {
             if !noise_cfg.file_path.is_empty() && noise_cfg.file_path.ends_with(".noise") {
                 if let Ok(params) = crate::noise_params::load_noise_params(&noise_cfg.file_path) {
                     let gen = StreamingNoise::new(&params, self.sample_rate as u32);
-                    Some(BackgroundNoise { generator: gen, gain: noise_cfg.amp * self.noise_gain })
+                    Some(BackgroundNoise {
+                        generator: gen,
+                        gain: noise_cfg.amp * self.noise_gain,
+                    })
                 } else {
                     None
                 }
             } else if let Some(params) = &noise_cfg.params {
                 let gen = StreamingNoise::new(params, self.sample_rate as u32);
-                Some(BackgroundNoise { generator: gen, gain: noise_cfg.amp * self.noise_gain })
+                Some(BackgroundNoise {
+                    generator: gen,
+                    gain: noise_cfg.amp * self.noise_gain,
+                })
             } else {
                 None
             }
@@ -447,15 +470,26 @@ impl TrackScheduler {
                 let samples = (time * self.sample_rate as f64) as usize;
                 self.seek_samples(samples);
             }
-            Command::PushClipSamples { index, data, finished } => {
+            Command::PushClipSamples {
+                index,
+                data,
+                finished,
+            } => {
                 if let Some(clip) = self.clips.get_mut(index) {
-                    if let ClipSamples::Streaming { data: buf, finished: fin } = &mut clip.samples {
+                    if let ClipSamples::Streaming {
+                        data: buf,
+                        finished: fin,
+                    } = &mut clip.samples
+                    {
                         buf.extend_from_slice(&data);
                         if finished {
                             *fin = true;
                         }
                     }
                 }
+            }
+            Command::SetOutputGain(gain) => {
+                self.output_gain = gain.max(0.0);
             }
         }
     }
@@ -542,7 +576,8 @@ impl TrackScheduler {
             if self.gpu_enabled {
                 #[cfg(feature = "gpu")]
                 {
-                    let mut prev_locals: Vec<Vec<f32>> = Vec::with_capacity(self.active_voices.len());
+                    let mut prev_locals: Vec<Vec<f32>> =
+                        Vec::with_capacity(self.active_voices.len());
                     for voice in &mut self.active_voices {
                         let mut local = vec![0.0f32; buffer.len()];
                         voice.process(&mut local);
@@ -608,6 +643,12 @@ impl TrackScheduler {
                 }
             }
 
+            if self.output_gain != 1.0 {
+                for v in buffer.iter_mut() {
+                    *v *= self.output_gain;
+                }
+            }
+
             self.current_sample += frames;
             self.next_step_sample += frames;
 
@@ -663,6 +704,12 @@ impl TrackScheduler {
                             buffer[i] += self.scratch[i] * gain;
                         }
                     }
+                }
+            }
+
+            if self.output_gain != 1.0 {
+                for v in buffer.iter_mut() {
+                    *v *= self.output_gain;
                 }
             }
 

@@ -162,6 +162,10 @@ class SessionBuilderWindow(QMainWindow):
         self._stream_player: Optional[SessionStreamPlayer] = None
         self._using_rust_backend = is_rust_backend_available()
         self._current_assembler: Optional[SessionAssembler] = None
+        self._stream_update_timer = QTimer(self)
+        self._stream_update_timer.setSingleShot(True)
+        self._stream_update_timer.setInterval(200)
+        self._stream_update_timer.timeout.connect(self._push_stream_update_now)
 
         self._init_actions()
         self._init_menu()
@@ -622,6 +626,43 @@ class SessionBuilderWindow(QMainWindow):
         """Clear any cached assembler so exports rebuild from current state."""
 
         self._current_assembler = None
+        self._schedule_stream_update()
+
+    def _schedule_stream_update(self) -> None:
+        """Debounce live Rust backend updates while the user drags sliders."""
+
+        if not isinstance(self._stream_player, RustStreamPlayer):
+            return
+        if not getattr(self._stream_player, "_is_playing", False):
+            return
+
+        # Restart the timer so rapid UI changes coalesce into a single update
+        self._stream_update_timer.start()
+
+    def _push_stream_update_now(self) -> None:
+        """Send the latest track data to the Rust backend while streaming.
+
+        The realtime Rust backend supports live updates via ``update_track``.
+        Whenever the GUI changes a session parameter, we rebuild the assembler
+        payload and push it to the backend so playback immediately reflects the
+        current settings. Python fallback players ignore these updates.
+        """
+
+        if not isinstance(self._stream_player, RustStreamPlayer):
+            return
+        if not getattr(self._stream_player, "_is_playing", False):
+            return
+
+        try:
+            assembler = self._create_assembler()
+        except Exception:
+            return
+
+        try:
+            self._stream_player.update_track(assembler.track_data)
+        except Exception:
+            # Best-effort update; keep playback running even if live refresh fails
+            pass
 
     def _refresh_step_model(self, *, preserve_selection: bool = True, select_index: Optional[int] = None) -> None:
         """Refresh the step model and keep the current editing row highlighted."""

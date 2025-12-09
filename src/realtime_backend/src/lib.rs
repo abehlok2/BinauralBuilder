@@ -3,38 +3,38 @@
 
 #[cfg(feature = "python")]
 pub mod audio_io;
+pub mod command;
+pub mod config;
 pub mod dsp;
+pub mod gpu;
 pub mod models;
 pub mod noise_params;
-pub mod streaming_noise;
 pub mod scheduler;
-pub mod command;
+pub mod streaming_noise;
 pub mod voices;
-pub mod gpu;
-pub mod config;
 
 use config::CONFIG;
 
-use models::TrackData;
-use scheduler::TrackScheduler;
-use parking_lot::Mutex;
-use once_cell::sync::Lazy;
-use ringbuf::{HeapRb, HeapProd, HeapCons};
-use ringbuf::traits::{Producer, Consumer, Split};
-#[cfg(feature = "python")]
-use cpal::traits::HostTrait;
+use command::Command;
 #[cfg(feature = "python")]
 use cpal::traits::DeviceTrait;
-use command::Command;
+#[cfg(feature = "python")]
+use cpal::traits::HostTrait;
+use models::TrackData;
+use once_cell::sync::Lazy;
+use parking_lot::Mutex;
+use ringbuf::traits::{Consumer, Producer, Split};
+use ringbuf::{HeapCons, HeapProd, HeapRb};
+use scheduler::TrackScheduler;
 
-#[cfg(feature = "python")]
-use pyo3::prelude::*;
-#[cfg(feature = "python")]
-use pyo3::prelude::Bound;
 #[cfg(feature = "python")]
 use crossbeam::channel::{unbounded, Sender};
 #[cfg(feature = "python")]
 use hound;
+#[cfg(feature = "python")]
+use pyo3::prelude::Bound;
+#[cfg(feature = "python")]
+use pyo3::prelude::*;
 #[cfg(feature = "web")]
 use wasm_bindgen::prelude::*;
 
@@ -54,8 +54,12 @@ fn start_stream(track_json_str: String, start_time: Option<f64>) -> PyResult<()>
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
 
     let host = cpal::default_host();
-    let device = host.default_output_device().ok_or_else(|| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("no output device"))?;
-    let cfg = device.default_output_config().map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
+    let device = host
+        .default_output_device()
+        .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("no output device"))?;
+    let cfg = device
+        .default_output_config()
+        .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
     let stream_rate = cfg.sample_rate().0;
 
     let start_secs = start_time.unwrap_or(0.0);
@@ -93,6 +97,15 @@ fn update_track(track_json_str: String) -> PyResult<()> {
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
     if let Some(prod) = &mut *ENGINE_STATE.lock() {
         let _ = prod.try_push(Command::UpdateTrack(track_data));
+    }
+    Ok(())
+}
+
+#[cfg(feature = "python")]
+#[pyfunction]
+fn set_output_gain(gain: f32) -> PyResult<()> {
+    if let Some(prod) = &mut *ENGINE_STATE.lock() {
+        let _ = prod.try_push(Command::SetOutputGain(gain));
     }
     Ok(())
 }
@@ -138,7 +151,11 @@ fn start_from(position: f64) -> PyResult<()> {
 #[pyo3(signature = (index, samples, finished=false))]
 fn push_clip_samples(index: usize, samples: Vec<f32>, finished: bool) -> PyResult<()> {
     if let Some(prod) = &mut *ENGINE_STATE.lock() {
-        let _ = prod.try_push(Command::PushClipSamples { index, data: samples, finished });
+        let _ = prod.try_push(Command::PushClipSamples {
+            index,
+            data: samples,
+            finished,
+        });
     }
     Ok(())
 }
@@ -146,7 +163,7 @@ fn push_clip_samples(index: usize, samples: Vec<f32>, finished: bool) -> PyResul
 #[cfg(feature = "python")]
 #[pyfunction]
 fn render_sample_wav(track_json_str: String, out_path: String) -> PyResult<()> {
-    use hound::{WavSpec, WavWriter, SampleFormat};
+    use hound::{SampleFormat, WavSpec, WavWriter};
     let track_data: TrackData = serde_json::from_str(&track_json_str)
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
 
@@ -191,19 +208,23 @@ fn render_sample_wav(track_json_str: String, out_path: String) -> PyResult<()> {
         scheduler.process_block(&mut buffer);
         for sample in &buffer[..frames * 2] {
             let s = (sample.clamp(-1.0, 1.0) * i16::MAX as f32) as i16;
-            writer.write_sample(s).map_err(|e| PyErr::new::<pyo3::exceptions::PyIOError, _>(e.to_string()))?;
+            writer
+                .write_sample(s)
+                .map_err(|e| PyErr::new::<pyo3::exceptions::PyIOError, _>(e.to_string()))?;
         }
         remaining -= frames;
     }
 
-    writer.finalize().map_err(|e| PyErr::new::<pyo3::exceptions::PyIOError, _>(e.to_string()))?;
+    writer
+        .finalize()
+        .map_err(|e| PyErr::new::<pyo3::exceptions::PyIOError, _>(e.to_string()))?;
     Ok(())
 }
 
 #[cfg(feature = "python")]
 #[pyfunction]
 fn render_full_wav(track_json_str: String, out_path: String) -> PyResult<()> {
-    use hound::{WavSpec, WavWriter, SampleFormat};
+    use hound::{SampleFormat, WavSpec, WavWriter};
     let track_data: TrackData = serde_json::from_str(&track_json_str)
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
 
@@ -247,12 +268,16 @@ fn render_full_wav(track_json_str: String, out_path: String) -> PyResult<()> {
         scheduler.process_block(&mut buffer);
         for sample in &buffer[..frames * 2] {
             let s = (sample.clamp(-1.0, 1.0) * i16::MAX as f32) as i16;
-            writer.write_sample(s).map_err(|e| PyErr::new::<pyo3::exceptions::PyIOError, _>(e.to_string()))?;
+            writer
+                .write_sample(s)
+                .map_err(|e| PyErr::new::<pyo3::exceptions::PyIOError, _>(e.to_string()))?;
         }
         remaining -= frames;
     }
 
-    writer.finalize().map_err(|e| PyErr::new::<pyo3::exceptions::PyIOError, _>(e.to_string()))?;
+    writer
+        .finalize()
+        .map_err(|e| PyErr::new::<pyo3::exceptions::PyIOError, _>(e.to_string()))?;
     let elapsed = start_time.elapsed().as_secs_f32();
     println!("Total generation time: {:.2}s", elapsed);
     Ok(())
@@ -357,7 +382,11 @@ pub fn push_clip_samples(index: usize, samples: &js_sys::Float32Array, finished:
     let mut vec = vec![0.0f32; samples.length() as usize];
     samples.copy_to(&mut vec);
     if let Some(prod) = &mut *ENGINE_STATE.lock() {
-        let _ = prod.try_push(Command::PushClipSamples { index, data: vec, finished });
+        let _ = prod.try_push(Command::PushClipSamples {
+            index,
+            data: vec,
+            finished,
+        });
     }
 }
 
@@ -378,6 +407,7 @@ fn realtime_backend(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(start_from, m)?)?;
     m.add_function(wrap_pyfunction!(push_clip_samples, m)?)?;
     m.add_function(wrap_pyfunction!(update_track, m)?)?;
+    m.add_function(wrap_pyfunction!(set_output_gain, m)?)?;
     m.add_function(wrap_pyfunction!(render_sample_wav, m)?)?;
     m.add_function(wrap_pyfunction!(render_full_wav, m)?)?;
     m.add_function(wrap_pyfunction!(enable_gpu, m)?)?;

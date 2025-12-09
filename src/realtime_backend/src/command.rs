@@ -10,5 +10,11 @@ pub enum Command {
     /// Seek to a new playback position in seconds
     StartFrom(f64),
     /// Feed audio samples to a streaming overlay clip
-    PushClipSamples { index: usize, data: Vec<f32>, finished: bool },
+    PushClipSamples {
+        index: usize,
+        data: Vec<f32>,
+        finished: bool,
+    },
+    /// Apply a global gain after all voices have been mixed
+    SetOutputGain(f32),
 }
