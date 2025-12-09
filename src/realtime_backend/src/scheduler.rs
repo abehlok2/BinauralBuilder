@@ -680,16 +680,16 @@ impl TrackScheduler {
             if self.crossfade_next.len() != len {
                 self.crossfade_next.resize(len, 0.0);
             }
-            let prev_buf = &mut self.crossfade_prev;
-            let next_buf = &mut self.crossfade_next;
+            let mut prev_buf = std::mem::take(&mut self.crossfade_prev);
+            let mut next_buf = std::mem::take(&mut self.crossfade_next);
             prev_buf.fill(0.0);
             next_buf.fill(0.0);
 
-            let step = &self.track.steps[self.current_step];
-            self.render_step_audio(&mut self.active_voices, step, prev_buf);
+            let step = self.track.steps[self.current_step].clone();
+            self.render_step_audio(&mut self.active_voices, &step, &mut prev_buf);
             let next_step_idx = (self.current_step + 1).min(self.track.steps.len() - 1);
-            let next_step = &self.track.steps[next_step_idx];
-            self.render_step_audio(&mut self.next_voices, next_step, next_buf);
+            let next_step = self.track.steps[next_step_idx].clone();
+            self.render_step_audio(&mut self.next_voices, &next_step, &mut next_buf);
 
             for i in 0..frames {
                 let idx = i * 2;
@@ -724,10 +724,13 @@ impl TrackScheduler {
                 self.crossfade_envelope.clear();
                 self.current_crossfade_samples = 0;
             }
+
+            self.crossfade_prev = prev_buf;
+            self.crossfade_next = next_buf;
         } else {
             if !self.active_voices.is_empty() {
-                let step = &self.track.steps[self.current_step];
-                self.render_step_audio(&mut self.active_voices, step, buffer);
+                let step = self.track.steps[self.current_step].clone();
+                self.render_step_audio(&mut self.active_voices, &step, buffer);
             }
 
             self.active_voices.retain(|v| !v.is_finished());
