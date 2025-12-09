@@ -622,6 +622,30 @@ class SessionBuilderWindow(QMainWindow):
         """Clear any cached assembler so exports rebuild from current state."""
 
         self._current_assembler = None
+        self._push_stream_update()
+
+    def _push_stream_update(self) -> None:
+        """Send the latest track data to the Rust backend while streaming.
+
+        The realtime Rust backend supports live updates via ``update_track``.
+        Whenever the GUI changes a session parameter, we rebuild the assembler
+        payload and push it to the backend so playback immediately reflects the
+        current settings. Python fallback players ignore these updates.
+        """
+
+        if not isinstance(self._stream_player, RustStreamPlayer):
+            return
+
+        try:
+            assembler = self._create_assembler()
+        except Exception:
+            return
+
+        try:
+            self._stream_player.update_track(assembler.track_data)
+        except Exception:
+            # Best-effort update; keep playback running even if live refresh fails
+            pass
 
     def _refresh_step_model(self, *, preserve_selection: bool = True, select_index: Optional[int] = None) -> None:
         """Refresh the step model and keep the current editing row highlighted."""
