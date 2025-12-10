@@ -71,24 +71,6 @@ impl BiquadState {
 
 // --- FFT Based Noise Generator (Matches Python's ColoredNoiseGenerator) ---
 
-/// RMS compensation factors to equalize perceived loudness across noise colors.
-/// These factors compensate for the inherent crest factor differences between noise types.
-/// Measured empirically: white noise RMS ~0.289 (1/sqrt(12)), colored noise varies.
-/// Target: all noise types output approximately the same RMS level.
-fn rms_compensation_for_type(noise_type: &str) -> f32 {
-    match noise_type {
-        "white" => 1.0,
-        "pink" => 1.0,       // Pink has similar RMS to white after peak normalization
-        "brown" => 1.25,     // Brown has lower RMS due to higher crest factor
-        "red" => 1.2,        // Red (brown variant) similar compensation
-        "blue" => 1.15,      // Blue has slightly lower RMS
-        "purple" => 1.3,     // Purple has highest crest factor, needs most boost
-        "green" => 1.1,      // Green is bandpassed, moderate compensation
-        "deep brown" => 1.35, // Deep brown has very high crest factor
-        _ => 1.0,
-    }
-}
-
 struct FftNoiseGenerator {
     buffer: Vec<f32>,
     cursor: usize,
@@ -103,10 +85,6 @@ struct FftNoiseGenerator {
     lp_filters: Option<Vec<DirectForm2Transposed<f32>>>,
     hp_filters: Option<Vec<DirectForm2Transposed<f32>>>,
     base_amplitude: f32,
-    /// RMS compensation factor for this noise type
-    rms_compensation: f32,
-    /// Target RMS level for consistent power output (approximately -12 dBFS)
-    target_rms: f32,
     fft_forward: Arc<dyn Fft<f32>>,
     fft_inverse: Arc<dyn Fft<f32>>,
     rng: StdRng,
@@ -202,13 +180,6 @@ impl FftNoiseGenerator {
             }
         }
 
-        // Get RMS compensation for this noise type
-        let rms_compensation = rms_compensation_for_type(nt.as_str());
-
-        // Target RMS level: ~0.25 corresponds to approximately -12 dBFS
-        // This leaves headroom for peaks while maintaining consistent perceived loudness
-        let target_rms = 0.25;
-
         let mut gen = Self {
             buffer: Vec::new(),
             cursor: 0,
@@ -222,8 +193,6 @@ impl FftNoiseGenerator {
             lp_filters,
             hp_filters,
             base_amplitude: amplitude,
-            rms_compensation,
-            target_rms,
             fft_forward,
             fft_inverse,
             rng,
@@ -276,32 +245,13 @@ impl FftNoiseGenerator {
         self.fft_inverse.process(&mut white);
 
         let mut output: Vec<f32> = white.iter().map(|c| c.re / self.size as f32).collect();
-
-        // Calculate RMS of the buffer for consistent power normalization
-        let sum_sq: f64 = output.iter().map(|&x| (x as f64) * (x as f64)).sum();
-        let rms = ((sum_sq / output.len() as f64) as f32).sqrt();
-
-        if rms > 1e-9 {
-            // Normalize to target RMS level, applying noise-type-specific compensation
-            // This ensures consistent perceived loudness across all noise colors
-            // and stable power output across buffer regenerations
-            let target = self.target_rms * self.rms_compensation;
-            let gain = target / rms;
-            for x in &mut output {
-                *x *= gain;
-            }
-        }
-
-        // Soft-clip any peaks that exceed 0.95 to prevent clipping while
-        // maintaining consistent RMS. Use gentle tanh saturation.
-        let ceiling = 0.95_f32;
-        for x in &mut output {
-            if x.abs() > ceiling {
-                // Gentle soft-clipping: tanh curve scaled to approach ceiling asymptotically
-                let sign = x.signum();
-                let excess = x.abs() - ceiling;
-                // Map excess through tanh, leaving ~5% headroom above ceiling
-                *x = sign * (ceiling + 0.05 * (excess / 0.05).tanh());
+        if let Some(max_val) = output.iter().fold(None, |acc: Option<f32>, &v| {
+            Some(acc.map_or(v.abs(), |m| m.max(v.abs())))
+        }) {
+            if max_val > 1e-9 {
+                for x in &mut output {
+                    *x /= max_val;
+                }
             }
         }
 
@@ -418,12 +368,26 @@ impl StreamingNoise {
             vec![10usize; sweeps.len()]
         };
 
-        // Always use FFT generator for consistent behavior:
-        // 1. RMS normalization ensures stable power output across buffer regenerations
-        // 2. Spectral shaping matches Python's ColoredNoiseGenerator exactly
-        // 3. Per-color RMS compensation ensures equal perceived loudness across noise types
-        // The legacy IIR path is kept for reference but no longer used by default.
-        let fft_gen = Some(FftNoiseGenerator::new(params, sample_rate as f32));
+        // Determine Mode
+        let nt = params.noise_type.to_lowercase();
+        // Legacy if strictly Pink/Brown/Red/White AND NO custom params
+        // Note: Python uses Pink via IIR in generate_pink_noise_samples, so we replicate that.
+        let is_legacy_type = matches!(nt.as_str(), "pink" | "brown" | "red" | "white");
+        let has_custom_params = params.exponent.is_some()
+            || params.high_exponent.is_some()
+            || params.distribution_curve.is_some()
+            || params.lowcut.is_some()
+            || params.highcut.is_some()
+            || params.amplitude.is_some();
+
+        let use_fft = !is_legacy_type || has_custom_params;
+        // eprintln!("StreamingNoise::new: nt={}, custom={}, use_fft={}", nt, has_custom_params, use_fft);
+
+        let fft_gen = if use_fft {
+            Some(FftNoiseGenerator::new(params, sample_rate as f32))
+        } else {
+            None
+        };
 
         let mk_states = |casc: &Vec<usize>| -> (Vec<Vec<BiquadState>>, Vec<Vec<BiquadState>>) {
             let main: Vec<Vec<BiquadState>> =
