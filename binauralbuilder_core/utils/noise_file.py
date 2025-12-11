@@ -22,6 +22,7 @@ class NoiseParams:
     start_lfo_freq: float = 1.0 / 12.0
     end_lfo_freq: float = 1.0 / 12.0
     sweeps: List[Dict[str, Any]] = field(default_factory=list)
+    color_params: Dict[str, Any] = field(default_factory=dict)
     start_lfo_phase_offset_deg: int = 0
     end_lfo_phase_offset_deg: int = 0
     start_intra_phase_offset_deg: int = 0
