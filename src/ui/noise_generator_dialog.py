@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Dict, Optional
 
 from PyQt5.QtWidgets import (
     QDialog,
@@ -259,6 +259,8 @@ class NoiseGeneratorDialog(QDialog):
         if not QT_MULTIMEDIA_AVAILABLE:
             self.test_btn.setEnabled(False)
 
+        self._loaded_color_params: Dict[str, Dict[str, object]] = {}
+        self._loaded_color_names: Dict[str, str] = {}
         self._refresh_noise_types()
 
     def load_settings(self) -> None:
@@ -311,11 +313,49 @@ class NoiseGeneratorDialog(QDialog):
             self.noise_type_combo.addItem(name)
         for name in sorted(custom_colors):
             self.noise_type_combo.addItem(name)
+        for key in sorted(self._loaded_color_params):
+            display = self._loaded_color_names.get(key, key)
+            if self.noise_type_combo.findText(display, Qt.MatchFixedString) == -1:
+                self.noise_type_combo.addItem(display)
 
         if self.noise_type_combo.count():
             idx = self.noise_type_combo.findText(current)
             self.noise_type_combo.setCurrentIndex(idx if idx >= 0 else 0)
         self.noise_type_combo.blockSignals(False)
+
+    def _resolve_color_params(self, noise_type: str) -> Dict[str, object]:
+        """Return the full colour parameter set for ``noise_type``.
+
+        Values are pulled from (in order): parameters embedded in a loaded
+        ``.noise`` file, user-defined custom presets, and built-in defaults.
+        """
+
+        key = (noise_type or "").strip().lower()
+        if not key:
+            return {}
+
+        if key in self._loaded_color_params:
+            return dict(self._loaded_color_params[key])
+
+        for name, preset in load_custom_color_presets().items():
+            if name.lower() == key:
+                return dict(preset)
+
+        for name, preset in DEFAULT_COLOR_PRESETS.items():
+            if name.lower() == key:
+                return dict(preset)
+
+        return {}
+
+    def _store_color_params(self, noise_type: str, color_params: Dict[str, object]) -> None:
+        """Persist colour params embedded in a ``.noise`` file for reuse."""
+
+        key = (noise_type or "").strip().lower()
+        if not key or not color_params:
+            return
+
+        self._loaded_color_params[key] = dict(color_params)
+        self._loaded_color_names[key] = noise_type
 
     def update_sweep_visibility(self, count):
         for i, (row_widget, *_rest) in enumerate(self.sweep_rows):
@@ -343,6 +383,7 @@ class NoiseGeneratorDialog(QDialog):
             lfo_freq=float(self.lfo_start_spin.value()),
             start_lfo_freq=float(self.lfo_start_spin.value()),
             end_lfo_freq=float(self.lfo_end_spin.value()),
+            color_params=self._resolve_color_params(self.noise_type_combo.currentText()),
             start_lfo_phase_offset_deg=int(self.lfo_phase_start_spin.value()),
             end_lfo_phase_offset_deg=int(self.lfo_phase_end_spin.value()),
             start_intra_phase_offset_deg=int(self.intra_phase_start_spin.value()),
@@ -374,9 +415,14 @@ class NoiseGeneratorDialog(QDialog):
 
     def set_noise_params(self, params: NoiseParams) -> None:
         """Apply ``params`` to the UI widgets."""
+        self._store_color_params(params.noise_type, getattr(params, "color_params", {}))
+        display_name = self._loaded_color_names.get(
+            (params.noise_type or "").strip().lower(), params.noise_type.title()
+        )
+        self._refresh_noise_types(selected=display_name)
         self.output_duration_spin.setValue(params.duration_seconds)
         self.sample_rate_spin.setValue(params.sample_rate)
-        idx = self.noise_type_combo.findText(params.noise_type.title())
+        idx = self.noise_type_combo.findText(display_name)
         if idx != -1:
             self.noise_type_combo.setCurrentIndex(idx)
         idx = self.lfo_waveform_combo.findText(params.lfo_waveform.capitalize())

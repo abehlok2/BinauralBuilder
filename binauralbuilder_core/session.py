@@ -313,7 +313,7 @@ def build_binaural_preset_catalog(
                 kind="binaural",
                 description=description,
                 source_path=path,
-                payload={"voices": voices},
+                payload={"voices": voices, "voice_data": voices[0]},
             )
         except Exception:
             continue
@@ -332,16 +332,16 @@ def build_binaural_preset_catalog(
                 if not voices:
                     continue
 
-                preset_id = f"preset:{name}"
+                preset_id = f"builtin:{name}"
                 label = name.replace("_", " ").title()
                 description = first_step.get("description", "Preset loaded from presets.py.")
-                
+
                 catalog[preset_id] = SessionPresetChoice(
                     id=preset_id,
                     label=label,
                     kind="binaural",
                     description=description,
-                    payload={"voices": voices},
+                    payload={"voices": voices, "voice_data": voices[0]},
                 )
             except Exception:
                 continue
