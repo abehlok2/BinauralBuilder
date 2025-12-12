@@ -828,10 +828,14 @@ impl TrackScheduler {
             next_buf.fill(0.0);
 
             let step = self.track.steps[self.current_step].clone();
-            self.render_step_audio(&mut self.active_voices, &step, &mut prev_buf);
+            let mut voices = std::mem::take(&mut self.active_voices);
+            self.render_step_audio(&mut voices, &step, &mut prev_buf);
+            self.active_voices = voices;
             let next_step_idx = (self.current_step + 1).min(self.track.steps.len() - 1);
             let next_step = self.track.steps[next_step_idx].clone();
-            self.render_step_audio(&mut self.next_voices, &next_step, &mut next_buf);
+            let mut next_voices = std::mem::take(&mut self.next_voices);
+            self.render_step_audio(&mut next_voices, &next_step, &mut next_buf);
+            self.next_voices = next_voices;
 
             for i in 0..frames {
                 let idx = i * 2;
@@ -872,7 +876,9 @@ impl TrackScheduler {
         } else {
             if !self.active_voices.is_empty() {
                 let step = self.track.steps[self.current_step].clone();
-                self.render_step_audio(&mut self.active_voices, &step, buffer);
+                let mut voices = std::mem::take(&mut self.active_voices);
+                self.render_step_audio(&mut voices, &step, buffer);
+                self.active_voices = voices;
             }
 
             self.active_voices.retain(|v| !v.is_finished());
