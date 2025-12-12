@@ -163,6 +163,12 @@ class SessionBuilderWindow(QMainWindow):
         self._using_rust_backend = is_rust_backend_available()
         self._current_assembler: Optional[SessionAssembler] = None
 
+        # Coalesce rapid UI changes before pushing live updates to the backend
+        self._stream_update_timer = QTimer(self)
+        self._stream_update_timer.setInterval(200)
+        self._stream_update_timer.setSingleShot(True)
+        self._stream_update_timer.timeout.connect(self._push_stream_update)
+
         self._init_actions()
         self._init_menu()
         self._init_ui()
@@ -622,7 +628,17 @@ class SessionBuilderWindow(QMainWindow):
         """Clear any cached assembler so exports rebuild from current state."""
 
         self._current_assembler = None
-        self._push_stream_update()
+        self._schedule_stream_update()
+
+    def _schedule_stream_update(self) -> None:
+        """Debounce live stream refreshes while sliders are being dragged."""
+
+        if not isinstance(self._stream_player, RustStreamPlayer):
+            self._stream_update_timer.stop()
+            return
+
+        # Restart the timer so only the final value after a drag triggers an update
+        self._stream_update_timer.start()
 
     def _push_stream_update(self) -> None:
         """Send the latest track data to the Rust backend while streaming.
