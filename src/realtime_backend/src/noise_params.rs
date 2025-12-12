@@ -1,4 +1,6 @@
 use serde::Deserialize;
+use serde_json::Value;
+use std::collections::HashMap;
 
 #[derive(Deserialize, Debug, Clone, Default)]
 pub struct NoiseSweep {
@@ -41,6 +43,8 @@ pub struct NoiseParams {
     #[serde(default)]
     pub sweeps: Vec<NoiseSweep>,
     #[serde(default)]
+    pub color_params: HashMap<String, Value>,
+    #[serde(default)]
     pub start_lfo_phase_offset_deg: f32,
     #[serde(default)]
     pub end_lfo_phase_offset_deg: f32,
@@ -66,14 +70,50 @@ pub struct NoiseParams {
     pub highcut: Option<f32>,
     #[serde(default)]
     pub amplitude: Option<f32>,
+    #[serde(default)]
+    pub start_time: f32,
+    #[serde(default)]
+    pub fade_in: f32,
+    #[serde(default)]
+    pub fade_out: f32,
+    #[serde(default)]
+    pub amp_envelope: Vec<[f32; 2]>,
+    #[serde(default)]
+    pub static_notches: Vec<Value>,
 }
 
 pub fn load_noise_params(path: &str) -> Result<NoiseParams, Box<dyn std::error::Error>> {
     let file = std::fs::File::open(path)?;
     let params: NoiseParams = serde_json::from_reader(file)?;
-    Ok(params)
+    Ok(apply_color_params(params))
 }
 
 pub fn load_noise_params_from_str(data: &str) -> Result<NoiseParams, serde_json::Error> {
-    serde_json::from_str(data)
+    serde_json::from_str(data).map(apply_color_params)
+}
+
+fn color_val(map: &HashMap<String, Value>, key: &str) -> Option<f32> {
+    map.get(key).and_then(|v| v.as_f64()).map(|v| v as f32)
+}
+
+pub fn apply_color_params(mut params: NoiseParams) -> NoiseParams {
+    if params.exponent.is_none() {
+        params.exponent = color_val(&params.color_params, "exponent");
+    }
+    if params.high_exponent.is_none() {
+        params.high_exponent = color_val(&params.color_params, "high_exponent");
+    }
+    if params.distribution_curve.is_none() {
+        params.distribution_curve = color_val(&params.color_params, "distribution_curve");
+    }
+    if params.lowcut.is_none() {
+        params.lowcut = color_val(&params.color_params, "lowcut");
+    }
+    if params.highcut.is_none() {
+        params.highcut = color_val(&params.color_params, "highcut");
+    }
+    if params.amplitude.is_none() {
+        params.amplitude = color_val(&params.color_params, "amplitude");
+    }
+    params
 }
