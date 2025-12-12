@@ -3822,6 +3822,61 @@ impl Voice for SubliminalEncodeVoice {
     }
 }
 
+impl VoiceKind {
+    /// Returns the current accumulated phases (phase_l, phase_r) for voices that track stereo phase.
+    /// This is used to maintain phase continuity when transitioning between voice instances.
+    pub fn get_phases(&self) -> Option<(f32, f32)> {
+        match self {
+            VoiceKind::BinauralBeat(v) => Some((v.phase_l, v.phase_r)),
+            VoiceKind::BinauralBeatTransition(v) => Some((v.phase_l, v.phase_r)),
+            VoiceKind::IsochronicTone(v) => Some((v.phase_l, v.phase_r)),
+            VoiceKind::IsochronicToneTransition(v) => Some((v.phase_l, v.phase_r)),
+            VoiceKind::QamBeat(v) => Some((v.phase_l, v.phase_r)),
+            VoiceKind::QamBeatTransition(v) => Some((v.phase_l, v.phase_r)),
+            VoiceKind::VolumeEnvelope(v) => v.inner.get_phases(),
+            // Other voice types don't track stereo carrier phases
+            _ => None,
+        }
+    }
+
+    /// Sets the accumulated phases for voices that track stereo phase.
+    /// This ensures phase continuity when creating a new voice instance to continue
+    /// from where the previous one left off.
+    pub fn set_phases(&mut self, phase_l: f32, phase_r: f32) {
+        match self {
+            VoiceKind::BinauralBeat(v) => {
+                v.phase_l = phase_l;
+                v.phase_r = phase_r;
+            }
+            VoiceKind::BinauralBeatTransition(v) => {
+                v.phase_l = phase_l;
+                v.phase_r = phase_r;
+            }
+            VoiceKind::IsochronicTone(v) => {
+                v.phase_l = phase_l;
+                v.phase_r = phase_r;
+            }
+            VoiceKind::IsochronicToneTransition(v) => {
+                v.phase_l = phase_l;
+                v.phase_r = phase_r;
+            }
+            VoiceKind::QamBeat(v) => {
+                v.phase_l = phase_l;
+                v.phase_r = phase_r;
+            }
+            VoiceKind::QamBeatTransition(v) => {
+                v.phase_l = phase_l;
+                v.phase_r = phase_r;
+            }
+            VoiceKind::VolumeEnvelope(v) => {
+                v.inner.set_phases(phase_l, phase_r);
+            }
+            // Other voice types don't track stereo carrier phases
+            _ => {}
+        }
+    }
+}
+
 impl Voice for VoiceKind {
     fn process(&mut self, output: &mut [f32]) {
         match self {

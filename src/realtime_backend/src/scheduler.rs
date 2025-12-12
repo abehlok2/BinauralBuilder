@@ -96,6 +96,9 @@ pub struct TrackScheduler {
     voice_temp: Vec<f32>,
     /// Temporary buffer for accumulating noise voices separately
     noise_scratch: Vec<f32>,
+    /// Accumulated phases (phase_l, phase_r) carried over from previous voices.
+    /// Used to maintain phase continuity and prevent clicking when transitioning between steps.
+    accumulated_phases: Vec<(f32, f32)>,
 }
 
 pub enum ClipSamples {
@@ -508,6 +511,7 @@ impl TrackScheduler {
             gpu: GpuMixer::new(),
             voice_temp: Vec::new(),
             noise_scratch: Vec::new(),
+            accumulated_phases: Vec::new(),
         };
 
         let start_samples = (start_time * sample_rate as f64) as usize;
@@ -546,6 +550,7 @@ impl TrackScheduler {
         self.next_step_sample = 0;
         self.crossfade_prev.clear();
         self.crossfade_next.clear();
+        self.accumulated_phases.clear();
         if let Some(noise) = &mut self.background_noise {
             noise.playback_sample = 0;
             noise.started = false;
@@ -772,6 +777,30 @@ impl TrackScheduler {
         self.absolute_sample
     }
 
+    /// Extracts accumulated phases from all voices that track phase.
+    /// Returns a vector of (phase_l, phase_r) tuples for each voice that has phases.
+    fn extract_phases_from_voices(voices: &[StepVoice]) -> Vec<(f32, f32)> {
+        voices
+            .iter()
+            .filter_map(|v| v.kind.get_phases())
+            .collect()
+    }
+
+    /// Applies accumulated phases to newly created voices.
+    /// This maintains phase continuity between voice instances to prevent clicking.
+    fn apply_phases_to_voices(phases: &[(f32, f32)], voices: &mut [StepVoice]) {
+        // Apply phases to voices that support them, matching by index
+        let mut phase_iter = phases.iter();
+        for voice in voices.iter_mut() {
+            // Only apply to voices that have phase tracking
+            if voice.kind.get_phases().is_some() {
+                if let Some(&(phase_l, phase_r)) = phase_iter.next() {
+                    voice.kind.set_phases(phase_l, phase_r);
+                }
+            }
+        }
+    }
+
     pub fn process_block(&mut self, buffer: &mut [f32]) {
         let frame_count = buffer.len() / 2;
         buffer.fill(0.0);
@@ -786,7 +815,10 @@ impl TrackScheduler {
 
         if self.active_voices.is_empty() && !self.crossfade_active {
             let step = &self.track.steps[self.current_step];
-            self.active_voices = voices_for_step(step, self.sample_rate);
+            let mut new_voices = voices_for_step(step, self.sample_rate);
+            // Apply accumulated phases from previous voices to maintain phase continuity
+            Self::apply_phases_to_voices(&self.accumulated_phases, &mut new_voices);
+            self.active_voices = new_voices;
         }
 
         // Check if we need to start crossfade into the next step
@@ -800,7 +832,12 @@ impl TrackScheduler {
                 let step_samples = (step.duration * self.sample_rate as f64) as usize;
                 let fade_len = self.crossfade_samples.min(step_samples);
                 if self.current_sample >= step_samples.saturating_sub(fade_len) {
-                    self.next_voices = voices_for_step(next_step, self.sample_rate);
+                    // Extract phases from current voices before transitioning
+                    self.accumulated_phases = Self::extract_phases_from_voices(&self.active_voices);
+                    let mut new_next_voices = voices_for_step(next_step, self.sample_rate);
+                    // Apply accumulated phases to the new voices for continuity
+                    Self::apply_phases_to_voices(&self.accumulated_phases, &mut new_next_voices);
+                    self.next_voices = new_next_voices;
                     self.crossfade_active = true;
                     self.next_step_sample = 0;
                     let next_samples = (next_step.duration * self.sample_rate as f64) as usize;
@@ -866,6 +903,8 @@ impl TrackScheduler {
             self.next_voices.retain(|v| !v.is_finished());
 
             if self.next_step_sample >= self.current_crossfade_samples {
+                // Update accumulated phases from the next_voices that are becoming active
+                self.accumulated_phases = Self::extract_phases_from_voices(&self.next_voices);
                 self.current_step += 1;
                 self.current_sample = self.next_step_sample;
                 self.next_step_sample = 0;
@@ -890,6 +929,8 @@ impl TrackScheduler {
             let step = &self.track.steps[self.current_step];
             let step_samples = (step.duration * self.sample_rate as f64) as usize;
             if self.current_sample >= step_samples {
+                // Extract phases from current voices before clearing to maintain phase continuity
+                self.accumulated_phases = Self::extract_phases_from_voices(&self.active_voices);
                 self.current_step += 1;
                 self.current_sample = 0;
                 self.active_voices.clear();
