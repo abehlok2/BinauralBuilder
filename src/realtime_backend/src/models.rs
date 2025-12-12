@@ -13,12 +13,16 @@ fn default_crossfade_curve() -> String {
     "linear".to_string()
 }
 
+/// Maximum individual gain for binaural/noise to prevent clipping when combined.
+/// With both at max (0.48 + 0.48 = 0.96), the combined output stays under 1.0.
+pub const MAX_INDIVIDUAL_GAIN: f32 = 0.48;
+
 fn default_binaural_volume() -> f32 {
-    1.0
+    MAX_INDIVIDUAL_GAIN
 }
 
 fn default_noise_volume() -> f32 {
-    1.0
+    MAX_INDIVIDUAL_GAIN
 }
 
 fn default_normalization() -> f32 {

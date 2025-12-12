@@ -13,6 +13,7 @@ from binauralbuilder_core.session import (
     build_binaural_preset_catalog,
     build_noise_preset_catalog,
     session_to_track_data,
+    MAX_INDIVIDUAL_GAIN,
 )
 
 __all__ = [
@@ -22,4 +23,5 @@ __all__ = [
     "build_binaural_preset_catalog",
     "build_noise_preset_catalog",
     "session_to_track_data",
+    "MAX_INDIVIDUAL_GAIN",
 ]

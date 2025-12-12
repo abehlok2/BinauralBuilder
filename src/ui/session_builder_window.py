@@ -36,7 +36,7 @@ from PyQt5.QtWidgets import (
 )
 
 from src.audio.session_engine import SessionAssembler
-from src.audio.session_model import Session, SessionPresetChoice, SessionStep
+from src.audio.session_model import Session, SessionPresetChoice, SessionStep, MAX_INDIVIDUAL_GAIN
 from PyQt5.QtWidgets import QApplication
 
 from src.audio.session_stream import SessionStreamPlayer
@@ -409,12 +409,12 @@ class SessionBuilderWindow(QMainWindow):
         binaural_vol_layout.setContentsMargins(0,0,0,0)
         self.binaural_vol_slider = QSlider(Qt.Horizontal)
         self.binaural_vol_slider.setRange(0, 100)
-        self.binaural_vol_slider.setToolTip("Volume of the binaural preset (0-100%).")
+        self.binaural_vol_slider.setToolTip(f"Volume of the binaural preset (0-100%, max {MAX_INDIVIDUAL_GAIN:.2f}).")
         self.binaural_vol_spin = QDoubleSpinBox()
         self.binaural_vol_spin.setDecimals(2)
-        self.binaural_vol_spin.setRange(0.0, 1.0)
-        self.binaural_vol_spin.setSingleStep(0.05)
-        self.binaural_vol_spin.setToolTip("Precise binaural volume (0.0-1.0).")
+        self.binaural_vol_spin.setRange(0.0, MAX_INDIVIDUAL_GAIN)
+        self.binaural_vol_spin.setSingleStep(0.02)
+        self.binaural_vol_spin.setToolTip(f"Precise binaural volume (0.0-{MAX_INDIVIDUAL_GAIN:.2f}).")
         binaural_vol_layout.addWidget(self.binaural_vol_slider)
         binaural_vol_layout.addWidget(self.binaural_vol_spin)
 
@@ -424,12 +424,12 @@ class SessionBuilderWindow(QMainWindow):
         noise_vol_layout.setContentsMargins(0,0,0,0)
         self.noise_vol_slider = QSlider(Qt.Horizontal)
         self.noise_vol_slider.setRange(0, 100)
-        self.noise_vol_slider.setToolTip("Volume of the noise preset (0-100%).")
+        self.noise_vol_slider.setToolTip(f"Volume of the noise preset (0-100%, max {MAX_INDIVIDUAL_GAIN:.2f}).")
         self.noise_vol_spin = QDoubleSpinBox()
         self.noise_vol_spin.setDecimals(2)
-        self.noise_vol_spin.setRange(0.0, 1.0)
-        self.noise_vol_spin.setSingleStep(0.05)
-        self.noise_vol_spin.setToolTip("Precise noise volume (0.0-1.0).")
+        self.noise_vol_spin.setRange(0.0, MAX_INDIVIDUAL_GAIN)
+        self.noise_vol_spin.setSingleStep(0.02)
+        self.noise_vol_spin.setToolTip(f"Precise noise volume (0.0-{MAX_INDIVIDUAL_GAIN:.2f}).")
         noise_vol_layout.addWidget(self.noise_vol_slider)
         noise_vol_layout.addWidget(self.noise_vol_spin)
         
@@ -792,15 +792,17 @@ class SessionBuilderWindow(QMainWindow):
         if idx >= 0:
             self.preset_combo.setCurrentIndex(idx)
         
-        binaural_vol = getattr(step, "binaural_volume", 1.0)
-        self.binaural_vol_slider.setValue(int(round(binaural_vol * 100)))
+        binaural_vol = getattr(step, "binaural_volume", MAX_INDIVIDUAL_GAIN)
+        # Slider 0-100 maps to 0-MAX_INDIVIDUAL_GAIN
+        self.binaural_vol_slider.setValue(int(round((binaural_vol / MAX_INDIVIDUAL_GAIN) * 100)))
         self.binaural_vol_spin.setValue(binaural_vol)
 
         idx = self.noise_combo.findData(step.noise_preset_id)
         self.noise_combo.setCurrentIndex(idx if idx >= 0 else 0)
-        
-        noise_vol = getattr(step, "noise_volume", 1.0)
-        self.noise_vol_slider.setValue(int(round(noise_vol * 100)))
+
+        noise_vol = getattr(step, "noise_volume", MAX_INDIVIDUAL_GAIN)
+        # Slider 0-100 maps to 0-MAX_INDIVIDUAL_GAIN
+        self.noise_vol_slider.setValue(int(round((noise_vol / MAX_INDIVIDUAL_GAIN) * 100)))
         self.noise_vol_spin.setValue(noise_vol)
 
         self.duration_spin.setValue(step.duration)
@@ -840,8 +842,9 @@ class SessionBuilderWindow(QMainWindow):
         else:
             self.preset_combo.setCurrentIndex(-1)
 
+        # Default to max volume (slider at 100 = MAX_INDIVIDUAL_GAIN)
         self.binaural_vol_slider.setValue(100)
-        self.binaural_vol_spin.setValue(1.0)
+        self.binaural_vol_spin.setValue(MAX_INDIVIDUAL_GAIN)
 
         # Noise preset selection ("None" entry is index 0)
         if default_noise:
@@ -850,8 +853,9 @@ class SessionBuilderWindow(QMainWindow):
         else:
             self.noise_combo.setCurrentIndex(0 if self.noise_combo.count() else -1)
 
+        # Default to max volume (slider at 100 = MAX_INDIVIDUAL_GAIN)
         self.noise_vol_slider.setValue(100)
-        self.noise_vol_spin.setValue(1.0)
+        self.noise_vol_spin.setValue(MAX_INDIVIDUAL_GAIN)
         self.duration_spin.setValue(default_duration)
         self.step_crossfade_slider.setValue(0)
         self.step_crossfade_spin.setValue(0.0)
@@ -903,12 +907,14 @@ class SessionBuilderWindow(QMainWindow):
         self._invalidate_assembler()
 
     def _sync_noise_vol_spin_from_slider(self, value: int) -> None:
-        vol = value / 100.0
+        # Slider 0-100 maps to 0-MAX_INDIVIDUAL_GAIN
+        vol = (value / 100.0) * MAX_INDIVIDUAL_GAIN
         self.noise_vol_spin.setValue(vol)
         self._set_noise_volume(vol)
 
     def _sync_noise_vol_slider_from_spin(self, value: float) -> None:
-        self.noise_vol_slider.setValue(int(round(value * 100)))
+        # Value 0-MAX_INDIVIDUAL_GAIN maps to slider 0-100
+        self.noise_vol_slider.setValue(int(round((value / MAX_INDIVIDUAL_GAIN) * 100)))
         self._set_noise_volume(value)
 
     def _set_noise_volume(self, value: float) -> None:
@@ -919,12 +925,14 @@ class SessionBuilderWindow(QMainWindow):
         self._invalidate_assembler()
 
     def _sync_binaural_vol_spin_from_slider(self, value: int) -> None:
-        vol = value / 100.0
+        # Slider 0-100 maps to 0-MAX_INDIVIDUAL_GAIN
+        vol = (value / 100.0) * MAX_INDIVIDUAL_GAIN
         self.binaural_vol_spin.setValue(vol)
         self._set_binaural_volume(vol)
 
     def _sync_binaural_vol_slider_from_spin(self, value: float) -> None:
-        self.binaural_vol_slider.setValue(int(round(value * 100)))
+        # Value 0-MAX_INDIVIDUAL_GAIN maps to slider 0-100
+        self.binaural_vol_slider.setValue(int(round((value / MAX_INDIVIDUAL_GAIN) * 100)))
         self._set_binaural_volume(value)
 
     def _set_binaural_volume(self, value: float) -> None:

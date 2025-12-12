@@ -23,6 +23,11 @@ except Exception:  # pragma: no cover - allow operation without slab
     _get_preset_nodes_for_state = None  # type: ignore
 
 
+# Maximum individual gain for binaural/noise to prevent clipping when combined.
+# With both at max (0.48 + 0.48 = 0.96), the combined output stays under 1.0.
+MAX_INDIVIDUAL_GAIN = 0.48
+
+
 class _FallbackBrainwaveState(Enum):
     DELTA = "delta"
     THETA = "theta"
@@ -64,8 +69,8 @@ class SessionStep:
     crossfade_duration: Optional[float] = None
     crossfade_curve: Optional[str] = None
     description: str = ""
-    noise_volume: float = 1.0
-    binaural_volume: float = 1.0
+    noise_volume: float = MAX_INDIVIDUAL_GAIN
+    binaural_volume: float = MAX_INDIVIDUAL_GAIN
 
 
 @dataclass

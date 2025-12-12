@@ -12,6 +12,10 @@ import time
 import importlib
 import pkgutil
 from src.utils.noise_file import load_noise_params
+
+# Maximum individual gain for binaural/noise to prevent clipping when combined.
+# With both at max (0.48 + 0.48 = 0.96), the combined output stays under 1.0.
+MAX_INDIVIDUAL_GAIN = 0.48
 from src.synth_functions.noise_flanger import (
     _generate_swept_notch_arrays,
     _generate_swept_notch_arrays_transition,
@@ -1507,11 +1511,11 @@ def generate_single_step_audio_segment(step_data, global_settings, target_durati
             print(f"    Warning: Voice {i+1} ({func_name_short}) generated audio shape mismatch ({voice_audio.shape} vs {(step_generation_samples, 2)}). Skipping voice.")
 
     # --- Independent Normalization & Volume Application ---
-    
-    # Get settings
+
+    # Get settings and clamp volumes to MAX_INDIVIDUAL_GAIN to prevent clipping
     norm_level = float(step_data.get("normalization_level", global_settings.get("normalization_level", 0.95)))
-    binaural_vol = float(step_data.get("binaural_volume", 1.0))
-    noise_vol = float(step_data.get("noise_volume", 1.0))
+    binaural_vol = min(float(step_data.get("binaural_volume", MAX_INDIVIDUAL_GAIN)), MAX_INDIVIDUAL_GAIN)
+    noise_vol = min(float(step_data.get("noise_volume", MAX_INDIVIDUAL_GAIN)), MAX_INDIVIDUAL_GAIN)
     
     # 1. Normalize Binaural Mix
     if has_binaural:
