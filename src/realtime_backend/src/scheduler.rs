@@ -1,6 +1,6 @@
 use crate::config::CONFIG;
 use crate::gpu::GpuMixer;
-use crate::models::{StepData, TrackData};
+use crate::models::{StepData, TrackData, MAX_INDIVIDUAL_GAIN};
 use crate::noise_params::NoiseParams;
 use crate::streaming_noise::StreamingNoise;
 use crate::voices::{voices_for_step, VoiceKind};
@@ -673,6 +673,9 @@ impl TrackScheduler {
             return;
         }
 
+        // Clamp volume to MAX_INDIVIDUAL_GAIN to prevent clipping when sources combine
+        let clamped_volume = volume.clamp(0.0, MAX_INDIVIDUAL_GAIN);
+
         let mut peak = 0.0f32;
         for &s in buffer.iter() {
             let a = s.abs();
@@ -688,9 +691,10 @@ impl TrackScheduler {
             }
         }
 
-        if (volume - 1.0).abs() > f32::EPSILON {
+        // Apply clamped volume scaling
+        if (clamped_volume - 1.0).abs() > f32::EPSILON {
             for s in buffer.iter_mut() {
-                *s *= volume;
+                *s *= clamped_volume;
             }
         }
     }
