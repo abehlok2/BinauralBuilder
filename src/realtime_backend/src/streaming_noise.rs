@@ -6,22 +6,37 @@ use rand_distr::{Distribution, Normal};
 use rustfft::{num_complex::Complex, Fft, FftPlanner};
 use std::sync::Arc;
 
+// --- Constants for Python-compat OLA mode ---
+const BLOCK_SIZE: usize = 4096;
+const HOP_SIZE: usize = BLOCK_SIZE / 2; // 2048, 50% overlap
+
 // --- Helper Functions ---
 
-fn triangle_wave(phase: f32) -> f32 {
-    let t = (phase / (2.0 * std::f32::consts::PI)).rem_euclid(1.0);
-    2.0 * (2.0 * (t - (t + 0.5).floor())).abs() - 1.0
+/// Scipy-compatible sawtooth with width=0.5 (triangle wave)
+/// Python: signal.sawtooth(phase, width=0.5)
+fn scipy_sawtooth_triangle(phase: f32) -> f32 {
+    let t = phase.rem_euclid(2.0 * std::f32::consts::PI) / (2.0 * std::f32::consts::PI);
+    let width = 0.5f32;
+    if t < width {
+        -1.0 + 2.0 * t / width
+    } else {
+        1.0 - 2.0 * (t - width) / (1.0 - width)
+    }
 }
 
+/// LFO value computation matching Python's behavior
+/// Python "sine" uses cosine: np.cos(2 * np.pi * lfo_freq * t + phase_offset)
+/// Python "triangle" uses scipy.signal.sawtooth(phase, width=0.5)
 fn lfo_value(phase: f32, waveform: &str) -> f32 {
     if waveform.eq_ignore_ascii_case("triangle") {
-        triangle_wave(phase)
+        scipy_sawtooth_triangle(phase)
     } else {
+        // "sine" in Python actually uses cosine
         crate::dsp::trig::cos_lut(phase)
     }
 }
 
-// --- Notch Filter Logic (Legacy & Sweeps) ---
+// --- Notch Filter Logic ---
 
 #[derive(Clone)]
 struct Coeffs {
@@ -32,22 +47,26 @@ struct Coeffs {
     a2: f32,
 }
 
-fn notch_coeffs(freq: f32, q: f32, sample_rate: f32) -> Coeffs {
-    let w0 = 2.0 * std::f32::consts::PI * freq / sample_rate;
-    let cos_w0 = crate::dsp::trig::cos_lut(w0);
-    let alpha = crate::dsp::trig::sin_lut(w0) / (2.0 * q);
+/// Compute notch coefficients using f64 precision for better numeric agreement with Python/SciPy
+fn notch_coeffs_f64(freq: f64, q: f64, sample_rate: f64) -> Coeffs {
+    let w0 = 2.0 * std::f64::consts::PI * freq / sample_rate;
+    let cos_w0 = w0.cos();
+    let sin_w0 = w0.sin();
+    let alpha = sin_w0 / (2.0 * q);
+
     let b0 = 1.0;
     let b1 = -2.0 * cos_w0;
     let b2 = 1.0;
     let a0 = 1.0 + alpha;
     let a1 = -2.0 * cos_w0;
     let a2 = 1.0 - alpha;
+
     Coeffs {
-        b0: b0 / a0,
-        b1: b1 / a0,
-        b2: b2 / a0,
-        a1: a1 / a0,
-        a2: a2 / a0,
+        b0: (b0 / a0) as f32,
+        b1: (b1 / a0) as f32,
+        b2: (b2 / a0) as f32,
+        a1: (a1 / a0) as f32,
+        a2: (a2 / a0) as f32,
     }
 }
 
@@ -61,11 +80,20 @@ impl BiquadState {
     fn new() -> Self {
         Self { z1: 0.0, z2: 0.0 }
     }
-    fn process(&mut self, input: f32, c: &Coeffs) -> f32 {
-        let out = input * c.b0 + self.z1;
-        self.z1 = input * c.b1 - out * c.a1 + self.z2;
-        self.z2 = input * c.b2 - out * c.a2;
-        out
+}
+
+/// Apply lfilter to a block (like scipy.signal.lfilter)
+/// Uses fresh initial conditions (zero state) for each call, matching Python behavior
+fn lfilter_block(block: &mut [f32], coeffs: &Coeffs) {
+    let mut z1: f32 = 0.0;
+    let mut z2: f32 = 0.0;
+
+    for sample in block.iter_mut() {
+        let input = *sample;
+        let out = input * coeffs.b0 + z1;
+        z1 = input * coeffs.b1 - out * coeffs.a1 + z2;
+        z2 = input * coeffs.b2 - out * coeffs.a2;
+        *sample = out;
     }
 }
 
@@ -81,7 +109,6 @@ struct FftNoiseGenerator {
     lowcut: Option<f32>,
     highcut: Option<f32>,
     sample_rate: f32,
-    // Optional Cut Filters (4th order = 2 cascaded biquads)
     lp_filters: Option<Vec<DirectForm2Transposed<f32>>>,
     hp_filters: Option<Vec<DirectForm2Transposed<f32>>>,
     base_amplitude: f32,
@@ -211,7 +238,7 @@ impl FftNoiseGenerator {
         self.fft_forward.process(&mut white);
 
         let nyquist = self.sample_rate / 2.0;
-        let min_f = (self.sample_rate) / (self.size as f32);
+        let min_f = self.sample_rate / (self.size as f32);
 
         if !white.is_empty() {
             white[0] = Complex::new(0.0, 0.0);
@@ -258,6 +285,7 @@ impl FftNoiseGenerator {
         self.buffer = output;
         self.cursor = 0;
     }
+
     fn next(&mut self) -> f32 {
         if self.cursor >= self.buffer.len() {
             self.regenerate_buffer();
@@ -280,16 +308,116 @@ impl FftNoiseGenerator {
     }
 }
 
+// --- Precomputed Hann window (matching np.hanning) ---
+
+fn hann_window(size: usize) -> Vec<f32> {
+    // np.hanning(N) = 0.5 - 0.5 * cos(2*pi*n/(N-1)), n = 0..N-1
+    (0..size)
+        .map(|n| 0.5 - 0.5 * (2.0 * std::f32::consts::PI * n as f32 / (size as f32 - 1.0)).cos())
+        .collect()
+}
+
+// --- OLA (Overlap-Add) State for Python-compat streaming ---
+
+struct OlaState {
+    // Ring buffer for input samples (mono base noise)
+    input_ring: Vec<f32>,
+    input_write_pos: usize,
+    input_samples_buffered: usize,
+
+    // Overlap-add accumulators for each channel (ring buffer style)
+    out_acc_l: Vec<f32>,
+    out_acc_r: Vec<f32>,
+    win_acc: Vec<f32>,
+
+    // Position tracking within the accumulator ring
+    acc_read_pos: usize,
+    acc_write_pos: usize,
+
+    // Samples ready to output
+    samples_ready: usize,
+
+    // Absolute sample index for time tracking (block start positions)
+    absolute_block_start: usize,
+
+    // Precomputed Hann window
+    window: Vec<f32>,
+
+    // Scratch buffers for block processing
+    block_l: Vec<f32>,
+    block_r: Vec<f32>,
+}
+
+impl OlaState {
+    fn new() -> Self {
+        let window = hann_window(BLOCK_SIZE);
+        let acc_size = BLOCK_SIZE * 2;
+
+        Self {
+            input_ring: vec![0.0; BLOCK_SIZE],
+            input_write_pos: 0,
+            input_samples_buffered: 0,
+            out_acc_l: vec![0.0; acc_size],
+            out_acc_r: vec![0.0; acc_size],
+            win_acc: vec![0.0; acc_size],
+            acc_read_pos: 0,
+            acc_write_pos: 0,
+            samples_ready: 0,
+            absolute_block_start: 0,
+            window,
+            block_l: vec![0.0; BLOCK_SIZE],
+            block_r: vec![0.0; BLOCK_SIZE],
+        }
+    }
+}
+
+// --- Sweep parameters for varying mode ---
+
+#[derive(Clone)]
+struct SweepParams {
+    start_min: f32,
+    end_min: f32,
+    start_max: f32,
+    end_max: f32,
+    start_q: f32,
+    end_q: f32,
+    start_casc: usize,
+    end_casc: usize,
+}
+
+impl SweepParams {
+    fn interpolate_at(&self, t: f32) -> (f32, f32, f32, usize) {
+        let t = t.clamp(0.0, 1.0);
+        let min_freq = self.start_min + (self.end_min - self.start_min) * t;
+        let max_freq = self.start_max + (self.end_max - self.start_max) * t;
+        let q = self.start_q + (self.end_q - self.start_q) * t;
+        let casc_f = self.start_casc as f32 + (self.end_casc as f32 - self.start_casc as f32) * t;
+        let casc = casc_f.round().max(1.0) as usize;
+        (min_freq, max_freq, q, casc)
+    }
+}
+
 pub struct StreamingNoise {
     sample_rate: f32,
+    duration_samples: usize,
+
+    // LFO parameters
+    start_lfo_freq: f32,
+    end_lfo_freq: f32,
     lfo_freq: f32,
-    sweeps: Vec<(f32, f32)>,
-    qs: Vec<f32>,
-    cascades: Vec<usize>,
-    lfo_phase: f32,
-    lfo_phase_offset: f32,
-    intra_offset: f32,
+    start_lfo_phase_offset: f32,
+    end_lfo_phase_offset: f32,
+    start_intra_offset: f32,
+    end_intra_offset: f32,
     lfo_waveform: String,
+    initial_offset: f32,
+
+    // Sweep parameters (for varying mode)
+    sweep_params: Vec<SweepParams>,
+
+    // Mode flags
+    transition: bool,
+
     noise_type: String,
 
     // Legacy Generator States (Pink/Brown)
@@ -309,15 +437,18 @@ pub struct StreamingNoise {
     rng: StdRng,
     normal: Normal<f32>,
 
-    // Notch Filter States
-    states_main_l: Vec<Vec<BiquadState>>,
-    states_extra_l: Vec<Vec<BiquadState>>,
-    states_main_r: Vec<Vec<BiquadState>>,
-    states_extra_r: Vec<Vec<BiquadState>>,
+    // OLA state for Python-compat mode
+    ola: OlaState,
+
+    // Total samples output so far (for absolute time tracking)
+    total_samples_output: usize,
 }
 
 impl StreamingNoise {
     pub fn new(params: &NoiseParams, sample_rate: u32) -> Self {
+        let sample_rate_f = sample_rate as f32;
+        let duration_samples = (params.duration_seconds * sample_rate_f) as usize;
+
         let lfo_freq = if params.transition {
             params.start_lfo_freq
         } else if params.lfo_freq != 0.0 {
@@ -326,52 +457,66 @@ impl StreamingNoise {
             1.0 / 12.0
         };
 
-        let sweeps: Vec<(f32, f32)> = if !params.sweeps.is_empty() {
+        let sweep_params: Vec<SweepParams> = if !params.sweeps.is_empty() {
             params
                 .sweeps
                 .iter()
                 .map(|sw| {
-                    let min = if sw.start_min > 0.0 {
+                    let start_min = if sw.start_min > 0.0 {
                         sw.start_min
                     } else {
                         1000.0
                     };
-                    let max = if sw.start_max > 0.0 {
-                        sw.start_max.max(min + 1.0)
+                    let end_min = if sw.end_min > 0.0 {
+                        sw.end_min
                     } else {
-                        (min + 1.0).max(min)
+                        start_min
                     };
-                    (min, max)
+                    let start_max = if sw.start_max > 0.0 {
+                        sw.start_max.max(start_min + 1.0)
+                    } else {
+                        start_min + 9000.0
+                    };
+                    let end_max = if sw.end_max > 0.0 {
+                        sw.end_max.max(end_min + 1.0)
+                    } else {
+                        start_max
+                    };
+                    let start_q = if sw.start_q > 0.0 { sw.start_q } else { 25.0 };
+                    let end_q = if sw.end_q > 0.0 { sw.end_q } else { start_q };
+                    let start_casc = if sw.start_casc > 0 { sw.start_casc } else { 10 };
+                    let end_casc = if sw.end_casc > 0 {
+                        sw.end_casc
+                    } else {
+                        start_casc
+                    };
+                    SweepParams {
+                        start_min,
+                        end_min,
+                        start_max,
+                        end_max,
+                        start_q,
+                        end_q,
+                        start_casc,
+                        end_casc,
+                    }
                 })
                 .collect()
         } else {
-            vec![(1000.0, 10000.0)]
-        };
-
-        let qs: Vec<f32> = if !params.sweeps.is_empty() {
-            params
-                .sweeps
-                .iter()
-                .map(|sw| if sw.start_q > 0.0 { sw.start_q } else { 25.0 })
-                .collect()
-        } else {
-            vec![25.0; sweeps.len()]
-        };
-
-        let casc: Vec<usize> = if !params.sweeps.is_empty() {
-            params
-                .sweeps
-                .iter()
-                .map(|sw| if sw.start_casc > 0 { sw.start_casc } else { 10 })
-                .collect()
-        } else {
-            vec![10usize; sweeps.len()]
+            vec![SweepParams {
+                start_min: 1000.0,
+                end_min: 1000.0,
+                start_max: 10000.0,
+                end_max: 10000.0,
+                start_q: 25.0,
+                end_q: 25.0,
+                start_casc: 10,
+                end_casc: 10,
+            }]
         };
 
         // Determine Mode
         let nt = params.noise_type.to_lowercase();
-        // Legacy if strictly Pink/Brown/Red/White AND NO custom params
-        // Note: Python uses Pink via IIR in generate_pink_noise_samples, so we replicate that.
         let is_legacy_type = matches!(nt.as_str(), "pink" | "brown" | "red" | "white");
         let has_custom_params = params.exponent.is_some()
             || params.high_exponent.is_some()
@@ -381,34 +526,35 @@ impl StreamingNoise {
             || params.amplitude.is_some();
 
         let use_fft = !is_legacy_type || has_custom_params;
-        // eprintln!("StreamingNoise::new: nt={}, custom={}, use_fft={}", nt, has_custom_params, use_fft);
 
         let fft_gen = if use_fft {
-            Some(FftNoiseGenerator::new(params, sample_rate as f32))
+            Some(FftNoiseGenerator::new(params, sample_rate_f))
         } else {
             None
         };
 
-        let mk_states = |casc: &Vec<usize>| -> (Vec<Vec<BiquadState>>, Vec<Vec<BiquadState>>) {
-            let main: Vec<Vec<BiquadState>> =
-                casc.iter().map(|c| vec![BiquadState::new(); *c]).collect();
-            let extra: Vec<Vec<BiquadState>> =
-                casc.iter().map(|c| vec![BiquadState::new(); *c]).collect();
-            (main, extra)
-        };
-        let (states_main_l, states_extra_l) = mk_states(&casc);
-        let (states_main_r, states_extra_r) = mk_states(&casc);
-
         Self {
-            sample_rate: sample_rate as f32,
+            sample_rate: sample_rate_f,
+            duration_samples,
+            start_lfo_freq: if params.start_lfo_freq > 0.0 {
+                params.start_lfo_freq
+            } else {
+                lfo_freq
+            },
+            end_lfo_freq: if params.end_lfo_freq > 0.0 {
+                params.end_lfo_freq
+            } else {
+                lfo_freq
+            },
             lfo_freq,
-            sweeps,
-            qs,
-            cascades: casc,
-            lfo_phase: 0.0,
-            lfo_phase_offset: params.start_lfo_phase_offset_deg.to_radians(),
-            intra_offset: params.start_intra_phase_offset_deg.to_radians(),
+            start_lfo_phase_offset: params.start_lfo_phase_offset_deg.to_radians(),
+            end_lfo_phase_offset: params.end_lfo_phase_offset_deg.to_radians(),
+            start_intra_offset: params.start_intra_phase_offset_deg.to_radians(),
+            end_intra_offset: params.end_intra_phase_offset_deg.to_radians(),
             lfo_waveform: params.lfo_waveform.clone(),
+            initial_offset: params.initial_offset,
+            sweep_params,
+            transition: params.transition,
             noise_type: params.noise_type.clone(),
             b0: 0.0,
             b1: 0.0,
@@ -422,41 +568,14 @@ impl StreamingNoise {
             fft_gen,
             rng: StdRng::from_entropy(),
             normal: Normal::new(0.0, 1.0).unwrap(),
-            states_main_l,
-            states_extra_l,
-            states_main_r,
-            states_extra_r,
+            ola: OlaState::new(),
+            total_samples_output: 0,
         }
     }
 
     pub fn skip_samples(&mut self, n: usize) {
         let mut scratch = vec![0.0f32; n * 2];
         self.generate(&mut scratch);
-    }
-
-    fn apply_pass(
-        mut sample: f32,
-        states: &mut [Vec<BiquadState>],
-        sweeps: &[(f32, f32)],
-        qs: &[f32],
-        sample_rate: f32,
-        lfo_waveform: &str,
-        phase: f32,
-    ) -> f32 {
-        let lfo = lfo_value(phase, lfo_waveform);
-        for (i, sweep) in sweeps.iter().enumerate() {
-            let center = (sweep.0 + sweep.1) * 0.5;
-            let range = (sweep.1 - sweep.0) * 0.5;
-            let freq = center + range * lfo;
-            if freq >= sample_rate * 0.49 {
-                continue;
-            }
-            let coeffs = notch_coeffs(freq, qs[i], sample_rate);
-            for state in &mut states[i] {
-                sample = state.process(sample, &coeffs);
-            }
-        }
-        sample
     }
 
     fn next_base(&mut self) -> f32 {
@@ -486,62 +605,213 @@ impl StreamingNoise {
         }
     }
 
+    /// Compute the transition fraction at a given absolute sample index
+    fn transition_fraction(&self, sample_idx: usize) -> f32 {
+        if !self.transition || self.duration_samples == 0 {
+            return 0.0;
+        }
+        (sample_idx as f32 / self.duration_samples as f32).clamp(0.0, 1.0)
+    }
+
+    /// Interpolate LFO frequency at a given transition fraction
+    fn interpolate_lfo_freq(&self, t: f32) -> f32 {
+        if !self.transition {
+            return self.lfo_freq;
+        }
+        self.start_lfo_freq + (self.end_lfo_freq - self.start_lfo_freq) * t
+    }
+
+    /// Interpolate phase offset at a given transition fraction
+    fn interpolate_phase_offset(&self, t: f32) -> f32 {
+        if !self.transition {
+            return self.start_lfo_phase_offset;
+        }
+        self.start_lfo_phase_offset + (self.end_lfo_phase_offset - self.start_lfo_phase_offset) * t
+    }
+
+    /// Interpolate intra offset at a given transition fraction
+    fn interpolate_intra_offset(&self, t: f32) -> f32 {
+        if !self.transition {
+            return self.start_intra_offset;
+        }
+        self.start_intra_offset + (self.end_intra_offset - self.start_intra_offset) * t
+    }
+
+    /// Compute LFO phase at a given sample index using Python's approach:
+    /// t = sample_idx / sample_rate + initial_offset
+    /// phase = 2 * pi * lfo_freq * t + phase_offset
+    fn compute_lfo_phase(&self, sample_idx: usize, lfo_freq: f32, extra_phase_offset: f32) -> f32 {
+        let t = sample_idx as f32 / self.sample_rate + self.initial_offset;
+        2.0 * std::f32::consts::PI * lfo_freq * t + extra_phase_offset
+    }
+
+    /// Process a single block using overlap-add approach (Python-compat mode)
+    fn process_ola_block(&mut self) {
+        let acc_size = self.ola.out_acc_l.len();
+        let block_start_idx = self.ola.absolute_block_start;
+
+        // Get transition fraction at block center
+        let block_center_idx = block_start_idx + BLOCK_SIZE / 2;
+        let t = self.transition_fraction(block_center_idx);
+
+        // Interpolate LFO parameters at block center
+        let lfo_freq = self.interpolate_lfo_freq(t);
+        let phase_offset = self.interpolate_phase_offset(t);
+        let intra_offset = self.interpolate_intra_offset(t);
+
+        // Compute LFO phase at block center for L and R channels
+        // Python: phase = 2*pi*lfo_freq*t + phase_offset, where phase_offset is in radians
+        // For L channel: no extra offset (base phase)
+        // For R channel: add lfo_phase_offset
+        let l_phase_base = self.compute_lfo_phase(block_center_idx, lfo_freq, 0.0);
+        let r_phase_base = self.compute_lfo_phase(block_center_idx, lfo_freq, phase_offset);
+
+        // Get LFO values at block center (frozen for entire block)
+        let lfo_l_main = lfo_value(l_phase_base, &self.lfo_waveform);
+        let lfo_r_main = lfo_value(r_phase_base, &self.lfo_waveform);
+        let lfo_l_extra = lfo_value(l_phase_base + intra_offset, &self.lfo_waveform);
+        let lfo_r_extra = lfo_value(r_phase_base + intra_offset, &self.lfo_waveform);
+
+        // Copy input block from ring buffer and apply Hann window
+        for i in 0..BLOCK_SIZE {
+            let ring_idx =
+                (self.ola.input_write_pos + BLOCK_SIZE - self.ola.input_samples_buffered + i)
+                    % BLOCK_SIZE;
+            let base = self.ola.input_ring[ring_idx];
+            let windowed = base * self.ola.window[i];
+            self.ola.block_l[i] = windowed;
+            self.ola.block_r[i] = windowed;
+        }
+
+        // Apply notch filters for each sweep (coefficients frozen per block at block center)
+        for sp in &self.sweep_params {
+            let (min_freq, max_freq, q, casc) = sp.interpolate_at(t);
+            let center_freq = (min_freq + max_freq) * 0.5;
+            let freq_range = (max_freq - min_freq) * 0.5;
+
+            // Left channel - main pass
+            let notch_freq_l_main = center_freq + freq_range * lfo_l_main;
+            if notch_freq_l_main > 0.0 && notch_freq_l_main < self.sample_rate * 0.49 {
+                let coeffs =
+                    notch_coeffs_f64(notch_freq_l_main as f64, q as f64, self.sample_rate as f64);
+                // Apply cascade with fresh filter state each time (matching Python lfilter)
+                for _ in 0..casc {
+                    lfilter_block(&mut self.ola.block_l, &coeffs);
+                }
+            }
+
+            // Right channel - main pass
+            let notch_freq_r_main = center_freq + freq_range * lfo_r_main;
+            if notch_freq_r_main > 0.0 && notch_freq_r_main < self.sample_rate * 0.49 {
+                let coeffs =
+                    notch_coeffs_f64(notch_freq_r_main as f64, q as f64, self.sample_rate as f64);
+                for _ in 0..casc {
+                    lfilter_block(&mut self.ola.block_r, &coeffs);
+                }
+            }
+
+            // Extra pass if intra_offset is non-zero
+            if intra_offset.abs() > 1e-6 {
+                // Left channel - extra pass
+                let notch_freq_l_extra = center_freq + freq_range * lfo_l_extra;
+                if notch_freq_l_extra > 0.0 && notch_freq_l_extra < self.sample_rate * 0.49 {
+                    let coeffs = notch_coeffs_f64(
+                        notch_freq_l_extra as f64,
+                        q as f64,
+                        self.sample_rate as f64,
+                    );
+                    for _ in 0..casc {
+                        lfilter_block(&mut self.ola.block_l, &coeffs);
+                    }
+                }
+
+                // Right channel - extra pass
+                let notch_freq_r_extra = center_freq + freq_range * lfo_r_extra;
+                if notch_freq_r_extra > 0.0 && notch_freq_r_extra < self.sample_rate * 0.49 {
+                    let coeffs = notch_coeffs_f64(
+                        notch_freq_r_extra as f64,
+                        q as f64,
+                        self.sample_rate as f64,
+                    );
+                    for _ in 0..casc {
+                        lfilter_block(&mut self.ola.block_r, &coeffs);
+                    }
+                }
+            }
+        }
+
+        // Overlap-add: accumulate filtered blocks and window into ring accumulators
+        let write_base = self.ola.acc_write_pos;
+        for i in 0..BLOCK_SIZE {
+            let acc_idx = (write_base + i) % acc_size;
+            self.ola.out_acc_l[acc_idx] += self.ola.block_l[i];
+            self.ola.out_acc_r[acc_idx] += self.ola.block_r[i];
+            self.ola.win_acc[acc_idx] += self.ola.window[i];
+        }
+
+        // Advance write position by hop size
+        self.ola.acc_write_pos = (self.ola.acc_write_pos + HOP_SIZE) % acc_size;
+        self.ola.samples_ready += HOP_SIZE;
+
+        // Advance absolute block start for next block
+        self.ola.absolute_block_start += HOP_SIZE;
+    }
+
+    /// Generate stereo output using Python-compatible overlap-add processing
     pub fn generate(&mut self, out: &mut [f32]) {
         let frames = out.len() / 2;
-        let sweeps = self.sweeps.clone();
-        let qs = self.qs.clone();
-        let sample_rate = self.sample_rate;
-        let lfo_waveform = self.lfo_waveform.clone();
-        let lfo_phase_offset = self.lfo_phase_offset;
-        let intra_offset = self.intra_offset;
+        let mut frames_written = 0;
+        let acc_size = self.ola.out_acc_l.len();
 
-        for i in 0..frames {
-            let base = self.next_base();
-            let l_phase = self.lfo_phase;
-            let r_phase = self.lfo_phase + lfo_phase_offset;
-            let mut l = Self::apply_pass(
-                base,
-                &mut self.states_main_l,
-                &sweeps,
-                &qs,
-                sample_rate,
-                &lfo_waveform,
-                l_phase,
-            );
-            if intra_offset != 0.0 {
-                l = Self::apply_pass(
-                    l,
-                    &mut self.states_extra_l,
-                    &sweeps,
-                    &qs,
-                    sample_rate,
-                    &lfo_waveform,
-                    l_phase + intra_offset,
-                );
+        while frames_written < frames {
+            // If we have ready samples, emit them
+            if self.ola.samples_ready > 0 {
+                let read_pos = self.ola.acc_read_pos;
+
+                // Normalize by window accumulator and output (Python: out_acc / win_acc where win_acc > 1e-8)
+                let win_val = self.ola.win_acc[read_pos];
+                let l = if win_val > 1e-8 {
+                    self.ola.out_acc_l[read_pos] / win_val
+                } else {
+                    0.0
+                };
+                let r = if win_val > 1e-8 {
+                    self.ola.out_acc_r[read_pos] / win_val
+                } else {
+                    0.0
+                };
+
+                out[frames_written * 2] = l;
+                out[frames_written * 2 + 1] = r;
+
+                // Clear the emitted accumulator slots for reuse (ring buffer)
+                self.ola.out_acc_l[read_pos] = 0.0;
+                self.ola.out_acc_r[read_pos] = 0.0;
+                self.ola.win_acc[read_pos] = 0.0;
+
+                // Advance read position
+                self.ola.acc_read_pos = (read_pos + 1) % acc_size;
+                self.ola.samples_ready -= 1;
+                self.total_samples_output += 1;
+                frames_written += 1;
+            } else {
+                // Need to fill input buffer and process a block
+                // Fill the input ring buffer with base noise samples until we have BLOCK_SIZE
+                while self.ola.input_samples_buffered < BLOCK_SIZE {
+                    let sample = self.next_base();
+                    self.ola.input_ring[self.ola.input_write_pos] = sample;
+                    self.ola.input_write_pos = (self.ola.input_write_pos + 1) % BLOCK_SIZE;
+                    self.ola.input_samples_buffered += 1;
+                }
+
+                // Process the block
+                self.process_ola_block();
+
+                // After processing, we consumed HOP_SIZE samples worth from input perspective
+                // The ring buffer still holds BLOCK_SIZE samples, but logically we've advanced by HOP_SIZE
+                // We need to refill HOP_SIZE samples for the next block (50% overlap)
+                self.ola.input_samples_buffered = BLOCK_SIZE - HOP_SIZE;
             }
-            let mut r = Self::apply_pass(
-                base,
-                &mut self.states_main_r,
-                &sweeps,
-                &qs,
-                sample_rate,
-                &lfo_waveform,
-                r_phase,
-            );
-            if intra_offset != 0.0 {
-                r = Self::apply_pass(
-                    r,
-                    &mut self.states_extra_r,
-                    &sweeps,
-                    &qs,
-                    sample_rate,
-                    &lfo_waveform,
-                    r_phase + intra_offset,
-                );
-            }
-            out[i * 2] = l;
-            out[i * 2 + 1] = r;
-            self.lfo_phase += 2.0 * std::f32::consts::PI * self.lfo_freq / sample_rate;
         }
     }
 }
