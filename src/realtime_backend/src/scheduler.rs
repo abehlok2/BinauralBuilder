@@ -572,6 +572,19 @@ impl TrackScheduler {
     pub fn update_track(&mut self, track: TrackData) {
         let abs_samples = self.absolute_sample as usize;
 
+        // Preserve the currently accumulated phases so that live updates do not
+        // introduce discontinuities when the track data is replaced. Without
+        // this, `seek_samples` would clear the cached phases and newly
+        // constructed voices would restart at phase 0, producing an audible
+        // reset whenever parameters change mid-stream.
+        let preserved_phases = if !self.active_voices.is_empty() {
+            Self::extract_phases_from_voices(&self.active_voices)
+        } else if !self.next_voices.is_empty() {
+            Self::extract_phases_from_voices(&self.next_voices)
+        } else {
+            self.accumulated_phases.clone()
+        };
+
         self.crossfade_samples =
             (track.global_settings.crossfade_duration * self.sample_rate as f64) as usize;
         self.crossfade_curve = match track.global_settings.crossfade_curve.as_str() {
@@ -623,6 +636,10 @@ impl TrackScheduler {
         };
 
         self.seek_samples(abs_samples);
+
+        // Restore the captured phases so the next render reuses the current
+        // oscillator states and remains continuous across the update.
+        self.accumulated_phases = preserved_phases;
         self.crossfade_prev.clear();
         self.crossfade_next.clear();
         #[cfg(feature = "gpu")]
@@ -780,10 +797,7 @@ impl TrackScheduler {
     /// Extracts accumulated phases from all voices that track phase.
     /// Returns a vector of (phase_l, phase_r) tuples for each voice that has phases.
     fn extract_phases_from_voices(voices: &[StepVoice]) -> Vec<(f32, f32)> {
-        voices
-            .iter()
-            .filter_map(|v| v.kind.get_phases())
-            .collect()
+        voices.iter().filter_map(|v| v.kind.get_phases()).collect()
     }
 
     /// Applies accumulated phases to newly created voices.
