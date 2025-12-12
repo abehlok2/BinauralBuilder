@@ -1,6 +1,7 @@
 use crate::config::CONFIG;
 use crate::gpu::GpuMixer;
 use crate::models::{StepData, TrackData};
+use crate::noise_params::NoiseParams;
 use crate::streaming_noise::StreamingNoise;
 use crate::voices::{voices_for_step, VoiceKind};
 use std::fs::File;
@@ -112,6 +113,135 @@ pub struct LoadedClip {
 pub struct BackgroundNoise {
     generator: StreamingNoise,
     gain: f32,
+    start_sample: usize,
+    fade_in_samples: usize,
+    fade_out_samples: usize,
+    amp_envelope: Vec<(usize, f32)>,
+    duration_samples: Option<usize>,
+    started: bool,
+    playback_sample: usize,
+}
+
+impl BackgroundNoise {
+    fn from_params(mut params: NoiseParams, base_gain: f32, device_rate: u32) -> Self {
+        params.sample_rate = device_rate;
+        let start_sample = (params.start_time.max(0.0) * device_rate as f32) as usize;
+        let fade_in_samples = (params.fade_in.max(0.0) * device_rate as f32) as usize;
+        let fade_out_samples = (params.fade_out.max(0.0) * device_rate as f32) as usize;
+        let duration_samples = if params.duration_seconds > 0.0 {
+            Some((params.duration_seconds * device_rate as f32) as usize)
+        } else {
+            None
+        };
+
+        let env_points: Vec<(usize, f32)> = params
+            .amp_envelope
+            .iter()
+            .map(|pair| {
+                let t = pair.get(0).copied().unwrap_or(0.0).max(0.0);
+                let a = pair.get(1).copied().unwrap_or(1.0);
+                (((t * device_rate as f32) as usize), a)
+            })
+            .collect();
+
+        let generator = StreamingNoise::new(&params, device_rate);
+
+        Self {
+            generator,
+            gain: base_gain,
+            start_sample,
+            fade_in_samples,
+            fade_out_samples,
+            amp_envelope: env_points,
+            duration_samples,
+            started: false,
+            playback_sample: 0,
+        }
+    }
+
+    fn envelope_at(&self, local_sample: usize) -> f32 {
+        let mut amp = 1.0f32;
+
+        if self.fade_in_samples > 0 && local_sample < self.fade_in_samples {
+            amp *= (local_sample as f32 / self.fade_in_samples as f32).clamp(0.0, 1.0);
+        }
+
+        if let Some(dur) = self.duration_samples {
+            if self.fade_out_samples > 0
+                && local_sample >= dur.saturating_sub(self.fade_out_samples)
+            {
+                let pos = local_sample.saturating_sub(dur.saturating_sub(self.fade_out_samples));
+                let denom = self.fade_out_samples.max(1) as f32;
+                amp *= (1.0 - pos as f32 / denom).clamp(0.0, 1.0);
+            }
+        }
+
+        if !self.amp_envelope.is_empty() {
+            let mut prev = self.amp_envelope[0];
+            for &(t, a) in &self.amp_envelope {
+                if local_sample < t {
+                    let span = (t.saturating_sub(prev.0)).max(1);
+                    let frac = (local_sample.saturating_sub(prev.0)) as f32 / span as f32;
+                    let interp = prev.1 + (a - prev.1) * frac;
+                    return amp * interp;
+                }
+                prev = (t, a);
+            }
+            amp *= prev.1;
+        }
+
+        amp
+    }
+
+    fn mix_into(&mut self, buffer: &mut [f32], scratch: &mut Vec<f32>, global_start_sample: usize) {
+        let frames = buffer.len() / 2;
+        if frames == 0 {
+            return;
+        }
+
+        if let Some(limit) = self.duration_samples {
+            if self.playback_sample >= limit {
+                return;
+            }
+        }
+
+        let start_offset = if !self.started && global_start_sample < self.start_sample {
+            self.start_sample.saturating_sub(global_start_sample)
+        } else {
+            0
+        };
+
+        if start_offset >= frames {
+            return;
+        }
+
+        let mut usable_frames = frames - start_offset;
+        if let Some(limit) = self.duration_samples {
+            usable_frames = usable_frames.min(limit.saturating_sub(self.playback_sample));
+        }
+        if usable_frames == 0 {
+            return;
+        }
+
+        let mix_frames = start_offset + usable_frames;
+        let required_samples = mix_frames * 2;
+        if scratch.len() < required_samples {
+            scratch.resize(required_samples, 0.0);
+        }
+        scratch[..start_offset * 2].fill(0.0);
+        self.generator
+            .generate(&mut scratch[start_offset * 2..required_samples]);
+
+        for i in 0..usable_frames {
+            let env = self.envelope_at(self.playback_sample + i) * self.gain;
+            let idx = (start_offset + i) * 2;
+            buffer[idx] += scratch[idx] * env;
+            buffer[idx + 1] += scratch[idx + 1] * env;
+        }
+
+        self.playback_sample += usable_frames;
+        self.started = true;
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -328,20 +458,20 @@ impl TrackScheduler {
         let background_noise = if let Some(noise_cfg) = &track.background_noise {
             if !noise_cfg.file_path.is_empty() && noise_cfg.file_path.ends_with(".noise") {
                 if let Ok(params) = crate::noise_params::load_noise_params(&noise_cfg.file_path) {
-                    let gen = StreamingNoise::new(&params, device_rate);
-                    Some(BackgroundNoise {
-                        generator: gen,
-                        gain: noise_cfg.amp * cfg.noise_gain,
-                    })
+                    Some(BackgroundNoise::from_params(
+                        params,
+                        noise_cfg.amp * cfg.noise_gain,
+                        device_rate,
+                    ))
                 } else {
                     None
                 }
             } else if let Some(params) = &noise_cfg.params {
-                let gen = StreamingNoise::new(params, device_rate);
-                Some(BackgroundNoise {
-                    generator: gen,
-                    gain: noise_cfg.amp * cfg.noise_gain,
-                })
+                Some(BackgroundNoise::from_params(
+                    params.clone(),
+                    noise_cfg.amp * cfg.noise_gain,
+                    device_rate,
+                ))
             } else {
                 None
             }
@@ -417,7 +547,19 @@ impl TrackScheduler {
         self.crossfade_prev.clear();
         self.crossfade_next.clear();
         if let Some(noise) = &mut self.background_noise {
-            noise.generator.skip_samples(abs_samples);
+            noise.playback_sample = 0;
+            noise.started = false;
+            if abs_samples > noise.start_sample {
+                let local = abs_samples - noise.start_sample;
+                let skip = if let Some(limit) = noise.duration_samples {
+                    local.min(limit)
+                } else {
+                    local
+                };
+                noise.generator.skip_samples(skip);
+                noise.playback_sample = skip;
+                noise.started = true;
+            }
         }
     }
 
@@ -454,20 +596,20 @@ impl TrackScheduler {
         self.background_noise = if let Some(noise_cfg) = &track.background_noise {
             if !noise_cfg.file_path.is_empty() && noise_cfg.file_path.ends_with(".noise") {
                 if let Ok(params) = crate::noise_params::load_noise_params(&noise_cfg.file_path) {
-                    let gen = StreamingNoise::new(&params, self.sample_rate as u32);
-                    Some(BackgroundNoise {
-                        generator: gen,
-                        gain: noise_cfg.amp * self.noise_gain,
-                    })
+                    Some(BackgroundNoise::from_params(
+                        params,
+                        noise_cfg.amp * self.noise_gain,
+                        self.sample_rate as u32,
+                    ))
                 } else {
                     None
                 }
             } else if let Some(params) = &noise_cfg.params {
-                let gen = StreamingNoise::new(params, self.sample_rate as u32);
-                Some(BackgroundNoise {
-                    generator: gen,
-                    gain: noise_cfg.amp * self.noise_gain,
-                })
+                Some(BackgroundNoise::from_params(
+                    params.clone(),
+                    noise_cfg.amp * self.noise_gain,
+                    self.sample_rate as u32,
+                ))
             } else {
                 None
             }
@@ -754,11 +896,7 @@ impl TrackScheduler {
             if self.scratch.len() != buffer.len() {
                 self.scratch.resize(buffer.len(), 0.0);
             }
-            self.scratch.fill(0.0);
-            noise.generator.generate(&mut self.scratch);
-            for i in 0..buffer.len() {
-                buffer[i] += self.scratch[i] * noise.gain;
-            }
+            noise.mix_into(buffer, &mut self.scratch, start_sample);
         }
 
         let start_sample = self.absolute_sample as usize;

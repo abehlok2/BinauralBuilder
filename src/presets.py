@@ -1,3 +1,4 @@
+
 """Built-in presets for the Session Builder."""
 
 BINAURAL_PRESETS = {
@@ -7228,3 +7229,7 @@ NOISE_PRESETS = {
                       'start_q': 1}],
     'transition': False},
 }
+NOISE_PRESETS = {}
+
+__all__ = ["BINAURAL_PRESETS", "NOISE_PRESETS"]
+
