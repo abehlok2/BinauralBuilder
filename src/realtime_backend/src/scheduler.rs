@@ -892,6 +892,8 @@ impl TrackScheduler {
 
         let frames = frame_count;
 
+        let start_sample = self.absolute_sample as usize;
+
         if let Some(noise) = &mut self.background_noise {
             if self.scratch.len() != buffer.len() {
                 self.scratch.resize(buffer.len(), 0.0);
@@ -899,7 +901,6 @@ impl TrackScheduler {
             noise.mix_into(buffer, &mut self.scratch, start_sample);
         }
 
-        let start_sample = self.absolute_sample as usize;
         for clip in &mut self.clips {
             if start_sample + frames < clip.start_sample {
                 continue;

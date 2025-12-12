@@ -1005,11 +1005,13 @@ fn noise_params_from_json(
         })
         .collect();
 
-    let color_params = params
+    let color_params: HashMap<String, Value> = params
         .get("color_params")
         .and_then(|v| v.as_object())
         .cloned()
-        .unwrap_or_default();
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
 
     let noise_params = NoiseParams {
         duration_seconds: duration,
