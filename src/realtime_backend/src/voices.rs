@@ -1005,7 +1005,13 @@ fn noise_params_from_json(
         })
         .collect();
 
-    NoiseParams {
+    let color_params = params
+        .get("color_params")
+        .and_then(|v| v.as_object())
+        .cloned()
+        .unwrap_or_default();
+
+    let noise_params = NoiseParams {
         duration_seconds: duration,
         sample_rate,
         noise_type,
@@ -1032,7 +1038,15 @@ fn noise_params_from_json(
         lowcut: get_f32_opt(params, "lowcut"),
         highcut: get_f32_opt(params, "highcut"),
         amplitude: get_f32_opt(params, "amplitude"),
-    }
+        color_params,
+        start_time: get_f32(params, "start_time", 0.0),
+        fade_in: get_f32(params, "fade_in", 0.0),
+        fade_out: get_f32(params, "fade_out", 0.0),
+        amp_envelope: Vec::new(),
+        static_notches: Vec::new(),
+    };
+
+    crate::noise_params::apply_color_params(noise_params)
 }
 
 fn get_f32_opt(params: &HashMap<String, Value>, key: &str) -> Option<f32> {
