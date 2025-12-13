@@ -90,7 +90,6 @@ pub struct TrackScheduler {
     pub noise_gain: f32,
     pub clip_gain: f32,
     pub master_gain: f32,
-    pub last_output_gain: f32,
     #[cfg(feature = "gpu")]
     pub gpu: GpuMixer,
     /// Temporary buffer for mixing per-voice output
@@ -258,6 +257,7 @@ pub enum VoiceType {
 pub struct StepVoice {
     pub kind: VoiceKind,
     pub voice_type: VoiceType,
+    pub normalization_peak: f32,
 }
 
 impl StepVoice {
@@ -508,7 +508,6 @@ impl TrackScheduler {
             noise_gain: cfg.noise_gain,
             clip_gain: cfg.clip_gain,
             master_gain: 1.0,
-            last_output_gain: 1.0,
             #[cfg(feature = "gpu")]
             gpu: GpuMixer::new(),
             voice_temp: Vec::new(),
@@ -691,18 +690,31 @@ impl TrackScheduler {
         }
     }
 
-    fn apply_gain_stage(buffer: &mut [f32], _norm_target: f32, volume: f32, has_content: bool) {
+    fn apply_gain_stage(
+        buffer: &mut [f32],
+        norm_target: f32,
+        volume: f32,
+        has_content: bool,
+        normalization_peak: f32,
+    ) {
         if !has_content {
             buffer.fill(0.0);
             return;
         }
 
+        let normalization_gain = if normalization_peak > 1e-9 && norm_target > 0.0 {
+            (norm_target / normalization_peak).min(1.0)
+        } else {
+            1.0
+        };
+
         // Clamp volume to MAX_INDIVIDUAL_GAIN to prevent clipping when sources combine
         let clamped_volume = volume.clamp(0.0, MAX_INDIVIDUAL_GAIN);
+        let total_gain = normalization_gain * clamped_volume;
 
-        if (clamped_volume - 1.0).abs() > f32::EPSILON {
+        if (total_gain - 1.0).abs() > f32::EPSILON {
             for s in buffer.iter_mut() {
-                *s *= clamped_volume;
+                *s *= total_gain;
             }
         }
     }
@@ -725,6 +737,8 @@ impl TrackScheduler {
         noise_buf.fill(0.0);
         let mut binaural_count = 0usize;
         let mut noise_count = 0usize;
+        let mut binaural_peak = 0.0f32;
+        let mut noise_peak = 0.0f32;
 
         for voice in voices.iter_mut() {
             self.voice_temp.fill(0.0);
@@ -732,12 +746,14 @@ impl TrackScheduler {
             match voice.voice_type {
                 VoiceType::Noise => {
                     noise_count += 1;
+                    noise_peak = noise_peak.max(voice.normalization_peak);
                     for i in 0..len {
                         noise_buf[i] += self.voice_temp[i];
                     }
                 }
                 _ => {
                     binaural_count += 1;
+                    binaural_peak = binaural_peak.max(voice.normalization_peak);
                     for i in 0..len {
                         binaural_buf[i] += self.voice_temp[i];
                     }
@@ -751,8 +767,15 @@ impl TrackScheduler {
             norm_target,
             step.binaural_volume,
             binaural_count > 0,
+            binaural_peak,
         );
-        Self::apply_gain_stage(noise_buf, norm_target, step.noise_volume, noise_count > 0);
+        Self::apply_gain_stage(
+            noise_buf,
+            norm_target,
+            step.noise_volume,
+            noise_count > 0,
+            noise_peak,
+        );
 
         out.fill(0.0);
         for i in 0..len {
@@ -1008,39 +1031,6 @@ impl TrackScheduler {
                 *v *= self.master_gain;
             }
         }
-
-        // Normalize/limit smoothly to avoid clicks between blocks
-        const THRESH: f32 = 0.95;
-
-        let mut max_val = 0.0f32;
-        for &s in buffer.iter() {
-            max_val = max_val.max(s.abs());
-        }
-
-        let target_gain = if max_val > THRESH && max_val > 1e-12 {
-            THRESH / max_val
-        } else {
-            1.0
-        };
-
-        let g0 = self.last_output_gain;
-        let g1 = target_gain;
-
-        // Linear ramp across THIS block prevents boundary discontinuities
-        if (g0 - g1).abs() > 1e-9 {
-            let n = buffer.len().max(2);
-            for (i, v) in buffer.iter_mut().enumerate() {
-                let t = i as f32 / (n as f32 - 1.0);
-                let g = g0 + (g1 - g0) * t;
-                *v *= g;
-            }
-        } else if (g1 - 1.0).abs() > f32::EPSILON {
-            for v in buffer.iter_mut() {
-                *v *= g1;
-            }
-        }
-
-        self.last_output_gain = g1;
 
         self.absolute_sample += frame_count as u64;
     }

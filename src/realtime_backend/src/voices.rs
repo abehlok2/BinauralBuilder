@@ -95,6 +95,17 @@ impl TransitionCurve {
     }
 }
 
+impl VoiceKind {
+    fn normalization_peak(&self) -> f32 {
+        match self {
+            VoiceKind::NoiseSweptNotch(v) => v.cached_peak(),
+            VoiceKind::NoiseSweptNotchTransition(v) => v.cached_peak(),
+            VoiceKind::VolumeEnvelope(v) => v.normalization_peak(),
+            _ => 1.0,
+        }
+    }
+}
+
 /// Wrapper voice that applies a precomputed volume envelope to another voice.
 pub struct VolumeEnvelopeVoice {
     inner: Box<VoiceKind>,
@@ -111,6 +122,12 @@ impl VolumeEnvelopeVoice {
             idx: 0,
             temp_buf: Vec::new(),
         }
+    }
+
+    pub fn normalization_peak(&self) -> f32 {
+        let inner_peak = self.inner.normalization_peak();
+        let env_peak = self.envelope.iter().cloned().fold(1.0f32, f32::max);
+        inner_peak * env_peak
     }
 }
 
@@ -659,6 +676,7 @@ pub struct NoiseSweptNotchVoice {
     generator: StreamingNoise,
     amp: f32,
     remaining_samples: usize,
+    cached_peak: f32,
 }
 
 /// Voice wrapper for noise generation with swept notch filtering (transition mode).
@@ -666,6 +684,7 @@ pub struct NoiseSweptNotchTransitionVoice {
     generator: StreamingNoise,
     amp: f32,
     remaining_samples: usize,
+    cached_peak: f32,
     // Transition parameters for interpolation
     start_lfo_freq: f32,
     end_lfo_freq: f32,
@@ -1059,14 +1078,27 @@ impl NoiseSweptNotchVoice {
     pub fn new(params: &HashMap<String, Value>, duration: f32, sample_rate: f32) -> Self {
         let amp = get_f32(params, "amp", 1.0);
         let noise_params = noise_params_from_json(params, duration, sample_rate as u32, false);
-        let generator = StreamingNoise::new(&noise_params, sample_rate as u32);
+
+        let calibration_frames = ((duration * sample_rate) as usize)
+            .min((sample_rate as usize) * 10)
+            .max(1);
+        let (generator, cached_peak) = StreamingNoise::new_with_calibrated_peak(
+            &noise_params,
+            sample_rate as u32,
+            calibration_frames,
+        );
         let total_samples = (duration * sample_rate) as usize;
 
         Self {
             generator,
             amp,
             remaining_samples: total_samples,
+            cached_peak,
         }
+    }
+
+    pub fn cached_peak(&self) -> f32 {
+        self.cached_peak
     }
 }
 
@@ -1133,13 +1165,21 @@ impl NoiseSweptNotchTransitionVoice {
 
         // Create initial NoiseParams using start values
         let noise_params = noise_params_from_json(params, duration, sample_rate as u32, true);
-        let generator = StreamingNoise::new(&noise_params, sample_rate as u32);
+        let calibration_frames = ((duration * sample_rate) as usize)
+            .min((sample_rate as usize) * 10)
+            .max(1);
+        let (generator, cached_peak) = StreamingNoise::new_with_calibrated_peak(
+            &noise_params,
+            sample_rate as u32,
+            calibration_frames,
+        );
         let total_samples = (duration * sample_rate) as usize;
 
         Self {
             generator,
             amp,
             remaining_samples: total_samples,
+            cached_peak,
             start_lfo_freq,
             end_lfo_freq,
             start_lfo_phase_offset_deg,
@@ -1153,6 +1193,10 @@ impl NoiseSweptNotchTransitionVoice {
             duration_samples: total_samples,
             sample_idx: 0,
         }
+    }
+
+    pub fn cached_peak(&self) -> f32 {
+        self.cached_peak
     }
 }
 
@@ -4017,8 +4061,11 @@ fn create_voice(data: &VoiceData, duration: f32, sample_rate: f32) -> Option<Ste
         _ => VoiceType::Other,
     };
 
+    let normalization_peak = voice.normalization_peak();
+
     Some(StepVoice {
         kind: voice,
         voice_type,
+        normalization_peak,
     })
 }
