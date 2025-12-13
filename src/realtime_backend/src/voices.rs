@@ -1039,6 +1039,7 @@ fn noise_params_from_json(
         sample_rate,
         noise_type,
         noise_parameters: color_params,
+        seed: get_i64_opt(params, "seed"),
         lfo_waveform,
         transition: is_transition,
         lfo_freq,
@@ -1074,6 +1075,10 @@ fn noise_params_from_json(
 
 fn get_f32_opt(params: &HashMap<String, Value>, key: &str) -> Option<f32> {
     params.get(key).and_then(|v| v.as_f64()).map(|n| n as f32)
+}
+
+fn get_i64_opt(params: &HashMap<String, Value>, key: &str) -> Option<i64> {
+    params.get(key).and_then(|v| v.as_i64())
 }
 
 impl NoiseSweptNotchVoice {
