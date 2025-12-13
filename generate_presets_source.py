@@ -3,6 +3,7 @@ import glob
 import os
 import argparse
 import sys
+from dataclasses import asdict
 from pathlib import Path
 from typing import List, Dict, Any
 
@@ -32,8 +33,38 @@ def load_existing_presets():
         print("# src/presets.py not found or could not be imported. Starting fresh.")
     except Exception as e:
         print(f"# Warning: Could not load existing presets: {e}")
-    
+
     return binaural, noise
+
+
+def _resolve_color_params(noise_type: str, embedded_params: Dict[str, Any]) -> Dict[str, Any]:
+    """Return colour parameters for ``noise_type``.
+
+    Embedded parameters from the ``.noise`` file take precedence. If none
+    exist, fall back to user-defined custom presets and finally the built-in
+    defaults so the generated preset always carries the concrete spectral
+    settings rather than just a colour name.
+    """
+
+    # Avoid circular imports at module load time
+    from src.utils.colored_noise import DEFAULT_COLOR_PRESETS, load_custom_color_presets
+
+    if embedded_params:
+        return dict(embedded_params)
+
+    key = (noise_type or "").strip().lower()
+    if not key:
+        return {}
+
+    for name, preset in load_custom_color_presets().items():
+        if name.lower() == key:
+            return dict(preset)
+
+    for name, preset in DEFAULT_COLOR_PRESETS.items():
+        if name.lower() == key:
+            return dict(preset)
+
+    return {}
 
 def generate_presets_source(input_files: List[str], remove_list: List[str]):
     binaural_presets, noise_presets = load_existing_presets()
@@ -68,11 +99,18 @@ def generate_presets_source(input_files: List[str], remove_list: List[str]):
         
         elif path_obj.suffix.lower() == '.noise':
             try:
-                with open(file_path, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                    name = path_obj.stem
-                    noise_presets[name] = data
-                    print(f"# Added/Updated noise preset: {name}")
+                # Load and normalize the noise params so colour settings are
+                # fully expanded rather than relying only on a colour name.
+                from src.utils.noise_file import load_noise_params
+
+                params = load_noise_params(file_path)
+                params.color_params = _resolve_color_params(
+                    getattr(params, "noise_type", ""), getattr(params, "color_params", {})
+                )
+                data = asdict(params)
+                name = path_obj.stem
+                noise_presets[name] = data
+                print(f"# Added/Updated noise preset: {name}")
             except Exception as e:
                 print(f"# Error reading {file_path}: {e}")
         else:
