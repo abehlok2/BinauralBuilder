@@ -968,9 +968,19 @@ fn noise_params_from_json(
     sample_rate: u32,
     is_transition: bool,
 ) -> NoiseParams {
+    let color_params: HashMap<String, Value> = params
+        .get("noise_parameters")
+        .or_else(|| params.get("color_params"))
+        .and_then(|v| v.as_object())
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
+
     let noise_type = params
         .get("noise_type")
         .and_then(|v| v.as_str())
+        .or_else(|| color_params.get("name").and_then(|v| v.as_str()))
         .unwrap_or("pink")
         .to_string();
 
@@ -1024,18 +1034,11 @@ fn noise_params_from_json(
         })
         .collect();
 
-    let color_params: HashMap<String, Value> = params
-        .get("color_params")
-        .and_then(|v| v.as_object())
-        .cloned()
-        .unwrap_or_default()
-        .into_iter()
-        .collect();
-
     let noise_params = NoiseParams {
         duration_seconds: duration,
         sample_rate,
         noise_type,
+        noise_parameters: color_params,
         lfo_waveform,
         transition: is_transition,
         lfo_freq,
@@ -1059,7 +1062,6 @@ fn noise_params_from_json(
         lowcut: get_f32_opt(params, "lowcut"),
         highcut: get_f32_opt(params, "highcut"),
         amplitude: get_f32_opt(params, "amplitude"),
-        color_params,
         start_time: get_f32(params, "start_time", 0.0),
         fade_in: get_f32(params, "fade_in", 0.0),
         fade_out: get_f32(params, "fade_out", 0.0),

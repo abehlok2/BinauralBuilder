@@ -328,6 +328,8 @@ class NoiseGeneratorDialog(QDialog):
 
         Values are pulled from (in order): parameters embedded in a loaded
         ``.noise`` file, user-defined custom presets, and built-in defaults.
+        The resulting mapping always includes the colour name under ``name``
+        when a match is found.
         """
 
         key = (noise_type or "").strip().lower()
@@ -339,11 +341,15 @@ class NoiseGeneratorDialog(QDialog):
 
         for name, preset in load_custom_color_presets().items():
             if name.lower() == key:
-                return dict(preset)
+                merged = dict(preset)
+                merged.setdefault("name", name)
+                return merged
 
         for name, preset in DEFAULT_COLOR_PRESETS.items():
             if name.lower() == key:
-                return dict(preset)
+                merged = dict(preset)
+                merged.setdefault("name", name)
+                return merged
 
         return {}
 
@@ -354,8 +360,10 @@ class NoiseGeneratorDialog(QDialog):
         if not key or not color_params:
             return
 
-        self._loaded_color_params[key] = dict(color_params)
-        self._loaded_color_names[key] = noise_type
+        params = dict(color_params)
+        params.setdefault("name", noise_type)
+        self._loaded_color_params[key] = params
+        self._loaded_color_names[key] = params.get("name", noise_type)
 
     def update_sweep_visibility(self, count):
         for i, (row_widget, *_rest) in enumerate(self.sweep_rows):
@@ -374,6 +382,7 @@ class NoiseGeneratorDialog(QDialog):
     def get_noise_params(self) -> NoiseParams:
         """Collect the current UI values into a :class:`NoiseParams`."""
         input_path = self._normalized_input_path(self.input_file_edit.text()) or ""
+        color_params = self._resolve_color_params(self.noise_type_combo.currentText())
         params = NoiseParams(
             duration_seconds=float(self.output_duration_spin.value()),
             sample_rate=int(self.sample_rate_spin.value()),
@@ -383,7 +392,7 @@ class NoiseGeneratorDialog(QDialog):
             lfo_freq=float(self.lfo_start_spin.value()),
             start_lfo_freq=float(self.lfo_start_spin.value()),
             end_lfo_freq=float(self.lfo_end_spin.value()),
-            color_params=self._resolve_color_params(self.noise_type_combo.currentText()),
+            noise_parameters=color_params,
             start_lfo_phase_offset_deg=int(self.lfo_phase_start_spin.value()),
             end_lfo_phase_offset_deg=int(self.lfo_phase_end_spin.value()),
             start_intra_phase_offset_deg=int(self.intra_phase_start_spin.value()),
@@ -415,9 +424,11 @@ class NoiseGeneratorDialog(QDialog):
 
     def set_noise_params(self, params: NoiseParams) -> None:
         """Apply ``params`` to the UI widgets."""
-        self._store_color_params(params.noise_type, getattr(params, "color_params", {}))
+        color_params = getattr(params, "noise_parameters", {})
+        noise_name = color_params.get("name") or params.noise_type
+        self._store_color_params(noise_name, color_params)
         display_name = self._loaded_color_names.get(
-            (params.noise_type or "").strip().lower(), params.noise_type.title()
+            (noise_name or "").strip().lower(), (noise_name or "").title()
         )
         self._refresh_noise_types(selected=display_name)
         self.output_duration_spin.setValue(params.duration_seconds)
@@ -562,7 +573,7 @@ class NoiseGeneratorDialog(QDialog):
                 params.start_intra_phase_offset_deg,
                 params.end_intra_phase_offset_deg,
                 params.input_audio_path or None,
-                params.noise_type,
+                params.noise_parameters or params.noise_type,
                 params.lfo_waveform,
                 params.initial_offset,
                 params.duration,
@@ -581,7 +592,7 @@ class NoiseGeneratorDialog(QDialog):
                 params.start_lfo_phase_offset_deg,
                 params.start_intra_phase_offset_deg,
                 params.input_audio_path or None,
-                params.noise_type,
+                params.noise_parameters or params.noise_type,
                 params.lfo_waveform,
                 False,
                 2,
