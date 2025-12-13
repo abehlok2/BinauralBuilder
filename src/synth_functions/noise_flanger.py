@@ -7,6 +7,7 @@ import time
 import tempfile
 import argparse
 import os
+from typing import Dict
 
 
 def _safe_close_memmap(mm):
@@ -334,6 +335,15 @@ def generate_brown_noise_samples(n_samples):
     return (brown / max_abs).astype(np.float32)
 
 
+def _finalize_noise_length(noise: np.ndarray, target: int) -> np.ndarray:
+    target = int(target)
+    if noise.size < target:
+        noise = np.pad(noise, (0, target - noise.size))
+    elif noise.size > target:
+        noise = noise[:target]
+    return noise.astype(np.float32, copy=False)
+
+
 def _generate_colored_noise_from_presets(n_samples: int, sample_rate: int, noise_type: str):
     """Return colored noise from presets when available.
 
@@ -370,16 +380,52 @@ def _generate_colored_noise_from_presets(n_samples: int, sample_rate: int, noise
     )
     noise = generator.generate()
 
-    target = int(n_samples)
-    if noise.size < target:
-        noise = np.pad(noise, (0, target - noise.size))
-    elif noise.size > target:
-        noise = noise[:target]
-    return noise.astype(np.float32, copy=False)
+    return _finalize_noise_length(noise, n_samples)
 
 
-def generate_noise_samples(n_samples, noise_type, sample_rate=DEFAULT_SAMPLE_RATE):
-    nt = noise_type.lower()
+def _generate_colored_noise_from_parameters(
+    n_samples: int, sample_rate: int, color_params: Dict[str, object]
+):
+    """Return colored noise using explicit parameter dictionaries when possible."""
+
+    try:
+        from src.utils.colored_noise import (
+            PRESET_FIELDS,
+            ColoredNoiseGenerator,
+            apply_preset_to_generator,
+        )
+    except Exception:
+        return None
+
+    if not isinstance(color_params, dict):
+        return None
+
+    preset = {k: v for k, v in color_params.items() if k in PRESET_FIELDS}
+    if not preset:
+        name = color_params.get("name")
+        if isinstance(name, str):
+            return _generate_colored_noise_from_presets(n_samples, sample_rate, name)
+        return None
+
+    generator = apply_preset_to_generator(
+        ColoredNoiseGenerator(
+            sample_rate=sample_rate,
+            duration=float(n_samples) / float(sample_rate),
+        ),
+        preset,
+    )
+    return _finalize_noise_length(generator.generate(), n_samples)
+
+
+def generate_noise_samples(n_samples, noise_spec, sample_rate=DEFAULT_SAMPLE_RATE):
+    if isinstance(noise_spec, dict):
+        colored = _generate_colored_noise_from_parameters(n_samples, sample_rate, noise_spec)
+        if colored is not None:
+            return colored
+        nt = str(noise_spec.get("name", "")).lower()
+    else:
+        nt = str(noise_spec).lower()
+
     if nt == "pink":
         return generate_pink_noise_samples(n_samples)
     if nt in ("brown", "red"):
@@ -1019,7 +1065,7 @@ def _generate_swept_notch_arrays(
     lfo_phase_offset_deg,
     intra_phase_offset_deg,
     input_audio_path,
-    noise_type,
+    noise_spec,
     lfo_waveform,
     memory_efficient,
     n_jobs,
@@ -1055,10 +1101,10 @@ def _generate_swept_notch_arrays(
                 input_tmp_name = tmp_input.name
                 tmp_input.close()
                 input_signal = np.memmap(input_tmp_name, dtype=np.float32, mode="w+", shape=num_samples)
-                input_signal[:] = generate_noise_samples(num_samples, noise_type, sample_rate)
+                input_signal[:] = generate_noise_samples(num_samples, noise_spec, sample_rate)
                 input_signal_memmap = input_signal
             else:
-                input_signal = generate_noise_samples(num_samples, noise_type, sample_rate)
+                input_signal = generate_noise_samples(num_samples, noise_spec, sample_rate)
         else:
             data, _ = sf.read(input_audio_path)
             input_signal = data[:, 0] if data.ndim > 1 else data
@@ -1150,7 +1196,7 @@ def _generate_swept_notch_arrays_transition(
     start_intra_phase_offset_deg,
     end_intra_phase_offset_deg,
     input_audio_path,
-    noise_type,
+    noise_spec,
     lfo_waveform,
     initial_offset,
     transition_duration,
@@ -1204,10 +1250,10 @@ def _generate_swept_notch_arrays_transition(
                 input_tmp_name = tmp_input.name
                 tmp_input.close()
                 input_signal = np.memmap(input_tmp_name, dtype=np.float32, mode="w+", shape=num_samples)
-                input_signal[:] = generate_noise_samples(num_samples, noise_type, sample_rate)
+                input_signal[:] = generate_noise_samples(num_samples, noise_spec, sample_rate)
                 input_signal_memmap = input_signal
             else:
-                input_signal = generate_noise_samples(num_samples, noise_type, sample_rate)
+                input_signal = generate_noise_samples(num_samples, noise_spec, sample_rate)
         else:
             data, _ = sf.read(input_audio_path)
             input_signal = data[:, 0] if data.ndim > 1 else data

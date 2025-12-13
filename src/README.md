@@ -44,7 +44,10 @@ Background noise is only mixed when `background_noise.file_path` references a
 `.noise` preset or `background_noise.params` contains the noise generator
 settings directly. If both are absent, no noise will be added.
 
-Noise generator settings can be stored separately using `.noise` files:
+Noise generator settings can be stored separately using `.noise` files. The
+saved JSON now captures the complete colour definition under a
+``noise_parameters`` object (including the preset name in ``noise_parameters["name"]``)
+instead of a lone ``noise_type`` string:
 
 ```
 from audio import NoiseParams, save_noise_params, load_noise_params

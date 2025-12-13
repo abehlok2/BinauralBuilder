@@ -42,8 +42,8 @@ pub struct NoiseParams {
     pub end_lfo_freq: f32,
     #[serde(default)]
     pub sweeps: Vec<NoiseSweep>,
-    #[serde(default)]
-    pub color_params: HashMap<String, Value>,
+    #[serde(default, alias = "color_params")]
+    pub noise_parameters: HashMap<String, Value>,
     #[serde(default)]
     pub start_lfo_phase_offset_deg: f32,
     #[serde(default)]
@@ -97,23 +97,29 @@ fn color_val(map: &HashMap<String, Value>, key: &str) -> Option<f32> {
 }
 
 pub fn apply_color_params(mut params: NoiseParams) -> NoiseParams {
+    if params.noise_type.is_empty() {
+        if let Some(Value::String(name)) = params.noise_parameters.get("name") {
+            params.noise_type = name.clone();
+        }
+    }
+
     if params.exponent.is_none() {
-        params.exponent = color_val(&params.color_params, "exponent");
+        params.exponent = color_val(&params.noise_parameters, "exponent");
     }
     if params.high_exponent.is_none() {
-        params.high_exponent = color_val(&params.color_params, "high_exponent");
+        params.high_exponent = color_val(&params.noise_parameters, "high_exponent");
     }
     if params.distribution_curve.is_none() {
-        params.distribution_curve = color_val(&params.color_params, "distribution_curve");
+        params.distribution_curve = color_val(&params.noise_parameters, "distribution_curve");
     }
     if params.lowcut.is_none() {
-        params.lowcut = color_val(&params.color_params, "lowcut");
+        params.lowcut = color_val(&params.noise_parameters, "lowcut");
     }
     if params.highcut.is_none() {
-        params.highcut = color_val(&params.color_params, "highcut");
+        params.highcut = color_val(&params.noise_parameters, "highcut");
     }
     if params.amplitude.is_none() {
-        params.amplitude = color_val(&params.color_params, "amplitude");
+        params.amplitude = color_val(&params.noise_parameters, "amplitude");
     }
     params
 }

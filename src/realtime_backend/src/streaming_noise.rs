@@ -4,6 +4,7 @@ use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use rand_distr::{Distribution, Normal};
 use rustfft::{num_complex::Complex, Fft, FftPlanner};
+use serde_json::Value;
 use std::sync::Arc;
 
 // --- Constants for Python-compat OLA mode ---
@@ -25,6 +26,18 @@ fn scipy_sawtooth_triangle(phase: f32) -> f32 {
     } else {
         1.0 - 2.0 * (t - width) / (1.0 - width)
     }
+}
+
+fn resolved_noise_name(params: &NoiseParams) -> String {
+    if !params.noise_type.is_empty() {
+        return params.noise_type.clone();
+    }
+
+    if let Some(Value::String(name)) = params.noise_parameters.get("name") {
+        return name.clone();
+    }
+
+    "pink".to_string()
 }
 
 /// LFO value computation matching Python's behavior
@@ -138,7 +151,8 @@ impl FftNoiseGenerator {
     }
 
     fn new(params: &NoiseParams, sample_rate: f32) -> Self {
-        let nt = params.noise_type.to_lowercase();
+        let noise_label = resolved_noise_name(params);
+        let nt = noise_label.to_lowercase();
         let preset = Self::preset_for_type(nt.as_str());
 
         let exponent = params
@@ -563,7 +577,7 @@ impl StreamingNoise {
         };
 
         // Determine Mode
-        let nt = params.noise_type.to_lowercase();
+        let nt = resolved_noise_name(params).to_lowercase();
         let is_legacy_type = matches!(nt.as_str(), "pink" | "brown" | "red" | "white");
         let has_custom_params = params.exponent.is_some()
             || params.high_exponent.is_some()
@@ -602,7 +616,7 @@ impl StreamingNoise {
             initial_offset: params.initial_offset,
             sweep_params,
             transition: params.transition,
-            noise_type: params.noise_type.clone(),
+            noise_type: resolved_noise_name(params),
             b0: 0.0,
             b1: 0.0,
             b2: 0.0,
