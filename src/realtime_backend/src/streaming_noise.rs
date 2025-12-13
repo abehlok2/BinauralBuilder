@@ -573,6 +573,27 @@ impl StreamingNoise {
         }
     }
 
+    pub fn new_with_calibrated_peak(
+        params: &NoiseParams,
+        sample_rate: u32,
+        calibration_frames: usize,
+    ) -> (Self, f32) {
+        let frames = calibration_frames.max(1);
+
+        let mut calibration_gen = StreamingNoise::new(params, sample_rate);
+        let mut scratch = vec![0.0f32; frames * 2];
+        calibration_gen.generate(&mut scratch);
+
+        let peak = scratch
+            .iter()
+            .fold(0.0f32, |max, v| max.max(v.abs()))
+            .max(1e-9);
+
+        let generator = StreamingNoise::new(params, sample_rate);
+
+        (generator, peak)
+    }
+
     pub fn skip_samples(&mut self, n: usize) {
         let mut scratch = vec![0.0f32; n * 2];
         self.generate(&mut scratch);
