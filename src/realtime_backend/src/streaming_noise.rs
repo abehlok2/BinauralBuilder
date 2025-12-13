@@ -10,6 +10,9 @@ use std::sync::Arc;
 const BLOCK_SIZE: usize = 4096;
 const HOP_SIZE: usize = BLOCK_SIZE / 2; // 2048, 50% overlap
 
+// --- Crossfade length for FFT noise regeneration ---
+const CROSSFADE_SAMPLES: usize = 2048;
+
 // --- Helper Functions ---
 
 /// Scipy-compatible sawtooth with width=0.5 (triangle wave)
@@ -101,6 +104,7 @@ fn lfilter_block(block: &mut [f32], coeffs: &Coeffs) {
 
 struct FftNoiseGenerator {
     buffer: Vec<f32>,
+    next_buffer: Option<Vec<f32>>,
     cursor: usize,
     size: usize,
     exponent: f32,
@@ -209,6 +213,7 @@ impl FftNoiseGenerator {
 
         let mut gen = Self {
             buffer: Vec::new(),
+            next_buffer: None,
             cursor: 0,
             size,
             exponent,
@@ -226,11 +231,11 @@ impl FftNoiseGenerator {
             normal,
         };
 
-        gen.regenerate_buffer();
+        gen.buffer = gen.regenerate_buffer();
         gen
     }
 
-    fn regenerate_buffer(&mut self) {
+    fn regenerate_buffer(&mut self) -> Vec<f32> {
         let mut white: Vec<Complex<f32>> = (0..self.size)
             .map(|_| Complex::new(self.normal.sample(&mut self.rng), 0.0))
             .collect();
@@ -282,16 +287,58 @@ impl FftNoiseGenerator {
             }
         }
 
-        self.buffer = output;
-        self.cursor = 0;
+        output
+    }
+
+    fn crossfade_len(&self) -> usize {
+        self.buffer.len().min(CROSSFADE_SAMPLES)
     }
 
     fn next(&mut self) -> f32 {
-        if self.cursor >= self.buffer.len() {
-            self.regenerate_buffer();
+        if self.buffer.is_empty() {
+            self.buffer = self.regenerate_buffer();
         }
-        let mut sample = self.buffer[self.cursor];
-        self.cursor = (self.cursor + 1) % self.buffer.len();
+
+        let crossfade_len = self.crossfade_len();
+
+        if self.next_buffer.is_none() && self.cursor + crossfade_len >= self.buffer.len() {
+            self.next_buffer = Some(self.regenerate_buffer());
+        }
+
+        let mut sample = if let Some(ref next_buf) = self.next_buffer {
+            let crossfade_start = self.buffer.len().saturating_sub(crossfade_len);
+            if self.cursor >= crossfade_start && crossfade_len > 0 && !next_buf.is_empty() {
+                let idx = self.cursor - crossfade_start;
+                let t = idx as f32 / crossfade_len as f32;
+                let fade_out = 0.5 * (1.0 + (std::f32::consts::PI * t).cos());
+                let fade_in = 1.0 - fade_out;
+                let next_sample = next_buf.get(idx).copied().unwrap_or(0.0);
+                self.buffer[self.cursor] * fade_out + next_sample * fade_in
+            } else {
+                self.buffer[self.cursor]
+            }
+        } else {
+            self.buffer[self.cursor]
+        };
+
+        self.cursor += 1;
+
+        if self.cursor >= self.buffer.len() {
+            let consumed_from_next = if self.next_buffer.is_some() {
+                crossfade_len
+            } else {
+                0
+            };
+
+            if let Some(next) = self.next_buffer.take() {
+                let skip = consumed_from_next.min(next.len());
+                self.buffer = next;
+                self.cursor = skip;
+            } else {
+                self.buffer = self.regenerate_buffer();
+                self.cursor = 0;
+            }
+        }
 
         if let Some(ref mut filters) = self.lp_filters {
             for f in filters {
