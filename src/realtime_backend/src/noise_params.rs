@@ -71,6 +71,8 @@ pub struct NoiseParams {
     #[serde(default)]
     pub amplitude: Option<f32>,
     #[serde(default)]
+    pub seed: Option<i64>,
+    #[serde(default)]
     pub start_time: f32,
     #[serde(default)]
     pub fade_in: f32,
@@ -94,6 +96,10 @@ pub fn load_noise_params_from_str(data: &str) -> Result<NoiseParams, serde_json:
 
 fn color_val(map: &HashMap<String, Value>, key: &str) -> Option<f32> {
     map.get(key).and_then(|v| v.as_f64()).map(|v| v as f32)
+}
+
+fn color_i64(map: &HashMap<String, Value>, key: &str) -> Option<i64> {
+    map.get(key).and_then(|v| v.as_i64())
 }
 
 pub fn apply_color_params(mut params: NoiseParams) -> NoiseParams {
@@ -120,6 +126,9 @@ pub fn apply_color_params(mut params: NoiseParams) -> NoiseParams {
     }
     if params.amplitude.is_none() {
         params.amplitude = color_val(&params.noise_parameters, "amplitude");
+    }
+    if params.seed.is_none() {
+        params.seed = color_i64(&params.noise_parameters, "seed");
     }
     params
 }

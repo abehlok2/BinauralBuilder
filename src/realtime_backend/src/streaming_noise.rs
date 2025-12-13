@@ -174,6 +174,7 @@ impl FftNoiseGenerator {
             .amplitude
             .or_else(|| preset.map(|p| p.5))
             .unwrap_or(1.0);
+        let seed = params.seed.unwrap_or(1).max(0) as u64;
 
         let requested = (params.duration_seconds.max(0.0) * sample_rate) as usize;
         let mut size = if requested > 0 { requested } else { 1 << 17 };
@@ -188,7 +189,7 @@ impl FftNoiseGenerator {
         let fft_forward = planner.plan_fft_forward(size);
         let fft_inverse = planner.plan_fft_inverse(size);
 
-        let rng = StdRng::from_entropy();
+        let rng = StdRng::seed_from_u64(seed);
         let normal = Normal::new(0.0, 1.0).unwrap();
 
         let nyquist = sample_rate / 2.0;

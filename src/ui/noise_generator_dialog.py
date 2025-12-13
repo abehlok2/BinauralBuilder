@@ -49,7 +49,11 @@ from src.utils.noise_file import (
     load_noise_params,
     NOISE_FILE_EXTENSION,
 )
-from src.utils.colored_noise import DEFAULT_COLOR_PRESETS, load_custom_color_presets
+from src.utils.colored_noise import (
+    DEFAULT_COLOR_PRESETS,
+    load_custom_color_presets,
+    normalized_color_params,
+)
 from .colored_noise_dialog import ColoredNoiseDialog
 
 
@@ -337,21 +341,22 @@ class NoiseGeneratorDialog(QDialog):
             return {}
 
         if key in self._loaded_color_params:
-            return dict(self._loaded_color_params[key])
+            stored = dict(self._loaded_color_params[key])
+            return normalized_color_params(stored.get("name", noise_type), stored)
 
         for name, preset in load_custom_color_presets().items():
             if name.lower() == key:
                 merged = dict(preset)
                 merged.setdefault("name", name)
-                return merged
+                return normalized_color_params(merged.get("name", noise_type), merged)
 
         for name, preset in DEFAULT_COLOR_PRESETS.items():
             if name.lower() == key:
                 merged = dict(preset)
                 merged.setdefault("name", name)
-                return merged
+                return normalized_color_params(merged.get("name", noise_type), merged)
 
-        return {}
+        return normalized_color_params(noise_type, {})
 
     def _store_color_params(self, noise_type: str, color_params: Dict[str, object]) -> None:
         """Persist colour params embedded in a ``.noise`` file for reuse."""
@@ -360,7 +365,7 @@ class NoiseGeneratorDialog(QDialog):
         if not key or not color_params:
             return
 
-        params = dict(color_params)
+        params = normalized_color_params(noise_type, dict(color_params))
         params.setdefault("name", noise_type)
         self._loaded_color_params[key] = params
         self._loaded_color_names[key] = params.get("name", noise_type)

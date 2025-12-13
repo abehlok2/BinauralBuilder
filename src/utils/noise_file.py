@@ -5,7 +5,11 @@ from dataclasses import dataclass, asdict, field
 from pathlib import Path
 from typing import List, Dict, Any
 
-from .colored_noise import DEFAULT_COLOR_PRESETS, load_custom_color_presets
+from .colored_noise import (
+    DEFAULT_COLOR_PRESETS,
+    load_custom_color_presets,
+    normalized_color_params,
+)
 
 # Default file extension for noise parameter files
 NOISE_FILE_EXTENSION = ".noise"
@@ -54,18 +58,21 @@ def _color_parameters_for_type(noise_type: str) -> Dict[str, Any]:
 
     key = (noise_type or "").strip().lower()
     if not key:
-        return {}
+        return normalized_color_params(noise_type, {})
 
     presets: Dict[str, Dict[str, Any]] = {
         name.lower(): params for name, params in DEFAULT_COLOR_PRESETS.items()
     }
     for name, preset in load_custom_color_presets().items():
-        presets[name.lower()] = preset
+        presets[name.lower()] = normalized_color_params(name, preset)
 
     params = presets.get(key, {}).copy()
-    if params:
+    if not params:
+        return normalized_color_params(noise_type, {})
+
+    if noise_type:
         params.setdefault("name", noise_type)
-    return params
+    return normalized_color_params(params.get("name", noise_type), params)
 
 
 def _normalized_noise_parameters(params: NoiseParams) -> Dict[str, Any]:
@@ -77,7 +84,7 @@ def _normalized_noise_parameters(params: NoiseParams) -> Dict[str, Any]:
 
     if params.noise_type and not merged.get("name"):
         merged["name"] = params.noise_type
-    return merged
+    return normalized_color_params(merged.get("name", params.noise_type), merged)
 
 
 def save_noise_params(params: NoiseParams, filepath: str) -> None:
@@ -110,11 +117,18 @@ def load_noise_params(filepath: str) -> NoiseParams:
         if hasattr(params, target):
             setattr(params, target, v)
 
-    params.noise_parameters = noise_params or _color_parameters_for_type(noise_type)
+    params.noise_parameters = normalized_color_params(
+        noise_type, noise_params or _color_parameters_for_type(noise_type)
+    )
     if noise_type and not params.noise_parameters.get("name"):
         params.noise_parameters["name"] = noise_type
     params.noise_type = params.noise_parameters.get("name", noise_type)
     return params
 
-__all__ = ["NoiseParams", "save_noise_params", "load_noise_params", "NOISE_FILE_EXTENSION"]
+__all__ = [
+    "NoiseParams",
+    "save_noise_params",
+    "load_noise_params",
+    "NOISE_FILE_EXTENSION",
+]
 

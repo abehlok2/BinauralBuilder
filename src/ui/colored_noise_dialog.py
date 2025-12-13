@@ -98,7 +98,7 @@ class ColoredNoiseDialog(QDialog):
 
         self.seed_spin = QSpinBox()
         self.seed_spin.setRange(-1, 2**31 - 1)
-        self.seed_spin.setValue(-1)
+        self.seed_spin.setValue(1)
         form.addRow("Seed:", self.seed_spin)
 
         layout.addLayout(form)

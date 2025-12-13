@@ -43,6 +43,7 @@ def save_noise_params(params: NoiseParams, filepath: str) -> None:
     if path.suffix != NOISE_FILE_EXTENSION:
         path = path.with_suffix(NOISE_FILE_EXTENSION)
     data = asdict(params)
+    data["color_params"] = _normalized_color_params(params.noise_type, params.color_params)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)
 
@@ -59,7 +60,35 @@ def load_noise_params(filepath: str) -> NoiseParams:
         target = "duration" if k == "post_offset" else k
         if hasattr(params, target):
             setattr(params, target, v)
+
+    params.color_params = _normalized_color_params(params.noise_type, params.color_params)
+    if params.noise_type and not params.color_params.get("name"):
+        params.color_params["name"] = params.noise_type
     return params
 
 __all__ = ["NoiseParams", "save_noise_params", "load_noise_params", "NOISE_FILE_EXTENSION"]
 
+# Default colour parameter fallbacks to ensure .noise files are explicit
+COLOR_PARAM_DEFAULTS: Dict[str, Any] = {
+    "exponent": 1.0,
+    "high_exponent": None,
+    "distribution_curve": 1.0,
+    "lowcut": None,
+    "highcut": None,
+    "amplitude": 1.0,
+    "seed": 1,
+}
+
+
+def _normalized_color_params(noise_type: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    merged = {**COLOR_PARAM_DEFAULTS, **(params or {})}
+    exponent = merged.get("exponent", COLOR_PARAM_DEFAULTS["exponent"])
+    merged.setdefault("high_exponent", exponent)
+    merged.setdefault("distribution_curve", COLOR_PARAM_DEFAULTS["distribution_curve"])
+    merged.setdefault("lowcut", COLOR_PARAM_DEFAULTS["lowcut"])
+    merged.setdefault("highcut", COLOR_PARAM_DEFAULTS["highcut"])
+    merged.setdefault("amplitude", COLOR_PARAM_DEFAULTS["amplitude"])
+    merged.setdefault("seed", COLOR_PARAM_DEFAULTS["seed"])
+    if noise_type and not merged.get("name"):
+        merged["name"] = noise_type
+    return merged
