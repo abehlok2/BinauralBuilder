@@ -72,6 +72,10 @@ def _resolve_color_params(noise_type: str, embedded_params: Dict[str, Any]) -> D
 
 
 def _normalize_existing_noise_presets(noise_presets: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    # Avoid importing noise utilities at module import time to keep the script
+    # lightweight when simply inspecting its contents.
+    from src.utils.colored_noise import normalized_color_params
+
     normalized = {}
     for name, params in noise_presets.items():
         merged = dict(params)
