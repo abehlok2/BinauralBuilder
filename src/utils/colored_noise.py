@@ -2,7 +2,7 @@
 
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Optional, Any
 
 import json
 import numpy as np
@@ -50,7 +50,7 @@ class ColoredNoiseGenerator:
     lowcut: Optional[float] = None
     highcut: Optional[float] = None
     amplitude: float = 1.0
-    seed: Optional[int] = None
+    seed: Optional[int] = 1
 
     def generate(self) -> np.ndarray:
         """Return generated noise as a NumPy array."""
@@ -125,13 +125,45 @@ PRESET_FIELDS = {
     "seed",
 }
 
+COLOR_PARAM_DEFAULTS: Dict[str, Any] = {
+    "exponent": 1.0,
+    "high_exponent": None,
+    "distribution_curve": 1.0,
+    "lowcut": None,
+    "highcut": None,
+    "amplitude": 1.0,
+    "seed": 1,
+}
+
+
+def normalized_color_params(noise_type: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    """Return ``params`` with all required colour fields populated."""
+
+    merged = {**COLOR_PARAM_DEFAULTS, **(params or {})}
+    exponent = merged.get("exponent", COLOR_PARAM_DEFAULTS["exponent"])
+    if merged.get("high_exponent") is None:
+        merged["high_exponent"] = exponent
+    if merged.get("distribution_curve") is None:
+        merged["distribution_curve"] = COLOR_PARAM_DEFAULTS["distribution_curve"]
+    if merged.get("lowcut") is None:
+        merged["lowcut"] = COLOR_PARAM_DEFAULTS["lowcut"]
+    if merged.get("highcut") is None:
+        merged["highcut"] = COLOR_PARAM_DEFAULTS["highcut"]
+    if merged.get("amplitude") is None:
+        merged["amplitude"] = COLOR_PARAM_DEFAULTS["amplitude"]
+    if merged.get("seed") is None:
+        merged["seed"] = COLOR_PARAM_DEFAULTS["seed"]
+    if noise_type and not merged.get("name"):
+        merged["name"] = noise_type
+    return merged
+
 
 def _color_preset(name: str, **params) -> Dict[str, object]:
     return {"name": name, "params": params}
 
 
 DEFAULT_COLOR_PRESETS = {
-    preset["name"]: preset["params"]
+    preset["name"]: normalized_color_params(preset["name"], preset["params"])
     for preset in (
         _color_preset("Pink", exponent=1.0, high_exponent=1.0),
         _color_preset("Brown", exponent=2.0, high_exponent=2.0),
@@ -217,6 +249,7 @@ __all__ = [
     "DEFAULT_COLOR_PRESETS",
     "generator_to_preset",
     "load_custom_color_presets",
+    "normalized_color_params",
     "plot_spectrogram",
     "save_custom_color_presets",
 ]

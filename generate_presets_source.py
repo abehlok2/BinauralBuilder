@@ -47,27 +47,44 @@ def _resolve_color_params(noise_type: str, embedded_params: Dict[str, Any]) -> D
     """
 
     # Avoid circular imports at module load time
-    from src.utils.colored_noise import DEFAULT_COLOR_PRESETS, load_custom_color_presets
+    from src.utils.colored_noise import (
+        DEFAULT_COLOR_PRESETS,
+        load_custom_color_presets,
+        normalized_color_params,
+    )
 
     if embedded_params:
-        return dict(embedded_params)
+        return normalized_color_params(noise_type, embedded_params)
 
     key = (noise_type or "").strip().lower()
     if not key:
-        return {}
+        return normalized_color_params(noise_type, {})
 
     for name, preset in load_custom_color_presets().items():
         if name.lower() == key:
-            return dict(preset)
+            return normalized_color_params(name, preset)
 
     for name, preset in DEFAULT_COLOR_PRESETS.items():
         if name.lower() == key:
-            return dict(preset)
+            return normalized_color_params(name, preset)
 
-    return {}
+    return normalized_color_params(noise_type, {})
+
+
+def _normalize_existing_noise_presets(noise_presets: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    normalized = {}
+    for name, params in noise_presets.items():
+        merged = dict(params)
+        color_params = merged.get("noise_parameters") or merged.get("color_params") or {}
+        noise_type = merged.get("noise_type", color_params.get("name", ""))
+        merged["noise_parameters"] = normalized_color_params(noise_type, color_params)
+        merged.pop("color_params", None)
+        normalized[name] = merged
+    return normalized
 
 def generate_presets_source(input_files: List[str], remove_list: List[str]):
     binaural_presets, noise_presets = load_existing_presets()
+    noise_presets = _normalize_existing_noise_presets(noise_presets)
 
     files_to_process = []
     if input_files:
