@@ -344,7 +344,9 @@ def _finalize_noise_length(noise: np.ndarray, target: int) -> np.ndarray:
     return noise.astype(np.float32, copy=False)
 
 
-def _generate_colored_noise_from_presets(n_samples: int, sample_rate: int, noise_type: str):
+def _generate_colored_noise_from_presets(
+    n_samples: int, sample_rate: int, noise_type: object
+):
     """Return colored noise from presets when available.
 
     This allows custom colours defined in :mod:`src.utils.colored_noise` to be
@@ -363,11 +365,20 @@ def _generate_colored_noise_from_presets(n_samples: int, sample_rate: int, noise
     except Exception:
         return None
 
+    if isinstance(noise_type, dict):
+        noise_name = noise_type.get("name")
+    else:
+        noise_name = noise_type
+
+    key = str(noise_name or "").strip().lower()
+    if not key:
+        return None
+
     presets = {name.lower(): params for name, params in DEFAULT_COLOR_PRESETS.items()}
     for name, preset in load_custom_color_presets().items():
         presets[name.lower()] = preset
 
-    preset = presets.get(noise_type.lower())
+    preset = presets.get(key)
     if preset is None:
         return None
 
