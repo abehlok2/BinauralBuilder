@@ -1,8 +1,8 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 
-#[derive(Deserialize, Debug, Clone, Default)]
+#[derive(Deserialize, Serialize, Debug, Clone, Default)]
 pub struct NoiseSweep {
     #[serde(default)]
     pub start_min: f32,
@@ -22,7 +22,7 @@ pub struct NoiseSweep {
     pub end_casc: usize,
 }
 
-#[derive(Deserialize, Debug, Clone, Default)]
+#[derive(Deserialize, Serialize, Debug, Clone, Default)]
 pub struct NoiseParams {
     #[serde(default)]
     pub duration_seconds: f32,
