@@ -470,6 +470,22 @@ class NoiseGeneratorDialog(QDialog):
         self.transition_duration_spin.setValue(params.duration)
         self.input_file_edit.setText(params.input_audio_path or "")
 
+    @staticmethod
+    def _scalar_or_list(values: list[int | float]):
+        """Return a scalar when ``values`` has one item, the list when larger, or
+        an empty list when no values are provided.
+
+        The swept-notch generators accept either a scalar or a list matching the
+        number of sweeps. When the user selects zero sweeps we need to pass an
+        empty list rather than indexing into the collection.
+        """
+
+        if not values:
+            return []
+        if len(values) == 1:
+            return values[0]
+        return values
+
     def on_generate(self):
         filename = self.file_edit.text()
         params = self.get_noise_params()
@@ -493,6 +509,11 @@ class NoiseGeneratorDialog(QDialog):
             end_casc.append(int(e_casc.value()))
 
         try:
+            start_q = self._scalar_or_list(start_q_vals)
+            end_q = self._scalar_or_list(end_q_vals)
+            start_cascade = self._scalar_or_list(start_casc)
+            end_cascade = self._scalar_or_list(end_casc)
+
             if self.transition_check.isChecked():
                 generate_swept_notch_pink_sound_transition(
                     filename=filename,
@@ -502,10 +523,10 @@ class NoiseGeneratorDialog(QDialog):
                     end_lfo_freq=float(self.lfo_end_spin.value()),
                     start_filter_sweeps=start_sweeps,
                     end_filter_sweeps=end_sweeps,
-                    start_notch_q=start_q_vals if len(start_q_vals) > 1 else start_q_vals[0],
-                    end_notch_q=end_q_vals if len(end_q_vals) > 1 else end_q_vals[0],
-                    start_cascade_count=start_casc if len(start_casc) > 1 else start_casc[0],
-                    end_cascade_count=end_casc if len(end_casc) > 1 else end_casc[0],
+                    start_notch_q=start_q,
+                    end_notch_q=end_q,
+                    start_cascade_count=start_cascade,
+                    end_cascade_count=end_cascade,
                     start_lfo_phase_offset_deg=int(self.lfo_phase_start_spin.value()),
                     end_lfo_phase_offset_deg=int(self.lfo_phase_end_spin.value()),
                     start_intra_phase_offset_deg=int(self.intra_phase_start_spin.value()),
@@ -523,8 +544,8 @@ class NoiseGeneratorDialog(QDialog):
                     sample_rate=int(self.sample_rate_spin.value()),
                     lfo_freq=float(self.lfo_start_spin.value()),
                     filter_sweeps=start_sweeps,
-                    notch_q=start_q_vals if len(start_q_vals) > 1 else start_q_vals[0],
-                    cascade_count=start_casc if len(start_casc) > 1 else start_casc[0],
+                    notch_q=start_q,
+                    cascade_count=start_cascade,
                     lfo_phase_offset_deg=int(self.lfo_phase_start_spin.value()),
                     intra_phase_offset_deg=int(self.intra_phase_start_spin.value()),
                     input_audio_path=input_path,
@@ -568,10 +589,10 @@ class NoiseGeneratorDialog(QDialog):
                 params.end_lfo_freq,
                 start_sweeps,
                 end_sweeps,
-                start_q_vals if len(start_q_vals) > 1 else start_q_vals[0],
-                end_q_vals if len(end_q_vals) > 1 else end_q_vals[0],
-                start_casc if len(start_casc) > 1 else start_casc[0],
-                end_casc if len(end_casc) > 1 else end_casc[0],
+                self._scalar_or_list(start_q_vals),
+                self._scalar_or_list(end_q_vals),
+                self._scalar_or_list(start_casc),
+                self._scalar_or_list(end_casc),
                 params.start_lfo_phase_offset_deg,
                 params.end_lfo_phase_offset_deg,
                 params.start_intra_phase_offset_deg,
@@ -592,8 +613,8 @@ class NoiseGeneratorDialog(QDialog):
                 params.sample_rate,
                 params.lfo_freq,
                 start_sweeps,
-                start_q_vals if len(start_q_vals) > 1 else start_q_vals[0],
-                start_casc if len(start_casc) > 1 else start_casc[0],
+                self._scalar_or_list(start_q_vals),
+                self._scalar_or_list(start_casc),
                 params.start_lfo_phase_offset_deg,
                 params.start_intra_phase_offset_deg,
                 params.input_audio_path or None,
