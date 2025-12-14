@@ -5,6 +5,7 @@ use rand::SeedableRng;
 use rand_distr::{Distribution, Normal};
 use rustfft::{num_complex::Complex, Fft, FftPlanner};
 use serde_json::Value;
+use std::cmp::Ordering;
 use std::sync::Arc;
 
 // --- Constants for Python-compat OLA mode ---
@@ -55,20 +56,39 @@ fn lfo_value(phase: f32, waveform: &str) -> f32 {
 
 #[derive(Clone)]
 struct Coeffs {
-    b0: f32,
-    b1: f32,
-    b2: f32,
-    a1: f32,
-    a2: f32,
+    b0: f64,
+    b1: f64,
+    b2: f64,
+    a1: f64,
+    a2: f64,
 }
 
-/// Compute notch coefficients using f64 precision for better numeric agreement with Python/SciPy
+#[derive(Clone, Copy)]
+struct BiquadState64 {
+    z1: f64,
+    z2: f64,
+}
+
+impl BiquadState64 {
+    fn new() -> Self {
+        Self { z1: 0.0, z2: 0.0 }
+    }
+}
+
+/// Compute notch coefficients in f64 (matching SciPy's float64 path).
+/// IMPORTANT: We keep the coefficients in f64 all the way through filtering.
+/// With large cascade counts, doing this in f32 can accumulate enough numeric
+/// error to cause huge peak spikes (or broad attenuation), which then makes
+/// peak-based normalization collapse the perceived loudness.
 fn notch_coeffs_f64(freq: f64, q: f64, sample_rate: f64) -> Coeffs {
     let w0 = 2.0 * std::f64::consts::PI * freq / sample_rate;
     let cos_w0 = w0.cos();
     let sin_w0 = w0.sin();
     let alpha = sin_w0 / (2.0 * q);
 
+    // SciPy iirnotch (biquad form):
+    // b = [1, -2cos(w0), 1]
+    // a = [1+alpha, -2cos(w0), 1-alpha]
     let b0 = 1.0;
     let b1 = -2.0 * cos_w0;
     let b2 = 1.0;
@@ -77,31 +97,24 @@ fn notch_coeffs_f64(freq: f64, q: f64, sample_rate: f64) -> Coeffs {
     let a2 = 1.0 - alpha;
 
     Coeffs {
-        b0: (b0 / a0) as f32,
-        b1: (b1 / a0) as f32,
-        b2: (b2 / a0) as f32,
-        a1: (a1 / a0) as f32,
-        a2: (a2 / a0) as f32,
+        b0: b0 / a0,
+        b1: b1 / a0,
+        b2: b2 / a0,
+        a1: a1 / a0,
+        a2: a2 / a0,
     }
 }
 
-#[derive(Clone, Copy)]
-struct BiquadState {
-    z1: f32,
-    z2: f32,
-}
-
-impl BiquadState {
-    fn new() -> Self {
-        Self { z1: 0.0, z2: 0.0 }
-    }
-}
-
-/// Apply lfilter to a block (like scipy.signal.lfilter)
-/// Uses fresh initial conditions (zero state) for each call, matching Python behavior
-fn lfilter_block(block: &mut [f32], coeffs: &Coeffs) {
-    let mut z1: f32 = 0.0;
-    let mut z2: f32 = 0.0;
+/// Apply a biquad to a block with persistent state.
+///
+/// IMPORTANT: In the original implementation, we reset state to zero on every call.
+/// With large cascade counts that are re-applied on every streaming block, that creates
+/// large block-edge transients (ringing) that inflate the *peak* seen during calibration.
+/// Peak-based normalization then collapses the perceived loudness (exactly your symptom).
+fn biquad_block(block: &mut [f64], coeffs: &Coeffs, st: &mut BiquadState64) {
+    // Direct Form II Transposed (biquad), in f64.
+    let mut z1 = st.z1;
+    let mut z2 = st.z2;
 
     for sample in block.iter_mut() {
         let input = *sample;
@@ -110,6 +123,9 @@ fn lfilter_block(block: &mut [f32], coeffs: &Coeffs) {
         z2 = input * coeffs.b2 - out * coeffs.a2;
         *sample = out;
     }
+
+    st.z1 = z1;
+    st.z2 = z2;
 }
 
 // --- FFT Based Noise Generator (Matches Python's ColoredNoiseGenerator) ---
@@ -409,10 +425,12 @@ impl FftNoiseGenerator {
 
 // --- Precomputed Hann window (matching np.hanning) ---
 
-fn hann_window(size: usize) -> Vec<f32> {
+fn hann_window(size: usize) -> Vec<f64> {
     // np.hanning(N) = 0.5 - 0.5 * cos(2*pi*n/(N-1)), n = 0..N-1
     (0..size)
-        .map(|n| 0.5 - 0.5 * (2.0 * std::f32::consts::PI * n as f32 / (size as f32 - 1.0)).cos())
+        .map(|n| {
+            0.5 - 0.5 * (2.0 * std::f64::consts::PI * n as f64 / (size as f64 - 1.0)).cos()
+        })
         .collect()
 }
 
@@ -440,11 +458,11 @@ struct OlaState {
     absolute_block_start: usize,
 
     // Precomputed Hann window
-    window: Vec<f32>,
+    window: Vec<f64>,
 
     // Scratch buffers for block processing
-    block_l: Vec<f32>,
-    block_r: Vec<f32>,
+    block_l: Vec<f64>,
+    block_r: Vec<f64>,
 }
 
 impl OlaState {
@@ -484,6 +502,30 @@ struct SweepParams {
     end_casc: usize,
 }
 
+#[derive(Clone)]
+struct SweepRuntime {
+    max_casc: usize,
+    // Each cascade stage must preserve its own state across blocks, like a true
+    // series of biquads applied to a continuous signal.
+    l_main: Vec<BiquadState64>,
+    r_main: Vec<BiquadState64>,
+    l_extra: Vec<BiquadState64>,
+    r_extra: Vec<BiquadState64>,
+}
+
+impl SweepRuntime {
+    fn new(max_casc: usize) -> Self {
+        let max_casc = max_casc.max(1);
+        Self {
+            max_casc,
+            l_main: vec![BiquadState64::new(); max_casc],
+            r_main: vec![BiquadState64::new(); max_casc],
+            l_extra: vec![BiquadState64::new(); max_casc],
+            r_extra: vec![BiquadState64::new(); max_casc],
+        }
+    }
+}
+
 impl SweepParams {
     fn interpolate_at(&self, t: f32) -> (f32, f32, f32, usize) {
         let t = t.clamp(0.0, 1.0);
@@ -513,6 +555,9 @@ pub struct StreamingNoise {
 
     // Sweep parameters (for varying mode)
     sweep_params: Vec<SweepParams>,
+
+    // Persistent biquad states per sweep (per channel + per pass + per cascade stage)
+    sweep_runtime: Vec<SweepRuntime>,
 
     // Mode flags
     transition: bool,
@@ -598,6 +643,14 @@ impl StreamingNoise {
             }]
         };
 
+        let sweep_runtime: Vec<SweepRuntime> = sweep_params
+            .iter()
+            .map(|sp| {
+                let max_casc = sp.start_casc.max(sp.end_casc).max(1);
+                SweepRuntime::new(max_casc)
+            })
+            .collect();
+
         Self {
             sample_rate: sample_rate_f,
             duration_samples,
@@ -619,6 +672,7 @@ impl StreamingNoise {
             lfo_waveform: params.lfo_waveform.clone(),
             initial_offset: params.initial_offset,
             sweep_params,
+            sweep_runtime,
             transition: params.transition,
             fft_gen: FftNoiseGenerator::new(params, sample_rate_f),
             ola: OlaState::new(),
@@ -637,10 +691,15 @@ impl StreamingNoise {
         let mut scratch = vec![0.0f32; frames * 2];
         calibration_gen.generate(&mut scratch);
 
-        let peak = scratch
-            .iter()
-            .fold(0.0f32, |max, v| max.max(v.abs()))
-            .max(1e-9);
+        // IMPORTANT: Using absolute max is extremely fragile for streaming.
+        // Deep/high-Q cascades can create rare block-edge spikes (especially with brown noise)
+        // that make `peak` enormous. Peak-normalization then makes everything sound *silent*.
+        // We use a robust peak estimate (99.9th percentile of |x|) to avoid one-sample poison.
+        let mut abs_vals: Vec<f32> = scratch.iter().map(|v| v.abs()).collect();
+        abs_vals.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
+        let idx = ((abs_vals.len() as f64) * 0.999).floor() as usize;
+        let idx = idx.min(abs_vals.len().saturating_sub(1));
+        let peak = abs_vals.get(idx).copied().unwrap_or(0.0).max(1e-9);
 
         let generator = StreamingNoise::new(params, sample_rate);
 
@@ -725,22 +784,25 @@ impl StreamingNoise {
 
         // Copy input block from ring buffer and apply Hann window
         // Also compute RMS of the input for later compensation (matching Python's rms_in)
-        let mut sum_sq_in = 0.0f32;
+        let mut sum_sq_in: f64 = 0.0;
         for i in 0..BLOCK_SIZE {
             let ring_idx =
                 (self.ola.input_write_pos + BLOCK_SIZE - self.ola.input_samples_buffered + i)
                     % BLOCK_SIZE;
-            let base = self.ola.input_ring[ring_idx];
+            let base = self.ola.input_ring[ring_idx] as f64;
             let windowed = base * self.ola.window[i];
             self.ola.block_l[i] = windowed;
             self.ola.block_r[i] = windowed;
             sum_sq_in += windowed * windowed;
         }
-        let rms_in = (sum_sq_in / BLOCK_SIZE as f32).sqrt();
+        let rms_in = (sum_sq_in / BLOCK_SIZE as f64).sqrt();
 
         // Apply notch filters for each sweep (coefficients frozen per block at block center)
-        for sp in &self.sweep_params {
+        // NOTE: We keep per-stage filter state across blocks to avoid block-edge ringing spikes.
+        for (si, sp) in self.sweep_params.iter().enumerate() {
+            let rt = &mut self.sweep_runtime[si];
             let (min_freq, max_freq, q, casc) = sp.interpolate_at(t);
+            let casc = casc.min(rt.max_casc);
             let center_freq = (min_freq + max_freq) * 0.5;
             let freq_range = (max_freq - min_freq) * 0.5;
 
@@ -749,9 +811,8 @@ impl StreamingNoise {
             if notch_freq_l_main > 0.0 && notch_freq_l_main < self.sample_rate * 0.49 {
                 let coeffs =
                     notch_coeffs_f64(notch_freq_l_main as f64, q as f64, self.sample_rate as f64);
-                // Apply cascade with fresh filter state each time (matching Python lfilter)
-                for _ in 0..casc {
-                    lfilter_block(&mut self.ola.block_l, &coeffs);
+                for stage in 0..casc {
+                    biquad_block(&mut self.ola.block_l, &coeffs, &mut rt.l_main[stage]);
                 }
             }
 
@@ -760,8 +821,8 @@ impl StreamingNoise {
             if notch_freq_r_main > 0.0 && notch_freq_r_main < self.sample_rate * 0.49 {
                 let coeffs =
                     notch_coeffs_f64(notch_freq_r_main as f64, q as f64, self.sample_rate as f64);
-                for _ in 0..casc {
-                    lfilter_block(&mut self.ola.block_r, &coeffs);
+                for stage in 0..casc {
+                    biquad_block(&mut self.ola.block_r, &coeffs, &mut rt.r_main[stage]);
                 }
             }
 
@@ -775,8 +836,8 @@ impl StreamingNoise {
                         q as f64,
                         self.sample_rate as f64,
                     );
-                    for _ in 0..casc {
-                        lfilter_block(&mut self.ola.block_l, &coeffs);
+                    for stage in 0..casc {
+                        biquad_block(&mut self.ola.block_l, &coeffs, &mut rt.l_extra[stage]);
                     }
                 }
 
@@ -788,8 +849,8 @@ impl StreamingNoise {
                         q as f64,
                         self.sample_rate as f64,
                     );
-                    for _ in 0..casc {
-                        lfilter_block(&mut self.ola.block_r, &coeffs);
+                    for stage in 0..casc {
+                        biquad_block(&mut self.ola.block_r, &coeffs, &mut rt.r_extra[stage]);
                     }
                 }
             }
@@ -799,24 +860,27 @@ impl StreamingNoise {
         // This matches Python's behavior where it computes rms_in before filtering
         // and then scales output by (rms_in / rms_out) to restore loudness
         if rms_in > 1e-8 {
-            let mut sum_sq_l = 0.0f32;
-            let mut sum_sq_r = 0.0f32;
+            let mut sum_sq_l: f64 = 0.0;
+            let mut sum_sq_r: f64 = 0.0;
             for i in 0..BLOCK_SIZE {
                 sum_sq_l += self.ola.block_l[i] * self.ola.block_l[i];
                 sum_sq_r += self.ola.block_r[i] * self.ola.block_r[i];
             }
-            let rms_l = (sum_sq_l / BLOCK_SIZE as f32).sqrt();
-            let rms_r = (sum_sq_r / BLOCK_SIZE as f32).sqrt();
+            let rms_l = (sum_sq_l / BLOCK_SIZE as f64).sqrt();
+            let rms_r = (sum_sq_r / BLOCK_SIZE as f64).sqrt();
 
-            // Apply gain to restore original RMS level
+            // Apply gain to restore original RMS level.
+            // Clamp is critical: with deep/high-Q cascades, tiny rms_out values can
+            // create enormous gains that produce spikes. Those spikes poison peak
+            // calibration and make the stream end up extremely quiet.
             if rms_l > 1e-8 {
-                let gain_l = rms_in / rms_l;
+                let gain_l = (rms_in / rms_l).clamp(0.25, 16.0);
                 for sample in self.ola.block_l.iter_mut() {
                     *sample *= gain_l;
                 }
             }
             if rms_r > 1e-8 {
-                let gain_r = rms_in / rms_r;
+                let gain_r = (rms_in / rms_r).clamp(0.25, 16.0);
                 for sample in self.ola.block_r.iter_mut() {
                     *sample *= gain_r;
                 }
@@ -827,9 +891,9 @@ impl StreamingNoise {
         let write_base = self.ola.acc_write_pos;
         for i in 0..BLOCK_SIZE {
             let acc_idx = (write_base + i) % acc_size;
-            self.ola.out_acc_l[acc_idx] += self.ola.block_l[i];
-            self.ola.out_acc_r[acc_idx] += self.ola.block_r[i];
-            self.ola.win_acc[acc_idx] += self.ola.window[i];
+            self.ola.out_acc_l[acc_idx] += self.ola.block_l[i] as f32;
+            self.ola.out_acc_r[acc_idx] += self.ola.block_r[i] as f32;
+            self.ola.win_acc[acc_idx] += self.ola.window[i] as f32;
         }
 
         // Advance write position by hop size
