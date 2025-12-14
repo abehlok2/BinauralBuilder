@@ -78,7 +78,7 @@ def launch_session_builder(
             raise FileNotFoundError(f"Session file not found: {session_path}")
         session = _load_session_from_json(session_path)
     else:
-        session = Session()
+        session = None
 
     binaural_dirs = _as_paths(binaural_preset_dirs or [])
     noise_dirs = _as_paths(noise_preset_dirs or [])
