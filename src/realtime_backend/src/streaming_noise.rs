@@ -756,6 +756,8 @@ impl StreamingNoise {
         let lfo_r_extra = lfo_value(r_phase_base + intra_offset, &self.lfo_waveform);
 
         // Copy input block from ring buffer and apply Hann window
+        // Also compute RMS of the input for later compensation (matching Python's rms_in)
+        let mut sum_sq_in = 0.0f32;
         for i in 0..BLOCK_SIZE {
             let ring_idx =
                 (self.ola.input_write_pos + BLOCK_SIZE - self.ola.input_samples_buffered + i)
@@ -764,7 +766,9 @@ impl StreamingNoise {
             let windowed = base * self.ola.window[i];
             self.ola.block_l[i] = windowed;
             self.ola.block_r[i] = windowed;
+            sum_sq_in += windowed * windowed;
         }
+        let rms_in = (sum_sq_in / BLOCK_SIZE as f32).sqrt();
 
         // Apply notch filters for each sweep (coefficients frozen per block at block center)
         for sp in &self.sweep_params {
@@ -819,6 +823,34 @@ impl StreamingNoise {
                     for _ in 0..casc {
                         lfilter_block(&mut self.ola.block_r, &coeffs);
                     }
+                }
+            }
+        }
+
+        // RMS compensation: restore original loudness after notch filtering
+        // This matches Python's behavior where it computes rms_in before filtering
+        // and then scales output by (rms_in / rms_out) to restore loudness
+        if rms_in > 1e-8 {
+            let mut sum_sq_l = 0.0f32;
+            let mut sum_sq_r = 0.0f32;
+            for i in 0..BLOCK_SIZE {
+                sum_sq_l += self.ola.block_l[i] * self.ola.block_l[i];
+                sum_sq_r += self.ola.block_r[i] * self.ola.block_r[i];
+            }
+            let rms_l = (sum_sq_l / BLOCK_SIZE as f32).sqrt();
+            let rms_r = (sum_sq_r / BLOCK_SIZE as f32).sqrt();
+
+            // Apply gain to restore original RMS level
+            if rms_l > 1e-8 {
+                let gain_l = rms_in / rms_l;
+                for sample in self.ola.block_l.iter_mut() {
+                    *sample *= gain_l;
+                }
+            }
+            if rms_r > 1e-8 {
+                let gain_r = rms_in / rms_r;
+                for sample in self.ola.block_r.iter_mut() {
+                    *sample *= gain_r;
                 }
             }
         }
