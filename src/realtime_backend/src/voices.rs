@@ -968,7 +968,7 @@ fn noise_params_from_json(
     sample_rate: u32,
     is_transition: bool,
 ) -> NoiseParams {
-    let color_params: HashMap<String, Value> = params
+    let mut color_params: HashMap<String, Value> = params
         .get("noise_parameters")
         .or_else(|| params.get("color_params"))
         .and_then(|v| v.as_object())
@@ -977,12 +977,16 @@ fn noise_params_from_json(
         .into_iter()
         .collect();
 
-    let noise_type = params
-        .get("noise_type")
+    let noise_name = color_params
+        .get("name")
         .and_then(|v| v.as_str())
-        .or_else(|| color_params.get("name").and_then(|v| v.as_str()))
+        .or_else(|| params.get("noise_type").and_then(|v| v.as_str()))
         .unwrap_or("pink")
         .to_string();
+
+    color_params
+        .entry("name".to_string())
+        .or_insert(Value::String(noise_name.clone()));
 
     let lfo_waveform = params
         .get("lfo_waveform")
@@ -1037,7 +1041,6 @@ fn noise_params_from_json(
     let noise_params = NoiseParams {
         duration_seconds: duration,
         sample_rate,
-        noise_type,
         noise_parameters: color_params,
         seed: get_i64_opt(params, "seed"),
         lfo_waveform,

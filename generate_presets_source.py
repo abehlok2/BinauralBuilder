@@ -80,9 +80,10 @@ def _normalize_existing_noise_presets(noise_presets: Dict[str, Dict[str, Any]]) 
     for name, params in noise_presets.items():
         merged = dict(params)
         color_params = merged.get("noise_parameters") or merged.get("color_params") or {}
-        noise_type = merged.get("noise_type", color_params.get("name", ""))
-        merged["noise_parameters"] = normalized_color_params(noise_type, color_params)
+        noise_name = color_params.get("name", merged.get("noise_type", ""))
+        merged["noise_parameters"] = normalized_color_params(noise_name, color_params)
         merged.pop("color_params", None)
+        merged.pop("noise_type", None)
         normalized[name] = merged
     return normalized
 
@@ -126,9 +127,10 @@ def generate_presets_source(input_files: List[str], remove_list: List[str]):
 
                 params = load_noise_params(file_path)
                 params.color_params = _resolve_color_params(
-                    getattr(params, "noise_type", ""), getattr(params, "color_params", {})
+                    params.noise_parameters.get("name", ""), getattr(params, "color_params", {})
                 )
                 data = asdict(params)
+                data.pop("noise_type", None)
                 name = path_obj.stem
                 noise_presets[name] = data
                 print(f"# Added/Updated noise preset: {name}")

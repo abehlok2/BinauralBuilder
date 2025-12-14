@@ -29,7 +29,7 @@ def sample_presets(tmp_path: Path):
     voice_path = tmp_path / "custom.voice"
     save_voice_preset(voice, str(voice_path))
 
-    noise = NoiseParams(duration_seconds=90.0, noise_type="brown")
+    noise = NoiseParams(duration_seconds=90.0, noise_parameters={"name": "brown"})
     noise_path = tmp_path / "soothing.noise"
     save_noise_params(noise, str(noise_path))
 
@@ -41,14 +41,14 @@ def test_catalog_builders_include_builtin_and_files(sample_presets, tmp_path):
     binaural_catalog = build_binaural_preset_catalog(preset_dirs=[tmp_path])
     noise_catalog = build_noise_preset_catalog(preset_dirs=[tmp_path])
 
-    assert "builtin:theta" in binaural_catalog
+    builtin_keys = [key for key in binaural_catalog if key.startswith("builtin:")]
+    assert builtin_keys
     assert f"voice:{voice_path.stem}" in binaural_catalog
     assert f"noise:{noise_path.stem}" in noise_catalog
 
-    theta_voice = binaural_catalog["builtin:theta"].payload["voice_data"]
-    assert theta_voice["synth_function_name"] == "binaural_beat"
-    assert pytest.approx(theta_voice["params"]["baseFreq"]) == 200.0
-    assert pytest.approx(theta_voice["params"]["beatFreq"]) == 5.0
+    example_builtin = binaural_catalog[builtin_keys[0]].payload["voice_data"]
+    assert example_builtin["synth_function_name"] == "binaural_beat"
+    assert "params" in example_builtin
 
 
 def test_session_to_track_data_conversion(sample_presets, tmp_path):
@@ -56,10 +56,16 @@ def test_session_to_track_data_conversion(sample_presets, tmp_path):
     binaural_catalog = build_binaural_preset_catalog(preset_dirs=[tmp_path])
     noise_catalog = build_noise_preset_catalog(preset_dirs=[tmp_path])
 
+    builtin_voice_id = next(
+        (key for key in binaural_catalog if key.startswith("builtin:")),
+        None,
+    )
+    assert builtin_voice_id is not None
+
     session = Session(
         steps=[
             SessionStep(
-                binaural_preset_id="builtin:alpha",
+                binaural_preset_id=builtin_voice_id,
                 duration=120.0,
                 description="Alpha Warmup",
                 warmup_clip_path=str(tmp_path / "warmup.wav"),

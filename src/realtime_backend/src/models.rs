@@ -113,8 +113,6 @@ pub struct ClipData {
 pub struct BackgroundNoiseData {
     #[serde(default, alias = "file", alias = "file_path", alias = "params_path")]
     pub file_path: String,
-    #[serde(default, rename = "type")]
-    pub noise_type: String,
     #[serde(default = "default_amp", alias = "gain", alias = "amp")]
     pub amp: f32,
     #[serde(default)]
