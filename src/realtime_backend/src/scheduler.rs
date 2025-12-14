@@ -1,6 +1,6 @@
 use crate::config::CONFIG;
 use crate::gpu::GpuMixer;
-use crate::models::{StepData, TrackData, MAX_INDIVIDUAL_GAIN};
+use crate::models::{BackgroundNoiseData, StepData, TrackData, MAX_INDIVIDUAL_GAIN};
 use crate::noise_params::NoiseParams;
 use crate::streaming_noise::StreamingNoise;
 use crate::voices::{voices_for_step, VoiceKind};
@@ -244,6 +244,46 @@ impl BackgroundNoise {
 
         self.playback_sample += usable_frames;
         self.started = true;
+    }
+
+    /// Update just the gain value without recreating the generator.
+    /// This preserves the noise generator state and avoids phase resets.
+    fn set_gain(&mut self, gain: f32) {
+        self.gain = gain;
+    }
+}
+
+/// Check if two noise configurations are compatible (same params, only gain differs).
+/// When compatible, we can reuse the existing noise generator and just update the gain.
+fn noise_configs_compatible(
+    old: &Option<BackgroundNoiseData>,
+    new: &Option<BackgroundNoiseData>,
+) -> bool {
+    match (old, new) {
+        (None, None) => true,
+        (Some(_), None) | (None, Some(_)) => false,
+        (Some(old_data), Some(new_data)) => {
+            // Compare file paths - must be identical
+            if old_data.file_path != new_data.file_path {
+                return false;
+            }
+            // Compare params - must be identical for the generator to be reusable
+            // We compare the JSON serialization to handle nested structures
+            match (&old_data.params, &new_data.params) {
+                (None, None) => true,
+                (Some(_), None) | (None, Some(_)) => false,
+                (Some(old_params), Some(new_params)) => {
+                    // Compare all fields except sample_rate (set by device)
+                    // by serializing and comparing as JSON
+                    let old_json = serde_json::to_string(old_params);
+                    let new_json = serde_json::to_string(new_params);
+                    match (old_json, new_json) {
+                        (Ok(o), Ok(n)) => o == n,
+                        _ => false,
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -593,6 +633,14 @@ impl TrackScheduler {
             _ => CrossfadeCurve::Linear,
         };
 
+        // Check if we can reuse the existing noise generator (only gain changed).
+        // This preserves the noise phase/LFO state and prevents audible resets.
+        // Must be done BEFORE updating self.track to compare old vs new config.
+        let old_noise_cfg = self.track.background_noise.clone();
+        let new_noise_cfg = &track.background_noise;
+        let can_reuse_noise =
+            self.background_noise.is_some() && noise_configs_compatible(&old_noise_cfg, new_noise_cfg);
+
         self.track = track.clone();
 
         self.clips.clear();
@@ -612,29 +660,40 @@ impl TrackScheduler {
             });
         }
 
-        self.background_noise = if let Some(noise_cfg) = &track.background_noise {
-            if !noise_cfg.file_path.is_empty() && noise_cfg.file_path.ends_with(".noise") {
-                if let Ok(params) = crate::noise_params::load_noise_params(&noise_cfg.file_path) {
+        if can_reuse_noise {
+            // Only update the gain, preserving the generator state
+            if let (Some(ref mut noise), Some(noise_cfg)) =
+                (&mut self.background_noise, &track.background_noise)
+            {
+                noise.set_gain(noise_cfg.amp * self.noise_gain);
+            }
+        } else {
+            // Recreate the noise generator (params changed or no existing generator)
+            self.background_noise = if let Some(noise_cfg) = &track.background_noise {
+                if !noise_cfg.file_path.is_empty() && noise_cfg.file_path.ends_with(".noise") {
+                    if let Ok(params) = crate::noise_params::load_noise_params(&noise_cfg.file_path)
+                    {
+                        Some(BackgroundNoise::from_params(
+                            params,
+                            noise_cfg.amp * self.noise_gain,
+                            self.sample_rate as u32,
+                        ))
+                    } else {
+                        None
+                    }
+                } else if let Some(params) = &noise_cfg.params {
                     Some(BackgroundNoise::from_params(
-                        params,
+                        params.clone(),
                         noise_cfg.amp * self.noise_gain,
                         self.sample_rate as u32,
                     ))
                 } else {
                     None
                 }
-            } else if let Some(params) = &noise_cfg.params {
-                Some(BackgroundNoise::from_params(
-                    params.clone(),
-                    noise_cfg.amp * self.noise_gain,
-                    self.sample_rate as u32,
-                ))
             } else {
                 None
-            }
-        } else {
-            None
-        };
+            };
+        }
 
         self.seek_samples(abs_samples);
 
