@@ -899,8 +899,159 @@ fn load_and_modulate(path: &str, sample_rate: u32, carrier: f32) -> Option<Vec<f
     Some(out)
 }
 
-/// Parse sweeps from JSON params - handles both tuple format [[min, max], ...]
-/// and the normalized Python format with start_sweeps/end_sweeps
+/// Parse sweeps from JSON params - handles multiple formats:
+/// 1. Python dict format: [{start_min, end_min, start_max, end_max, start_q, end_q, start_casc, end_casc}, ...]
+/// 2. Tuple format: [[min, max], ...]
+/// 3. Simple dict format: [{min, max, q, cascade}, ...]
+fn parse_sweeps_as_noise_sweeps(
+    params: &HashMap<String, Value>,
+    key: &str,
+) -> Option<Vec<NoiseSweep>> {
+    let sweeps = params.get(key)?;
+    let arr = sweeps.as_array()?;
+
+    if arr.is_empty() {
+        return None;
+    }
+
+    // Try to detect format by checking first element
+    let first = arr.first()?;
+
+    // Check if it's the full dict format with start_min/end_min keys (Python preset format)
+    if first.get("start_min").is_some() || first.get("end_min").is_some() {
+        let parsed: Vec<NoiseSweep> = arr
+            .iter()
+            .filter_map(|item| {
+                let obj = item.as_object()?;
+                // Parse with explicit field extraction to handle all variations
+                let start_min = obj
+                    .get("start_min")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(1000.0) as f32;
+                let end_min = obj
+                    .get("end_min")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(start_min as f64) as f32;
+                let start_max = obj
+                    .get("start_max")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(10000.0) as f32;
+                let end_max = obj
+                    .get("end_max")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(start_max as f64) as f32;
+                let start_q = obj.get("start_q").and_then(|v| v.as_f64()).unwrap_or(25.0) as f32;
+                let end_q = obj
+                    .get("end_q")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(start_q as f64) as f32;
+                let start_casc = obj
+                    .get("start_casc")
+                    .and_then(|v| v.as_i64())
+                    .or_else(|| {
+                        obj.get("start_casc")
+                            .and_then(|v| v.as_f64())
+                            .map(|f| f as i64)
+                    })
+                    .unwrap_or(10) as usize;
+                let end_casc = obj
+                    .get("end_casc")
+                    .and_then(|v| v.as_i64())
+                    .or_else(|| {
+                        obj.get("end_casc")
+                            .and_then(|v| v.as_f64())
+                            .map(|f| f as i64)
+                    })
+                    .unwrap_or(start_casc as i64) as usize;
+
+                Some(NoiseSweep {
+                    start_min,
+                    end_min,
+                    start_max,
+                    end_max,
+                    start_q,
+                    end_q,
+                    start_casc,
+                    end_casc,
+                })
+            })
+            .collect();
+
+        if !parsed.is_empty() {
+            return Some(parsed);
+        }
+    }
+
+    // Check if it's the simple dict format with min/max/q/cascade keys
+    if first.get("min").is_some() || first.get("max").is_some() {
+        let parsed: Vec<NoiseSweep> = arr
+            .iter()
+            .filter_map(|item| {
+                let obj = item.as_object()?;
+                let min = obj.get("min").and_then(|v| v.as_f64()).unwrap_or(1000.0) as f32;
+                let max = obj.get("max").and_then(|v| v.as_f64()).unwrap_or(10000.0) as f32;
+                let q = obj.get("q").and_then(|v| v.as_f64()).unwrap_or(25.0) as f32;
+                let casc = obj
+                    .get("cascade")
+                    .and_then(|v| v.as_i64())
+                    .or_else(|| {
+                        obj.get("cascade")
+                            .and_then(|v| v.as_f64())
+                            .map(|f| f as i64)
+                    })
+                    .unwrap_or(10) as usize;
+
+                Some(NoiseSweep {
+                    start_min: min,
+                    end_min: min,
+                    start_max: max,
+                    end_max: max,
+                    start_q: q,
+                    end_q: q,
+                    start_casc: casc,
+                    end_casc: casc,
+                })
+            })
+            .collect();
+
+        if !parsed.is_empty() {
+            return Some(parsed);
+        }
+    }
+
+    // Fall back to tuple format [[min, max], ...]
+    if first.is_array() {
+        let parsed: Vec<NoiseSweep> = arr
+            .iter()
+            .filter_map(|item| {
+                let tuple = item.as_array()?;
+                if tuple.len() >= 2 {
+                    let min = tuple[0].as_f64()? as f32;
+                    let max = tuple[1].as_f64()? as f32;
+                    return Some(NoiseSweep {
+                        start_min: min,
+                        end_min: min,
+                        start_max: max,
+                        end_max: max,
+                        start_q: 25.0,
+                        end_q: 25.0,
+                        start_casc: 10,
+                        end_casc: 10,
+                    });
+                }
+                None
+            })
+            .collect();
+
+        if !parsed.is_empty() {
+            return Some(parsed);
+        }
+    }
+
+    None
+}
+
+/// Legacy function for backward compatibility - returns tuples only
 fn parse_sweeps_from_params(params: &HashMap<String, Value>, key: &str) -> Vec<(f32, f32)> {
     if let Some(sweeps) = params.get(key) {
         if let Some(arr) = sweeps.as_array() {
@@ -1007,36 +1158,45 @@ fn noise_params_from_json(
         start_intra_phase_offset,
     );
 
-    // Parse sweeps - use start_sweeps for transition mode, sweeps for static mode
+    // Parse sweeps - try the new comprehensive parser first which handles Python dict format
+    // with start_min/end_min/start_q/end_q/start_casc/end_casc keys embedded in each sweep
     let sweeps_key = if is_transition {
         "start_sweeps"
     } else {
         "sweeps"
     };
-    let sweeps_tuples = parse_sweeps_from_params(params, sweeps_key);
-    let sweep_count = sweeps_tuples.len();
 
-    // Parse Q and cascade values
-    let q_key = if is_transition { "start_q" } else { "notch_q" };
-    let casc_key = if is_transition { "start_casc" } else { "casc" };
-    let qs = parse_q_from_params(params, q_key, sweep_count);
-    let cascs = parse_casc_from_params(params, casc_key, sweep_count);
+    let sweeps: Vec<NoiseSweep> =
+        if let Some(parsed_sweeps) = parse_sweeps_as_noise_sweeps(params, sweeps_key) {
+            // Successfully parsed sweeps with embedded Q and cascade values
+            parsed_sweeps
+        } else {
+            // Fall back to legacy parsing: separate sweeps tuples + Q/cascade arrays
+            let sweeps_tuples = parse_sweeps_from_params(params, sweeps_key);
+            let sweep_count = sweeps_tuples.len();
 
-    // Build NoiseSweep structs
-    let sweeps: Vec<NoiseSweep> = sweeps_tuples
-        .iter()
-        .enumerate()
-        .map(|(i, (min, max))| NoiseSweep {
-            start_min: *min,
-            end_min: *min,
-            start_max: *max,
-            end_max: *max,
-            start_q: qs.get(i).copied().unwrap_or(25.0),
-            end_q: qs.get(i).copied().unwrap_or(25.0),
-            start_casc: cascs.get(i).copied().unwrap_or(10),
-            end_casc: cascs.get(i).copied().unwrap_or(10),
-        })
-        .collect();
+            // Parse Q and cascade values from separate keys
+            let q_key = if is_transition { "start_q" } else { "notch_q" };
+            let casc_key = if is_transition { "start_casc" } else { "casc" };
+            let qs = parse_q_from_params(params, q_key, sweep_count);
+            let cascs = parse_casc_from_params(params, casc_key, sweep_count);
+
+            // Build NoiseSweep structs from separate components
+            sweeps_tuples
+                .iter()
+                .enumerate()
+                .map(|(i, (min, max))| NoiseSweep {
+                    start_min: *min,
+                    end_min: *min,
+                    start_max: *max,
+                    end_max: *max,
+                    start_q: qs.get(i).copied().unwrap_or(25.0),
+                    end_q: qs.get(i).copied().unwrap_or(25.0),
+                    start_casc: cascs.get(i).copied().unwrap_or(10),
+                    end_casc: cascs.get(i).copied().unwrap_or(10),
+                })
+                .collect()
+        };
 
     let noise_params = NoiseParams {
         duration_seconds: duration,
