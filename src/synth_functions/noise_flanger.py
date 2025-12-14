@@ -1084,6 +1084,9 @@ def _generate_swept_notch_arrays(
     initial_offset=0.0,
 ):
     """Internal helper to generate swept notch noise and return stereo array."""
+    # Defensive normalization to handle malformed inputs from saved presets/UI.
+    lfo_waveform = str(lfo_waveform or "sine").lower()
+
     if filter_sweeps is None:
         filter_sweeps = [(1000, 10000)]
 
@@ -1217,6 +1220,9 @@ def _generate_swept_notch_arrays_transition(
     static_notches=None,
 ):
     """Internal helper generating swept notch noise with parameter transitions."""
+    # Defensive normalization to handle malformed inputs from saved presets/UI.
+    lfo_waveform = str(lfo_waveform or "sine").lower()
+
     if start_filter_sweeps is None:
         start_filter_sweeps = [(1000, 10000)]
     if end_filter_sweeps is None:
