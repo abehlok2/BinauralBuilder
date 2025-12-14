@@ -1,7 +1,7 @@
 use crate::noise_params::NoiseParams;
 use biquad::{Biquad, Coefficients, DirectForm2Transposed, ToHertz, Type, Q_BUTTERWORTH_F32};
 use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
+use rand::SeedableRng;
 use rand_distr::{Distribution, Normal};
 use rustfft::{num_complex::Complex, Fft, FftPlanner};
 use serde_json::Value;
@@ -517,24 +517,8 @@ pub struct StreamingNoise {
     // Mode flags
     transition: bool,
 
-    noise_name: String,
-
-    // Legacy Generator States (Pink/Brown)
-    b0: f32,
-    b1: f32,
-    b2: f32,
-    b3: f32,
-    b4: f32,
-    b5: f32,
-    brown: f32,
-    brown_decay: f32,
-    brown_scale: f32,
-
-    // FFT Generator for everything else
-    fft_gen: Option<FftNoiseGenerator>,
-
-    rng: StdRng,
-    normal: Normal<f32>,
+    // FFT Generator for all noise modes
+    fft_gen: FftNoiseGenerator,
 
     // OLA state for Python-compat mode
     ola: OlaState,
@@ -614,24 +598,6 @@ impl StreamingNoise {
             }]
         };
 
-        // Determine Mode
-        let nt = resolved_noise_name(params).to_lowercase();
-        let is_legacy_type = matches!(nt.as_str(), "pink" | "brown" | "red" | "white");
-        let has_custom_params = params.exponent.is_some()
-            || params.high_exponent.is_some()
-            || params.distribution_curve.is_some()
-            || params.lowcut.is_some()
-            || params.highcut.is_some()
-            || params.amplitude.is_some();
-
-        let use_fft = !is_legacy_type || has_custom_params;
-
-        let fft_gen = if use_fft {
-            Some(FftNoiseGenerator::new(params, sample_rate_f))
-        } else {
-            None
-        };
-
         Self {
             sample_rate: sample_rate_f,
             duration_samples,
@@ -654,19 +620,7 @@ impl StreamingNoise {
             initial_offset: params.initial_offset,
             sweep_params,
             transition: params.transition,
-            noise_name: resolved_noise_name(params),
-            b0: 0.0,
-            b1: 0.0,
-            b2: 0.0,
-            b3: 0.0,
-            b4: 0.0,
-            b5: 0.0,
-            brown: 0.0,
-            brown_decay: 0.9999,
-            brown_scale: 0.02,
-            fft_gen,
-            rng: StdRng::from_entropy(),
-            normal: Normal::new(0.0, 1.0).unwrap(),
+            fft_gen: FftNoiseGenerator::new(params, sample_rate_f),
             ola: OlaState::new(),
             total_samples_output: 0,
         }
@@ -699,30 +653,7 @@ impl StreamingNoise {
     }
 
     fn next_base(&mut self) -> f32 {
-        if let Some(ref mut gen) = self.fft_gen {
-            return gen.next();
-        }
-
-        // Legacy IIR Fallback
-        let gaussian: f32 = self.normal.sample(&mut self.rng);
-        match self.noise_name.to_lowercase().as_str() {
-            "brown" | "red" => {
-                self.brown = self.brown_decay * self.brown + gaussian * self.brown_scale;
-                self.brown
-            }
-            "white" => gaussian,
-            _ => {
-                // Pink
-                let w = gaussian;
-                self.b0 = 0.99886 * self.b0 + w * 0.0555179;
-                self.b1 = 0.99332 * self.b1 + w * 0.0750759;
-                self.b2 = 0.96900 * self.b2 + w * 0.1538520;
-                self.b3 = 0.86650 * self.b3 + w * 0.3104856;
-                self.b4 = 0.55000 * self.b4 + w * 0.5329522;
-                self.b5 = -0.7616 * self.b5 - w * 0.0168980;
-                (self.b0 + self.b1 + self.b2 + self.b3 + self.b4 + self.b5) * 0.11
-            }
-        }
+        self.fft_gen.next()
     }
 
     /// Compute the transition fraction at a given absolute sample index
