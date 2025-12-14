@@ -585,63 +585,50 @@ impl StreamingNoise {
             1.0 / 12.0
         };
 
-        let sweep_params: Vec<SweepParams> = if !params.sweeps.is_empty() {
-            params
-                .sweeps
-                .iter()
-                .map(|sw| {
-                    let start_min = if sw.start_min > 0.0 {
-                        sw.start_min
-                    } else {
-                        1000.0
-                    };
-                    let end_min = if sw.end_min > 0.0 {
-                        sw.end_min
-                    } else {
-                        start_min
-                    };
-                    let start_max = if sw.start_max > 0.0 {
-                        sw.start_max.max(start_min + 1.0)
-                    } else {
-                        start_min + 9000.0
-                    };
-                    let end_max = if sw.end_max > 0.0 {
-                        sw.end_max.max(end_min + 1.0)
-                    } else {
-                        start_max
-                    };
-                    let start_q = if sw.start_q > 0.0 { sw.start_q } else { 25.0 };
-                    let end_q = if sw.end_q > 0.0 { sw.end_q } else { start_q };
-                    let start_casc = if sw.start_casc > 0 { sw.start_casc } else { 10 };
-                    let end_casc = if sw.end_casc > 0 {
-                        sw.end_casc
-                    } else {
-                        start_casc
-                    };
-                    SweepParams {
-                        start_min,
-                        end_min,
-                        start_max,
-                        end_max,
-                        start_q,
-                        end_q,
-                        start_casc,
-                        end_casc,
-                    }
-                })
-                .collect()
-        } else {
-            vec![SweepParams {
-                start_min: 1000.0,
-                end_min: 1000.0,
-                start_max: 10000.0,
-                end_max: 10000.0,
-                start_q: 25.0,
-                end_q: 25.0,
-                start_casc: 10,
-                end_casc: 10,
-            }]
-        };
+        let sweep_params: Vec<SweepParams> = params
+            .sweeps
+            .iter()
+            .map(|sw| {
+                let start_min = if sw.start_min > 0.0 {
+                    sw.start_min
+                } else {
+                    1000.0
+                };
+                let end_min = if sw.end_min > 0.0 {
+                    sw.end_min
+                } else {
+                    start_min
+                };
+                let start_max = if sw.start_max > 0.0 {
+                    sw.start_max.max(start_min + 1.0)
+                } else {
+                    start_min + 9000.0
+                };
+                let end_max = if sw.end_max > 0.0 {
+                    sw.end_max.max(end_min + 1.0)
+                } else {
+                    start_max
+                };
+                let start_q = if sw.start_q > 0.0 { sw.start_q } else { 25.0 };
+                let end_q = if sw.end_q > 0.0 { sw.end_q } else { start_q };
+                let start_casc = if sw.start_casc > 0 { sw.start_casc } else { 10 };
+                let end_casc = if sw.end_casc > 0 {
+                    sw.end_casc
+                } else {
+                    start_casc
+                };
+                SweepParams {
+                    start_min,
+                    end_min,
+                    start_max,
+                    end_max,
+                    start_q,
+                    end_q,
+                    start_casc,
+                    end_casc,
+                }
+            })
+            .collect();
 
         let sweep_runtime: Vec<SweepRuntime> = sweep_params
             .iter()
