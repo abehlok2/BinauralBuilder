@@ -180,3 +180,34 @@ def test_save_and_load_buttons_round_trip(qapp, monkeypatch, tmp_path):
     assert window._session.steps[0].duration == pytest.approx(22.0)
 
     window.close()
+
+
+def test_normalization_defaults_respected(qapp, monkeypatch, tmp_path):
+    """Ensure the normalization slider honors saved defaults on startup."""
+
+    # Store defaults in a temp working directory
+    monkeypatch.chdir(tmp_path)
+    defaults_path = tmp_path / "session_defaults.json"
+    defaults_path.write_text(
+        json.dumps(
+            {
+                "step_duration": 120.0,
+                "crossfade_duration": 5.0,
+                "normalization_level": 0.88,
+            }
+        )
+    )
+
+    binaural_catalog = {"alpha": _catalog_entry("alpha", "Alpha")}
+    window = SessionBuilderWindow(
+        binaural_catalog=binaural_catalog,
+        noise_catalog={},
+    )
+    window.show()
+    qapp.processEvents()
+
+    assert window.normalization_slider.value() == 88
+    assert window.normalization_label.text() == "0.88"
+    assert window._session.normalization_level == pytest.approx(0.88)
+
+    window.close()

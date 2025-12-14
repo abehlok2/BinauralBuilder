@@ -20,6 +20,8 @@ from PyQt5.QtWidgets import (
 
 DEFAULTS_FILE = "session_defaults.json"
 
+MAX_NORMALIZATION_DEFAULT = 0.98
+
 DEFAULT_SETTINGS = {
     "step_duration": 300.0,
     "normalization_level": 0.95,
@@ -82,12 +84,13 @@ class DefaultsDialog(QDialog):
         norm_layout.setContentsMargins(0, 0, 0, 0)
         
         self.norm_slider = QSlider(Qt.Horizontal)
-        self.norm_slider.setRange(0, 100)
+        self.norm_slider.setRange(0, int(MAX_NORMALIZATION_DEFAULT * 100))
         self.norm_val = float(self._defaults.get("normalization_level", 0.95))
+        self.norm_val = max(0.0, min(self.norm_val, MAX_NORMALIZATION_DEFAULT))
         self.norm_slider.setValue(int(self.norm_val * 100))
-        
+
         self.norm_spin = QDoubleSpinBox()
-        self.norm_spin.setRange(0.0, 1.0)
+        self.norm_spin.setRange(0.0, MAX_NORMALIZATION_DEFAULT)
         self.norm_spin.setSingleStep(0.01)
         self.norm_spin.setValue(self.norm_val)
         

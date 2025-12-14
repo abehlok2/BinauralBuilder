@@ -50,6 +50,9 @@ from . import themes
 from .defaults_dialog import DefaultsDialog, load_defaults
 
 
+MAX_NORMALIZATION_UI = 0.98
+
+
 class SessionStepModel(StepModel):
     """Table model wrapper bridging :class:`SessionStep` objects to the view."""
 
@@ -147,11 +150,12 @@ class SessionBuilderWindow(QMainWindow):
         self._session = session or Session()
         self._binaural_catalog = dict(binaural_catalog or {})
         self._noise_catalog = dict(noise_catalog or {})
-        
+
         # Load defaults
         self._defaults = load_defaults()
         if not session: # Only apply defaults if creating a new session
-            self._session.normalization_level = float(self._defaults.get("normalization_level", 0.95))
+            norm_default = float(self._defaults.get("normalization_level", 0.95))
+            self._session.normalization_level = max(0.0, min(norm_default, MAX_NORMALIZATION_UI))
             self._session.crossfade_duration = float(self._defaults.get("crossfade_duration", 10.0))
 
         self._assembler_factory = assembler_factory or (lambda s, b, n, **opts: SessionAssembler(s, b, n, **opts))
@@ -267,8 +271,10 @@ class SessionBuilderWindow(QMainWindow):
         self.crossfade_curve_combo.setToolTip("Choose crossfade curve applied between steps.")
 
         self.normalization_slider = QSlider(Qt.Horizontal)
-        self.normalization_slider.setRange(0, 75)
-        self.normalization_slider.setToolTip("Target normalization ceiling for rendered audio (0.00 – 0.75).")
+        self.normalization_slider.setRange(0, int(MAX_NORMALIZATION_UI * 100))
+        self.normalization_slider.setToolTip(
+            "Target normalization ceiling for rendered audio (0.00 – 0.98)."
+        )
         
         self.normalization_label = QLabel("0.00")
         self.normalization_label.setToolTip("Current normalization ceiling applied during rendering.")
@@ -688,7 +694,7 @@ class SessionBuilderWindow(QMainWindow):
             self.crossfade_curve_combo.setCurrentIndex(idx)
         self.normalization_slider.blockSignals(True)
         current_norm = getattr(session, "normalization_level", 0.95)
-        current_norm = max(0.0, min(current_norm, 0.75))
+        current_norm = max(0.0, min(current_norm, MAX_NORMALIZATION_UI))
         self.normalization_slider.setValue(int(round(current_norm * 100)))
         self.normalization_slider.blockSignals(False)
         self._update_normalization_label(self.normalization_slider.value())
@@ -703,21 +709,22 @@ class SessionBuilderWindow(QMainWindow):
         dlg = DefaultsDialog(self._binaural_catalog, self._noise_catalog, self)
         if dlg.exec_():
             self._defaults = load_defaults()
-            
+
             # Apply to current session immediately
             new_norm = float(self._defaults.get("normalization_level", 0.95))
+            new_norm = max(0.0, min(new_norm, MAX_NORMALIZATION_UI))
             new_cross = float(self._defaults.get("crossfade_duration", 10.0))
             new_dur = float(self._defaults.get("step_duration", 300.0))
-            
+
             # Update Session
             self._session.normalization_level = new_norm
             self._session.crossfade_duration = new_cross
             
             # Update UI controls
             self.normalization_slider.blockSignals(True)
-            self.normalization_slider.setValue(int(new_norm * 100))
+            self.normalization_slider.setValue(int(round(new_norm * 100)))
             self.normalization_slider.blockSignals(False)
-            self._update_normalization_label(int(new_norm * 100))
+            self._update_normalization_label(int(round(new_norm * 100)))
             
             self.crossfade_spin.setValue(new_cross) # Signals will update slider
 
