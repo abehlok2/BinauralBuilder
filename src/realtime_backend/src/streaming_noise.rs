@@ -14,6 +14,9 @@ const HOP_SIZE: usize = BLOCK_SIZE / 2; // 2048, 50% overlap
 // --- Crossfade length for FFT noise regeneration ---
 const CROSSFADE_SAMPLES: usize = 2048;
 
+// --- Renormalization window for post-filter RMS tracking ---
+const RENORM_WINDOW: usize = 4096;
+
 // --- Helper Functions ---
 
 /// Scipy-compatible sawtooth with width=0.5 (triangle wave)
@@ -129,6 +132,10 @@ struct FftNoiseGenerator {
     fft_inverse: Arc<dyn Fft<f32>>,
     rng: StdRng,
     normal: Normal<f32>,
+    renorm_gain: f32,
+    pre_rms_accum: f32,
+    post_rms_accum: f32,
+    rms_samples: usize,
 }
 
 impl FftNoiseGenerator {
@@ -240,6 +247,10 @@ impl FftNoiseGenerator {
             fft_inverse,
             rng,
             normal,
+            renorm_gain: 1.0,
+            pre_rms_accum: 0.0,
+            post_rms_accum: 0.0,
+            rms_samples: 0,
         };
 
         gen.buffer = gen.regenerate_buffer();
@@ -351,6 +362,8 @@ impl FftNoiseGenerator {
             }
         }
 
+        let pre_filter_sample = sample;
+
         if let Some(ref mut filters) = self.lp_filters {
             for f in filters {
                 sample = f.run(sample);
@@ -362,7 +375,35 @@ impl FftNoiseGenerator {
             }
         }
 
+        sample = self.apply_post_filter_renorm(pre_filter_sample, sample);
+
         sample * self.base_amplitude
+    }
+
+    fn apply_post_filter_renorm(&mut self, pre: f32, post: f32) -> f32 {
+        self.pre_rms_accum += pre * pre;
+        self.post_rms_accum += post * post;
+        self.rms_samples += 1;
+
+        if self.rms_samples >= RENORM_WINDOW {
+            let pre_rms = (self.pre_rms_accum / self.rms_samples as f32).sqrt();
+            let post_rms = (self.post_rms_accum / self.rms_samples as f32).sqrt();
+
+            if pre_rms > 1e-6 && post_rms > 1e-6 {
+                let target_gain = (pre_rms / post_rms).clamp(0.25, 16.0);
+                // Smooth gain to avoid sudden jumps
+                self.renorm_gain = 0.9 * self.renorm_gain + 0.1 * target_gain;
+            } else {
+                // Drift gain back toward unity if measurements are unreliable
+                self.renorm_gain = 0.9 * self.renorm_gain + 0.1;
+            }
+
+            self.pre_rms_accum = 0.0;
+            self.post_rms_accum = 0.0;
+            self.rms_samples = 0;
+        }
+
+        post * self.renorm_gain
     }
 }
 
