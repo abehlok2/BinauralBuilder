@@ -20,7 +20,7 @@ from PyQt5.QtWidgets import (
 
 DEFAULTS_FILE = "session_defaults.json"
 
-MAX_NORMALIZATION_DEFAULT = 0.98
+MAX_NORMALIZATION_DEFAULT = 0.95
 
 DEFAULT_SETTINGS = {
     "step_duration": 300.0,

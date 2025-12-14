@@ -50,7 +50,7 @@ from . import themes
 from .defaults_dialog import DefaultsDialog, load_defaults
 
 
-MAX_NORMALIZATION_UI = 0.98
+MAX_NORMALIZATION_UI = 0.95
 
 
 class SessionStepModel(StepModel):
@@ -153,7 +153,8 @@ class SessionBuilderWindow(QMainWindow):
 
         # Load defaults
         self._defaults = load_defaults()
-        if not session: # Only apply defaults if creating a new session
+        is_new_session = session is None
+        if is_new_session:
             norm_default = float(self._defaults.get("normalization_level", 0.95))
             self._session.normalization_level = max(0.0, min(norm_default, MAX_NORMALIZATION_UI))
             self._session.crossfade_duration = float(self._defaults.get("crossfade_duration", 10.0))
@@ -273,7 +274,7 @@ class SessionBuilderWindow(QMainWindow):
         self.normalization_slider = QSlider(Qt.Horizontal)
         self.normalization_slider.setRange(0, int(MAX_NORMALIZATION_UI * 100))
         self.normalization_slider.setToolTip(
-            "Target normalization ceiling for rendered audio (0.00 – 0.98)."
+            "Target normalization ceiling for rendered audio (0.00 – 0.95)."
         )
         
         self.normalization_label = QLabel("0.00")
@@ -888,7 +889,7 @@ class SessionBuilderWindow(QMainWindow):
         self._invalidate_assembler()
 
     def _on_normalization_changed(self, value: int) -> None:
-        value = max(0, min(value, 75))
+        value = max(0, min(value, self.normalization_slider.maximum()))
         self._session.normalization_level = value / 100.0
         self._update_normalization_label(value)
         self._invalidate_assembler()
