@@ -323,7 +323,7 @@ class NoiseGeneratorDialog(QDialog):
                 self.noise_type_combo.addItem(display)
 
         if self.noise_type_combo.count():
-            idx = self.noise_type_combo.findText(current)
+            idx = self.noise_type_combo.findText(current, Qt.MatchFixedString)
             self.noise_type_combo.setCurrentIndex(idx if idx >= 0 else 0)
         self.noise_type_combo.blockSignals(False)
 
@@ -437,10 +437,11 @@ class NoiseGeneratorDialog(QDialog):
         self._refresh_noise_types(selected=display_name)
         self.output_duration_spin.setValue(params.duration_seconds)
         self.sample_rate_spin.setValue(params.sample_rate)
-        idx = self.noise_type_combo.findText(display_name)
+        idx = self.noise_type_combo.findText(display_name, Qt.MatchFixedString)
         if idx != -1:
             self.noise_type_combo.setCurrentIndex(idx)
-        idx = self.lfo_waveform_combo.findText(params.lfo_waveform.capitalize())
+        lfo_waveform = (params.lfo_waveform or "sine").capitalize()
+        idx = self.lfo_waveform_combo.findText(lfo_waveform, Qt.MatchFixedString)
         if idx != -1:
             self.lfo_waveform_combo.setCurrentIndex(idx)
         self.transition_check.setChecked(params.transition)
