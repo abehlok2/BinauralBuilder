@@ -19,7 +19,6 @@ class NoiseParams:
     """Representation of parameters used for noise generation."""
     duration_seconds: float = 60.0
     sample_rate: int = 44100
-    noise_type: str = "pink"
     lfo_waveform: str = "sine"
     transition: bool = False
     # Non-transition mode uses ``lfo_freq`` and ``sweeps``
@@ -28,7 +27,9 @@ class NoiseParams:
     start_lfo_freq: float = 1.0 / 12.0
     end_lfo_freq: float = 1.0 / 12.0
     sweeps: List[Dict[str, Any]] = field(default_factory=list)
-    noise_parameters: Dict[str, Any] = field(default_factory=dict)
+    noise_parameters: Dict[str, Any] = field(
+        default_factory=lambda: {"name": "pink"}
+    )
     start_lfo_phase_offset_deg: int = 0
     end_lfo_phase_offset_deg: int = 0
     start_intra_phase_offset_deg: int = 0
@@ -51,6 +52,19 @@ class NoiseParams:
     @color_params.setter
     def color_params(self, value: Dict[str, Any]) -> None:
         self.noise_parameters = value or {}
+
+    @property
+    def noise_type(self) -> str:
+        """Alias returning the selected noise colour name."""
+
+        return (self.noise_parameters or {}).get("name", "")
+
+    @noise_type.setter
+    def noise_type(self, value: str) -> None:
+        params = dict(self.noise_parameters or {})
+        if value:
+            params.setdefault("name", value)
+        self.noise_parameters = params
 
 
 def _color_parameters_for_type(noise_type: str) -> Dict[str, Any]:
@@ -80,11 +94,10 @@ def _normalized_noise_parameters(params: NoiseParams) -> Dict[str, Any]:
 
     merged = dict(params.noise_parameters or {})
     if not merged:
-        merged = _color_parameters_for_type(params.noise_type)
+        merged = _color_parameters_for_type("pink")
 
-    if params.noise_type and not merged.get("name"):
-        merged["name"] = params.noise_type
-    return normalized_color_params(merged.get("name", params.noise_type), merged)
+    noise_name = merged.get("name", "pink")
+    return normalized_color_params(noise_name, merged)
 
 
 def save_noise_params(params: NoiseParams, filepath: str) -> None:
@@ -94,7 +107,6 @@ def save_noise_params(params: NoiseParams, filepath: str) -> None:
         path = path.with_suffix(NOISE_FILE_EXTENSION)
     data = asdict(params)
     data["noise_parameters"] = _normalized_noise_parameters(params)
-    data.pop("noise_type", None)
     data.pop("color_params", None)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)
@@ -109,7 +121,7 @@ def load_noise_params(filepath: str) -> NoiseParams:
         data = json.load(f)
     params = NoiseParams()
     noise_params = data.get("noise_parameters") or data.get("color_params") or {}
-    noise_type = data.get("noise_type", params.noise_type)
+    noise_type = data.get("noise_type", "")
     for k, v in data.items():
         target = "duration" if k == "post_offset" else k
         if target in {"noise_parameters", "color_params", "noise_type"}:
@@ -117,12 +129,13 @@ def load_noise_params(filepath: str) -> NoiseParams:
         if hasattr(params, target):
             setattr(params, target, v)
 
+    if noise_type and not noise_params.get("name"):
+        noise_params["name"] = noise_type
+
+    noise_name = noise_params.get("name", "pink")
     params.noise_parameters = normalized_color_params(
-        noise_type, noise_params or _color_parameters_for_type(noise_type)
+        noise_name, noise_params or _color_parameters_for_type(noise_name)
     )
-    if noise_type and not params.noise_parameters.get("name"):
-        params.noise_parameters["name"] = noise_type
-    params.noise_type = params.noise_parameters.get("name", noise_type)
     return params
 
 __all__ = [

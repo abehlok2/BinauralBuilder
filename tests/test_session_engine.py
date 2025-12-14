@@ -26,6 +26,14 @@ def _register_constant_voice(monkeypatch):
         return audio
 
     monkeypatch.setitem(sound_creator.SYNTH_FUNCTIONS, "test_constant_voice", constant_voice)
+    try:
+        import binauralbuilder_core.synth_functions.sound_creator as core_sound_creator
+
+        monkeypatch.setitem(
+            core_sound_creator.SYNTH_FUNCTIONS, "test_constant_voice", constant_voice
+        )
+    except Exception:
+        pass
 
 
 def _patch_noise_generation(monkeypatch, noise_value=0.05):
@@ -49,7 +57,7 @@ def _patch_noise_generation(monkeypatch, noise_value=0.05):
             self.initial_offset = 0.0
             self.duration = 0.0
             self.input_audio_path = ""
-            self.noise_type = "white"
+            self.noise_parameters = {"name": "white"}
             self.lfo_waveform = "sine"
             self.static_notches = []
 

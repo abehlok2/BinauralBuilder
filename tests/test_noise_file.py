@@ -20,7 +20,7 @@ def test_noise_params_round_trip_includes_color_params(tmp_path: Path):
         "name": "custom blue",
     }
 
-    params = NoiseParams(noise_type="custom blue", noise_parameters=color_params)
+    params = NoiseParams(noise_parameters=color_params)
     target = tmp_path / "custom.noise"
 
     save_noise_params(params, str(target))
@@ -31,7 +31,7 @@ def test_noise_params_round_trip_includes_color_params(tmp_path: Path):
 
 
 def test_missing_color_fields_are_normalized(tmp_path: Path):
-    params = NoiseParams(noise_type="pink", noise_parameters={"exponent": 1.0})
+    params = NoiseParams(noise_parameters={"name": "pink", "exponent": 1.0})
     target = tmp_path / "pink.noise"
 
     save_noise_params(params, str(target))

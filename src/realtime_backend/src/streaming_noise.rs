@@ -29,10 +29,6 @@ fn scipy_sawtooth_triangle(phase: f32) -> f32 {
 }
 
 fn resolved_noise_name(params: &NoiseParams) -> String {
-    if !params.noise_type.is_empty() {
-        return params.noise_type.clone();
-    }
-
     if let Some(Value::String(name)) = params.noise_parameters.get("name") {
         return name.clone();
     }
@@ -480,7 +476,7 @@ pub struct StreamingNoise {
     // Mode flags
     transition: bool,
 
-    noise_type: String,
+    noise_name: String,
 
     // Legacy Generator States (Pink/Brown)
     b0: f32,
@@ -617,7 +613,7 @@ impl StreamingNoise {
             initial_offset: params.initial_offset,
             sweep_params,
             transition: params.transition,
-            noise_type: resolved_noise_name(params),
+            noise_name: resolved_noise_name(params),
             b0: 0.0,
             b1: 0.0,
             b2: 0.0,
@@ -668,7 +664,7 @@ impl StreamingNoise {
 
         // Legacy IIR Fallback
         let gaussian: f32 = self.normal.sample(&mut self.rng);
-        match self.noise_type.to_lowercase().as_str() {
+        match self.noise_name.to_lowercase().as_str() {
             "brown" | "red" => {
                 self.brown = self.brown_decay * self.brown + gaussian * self.brown_scale;
                 self.brown

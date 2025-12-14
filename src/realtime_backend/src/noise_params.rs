@@ -29,8 +29,6 @@ pub struct NoiseParams {
     #[serde(default)]
     pub sample_rate: u32,
     #[serde(default)]
-    pub noise_type: String,
-    #[serde(default)]
     pub lfo_waveform: String,
     #[serde(default)]
     pub transition: bool,
@@ -103,11 +101,17 @@ fn color_i64(map: &HashMap<String, Value>, key: &str) -> Option<i64> {
 }
 
 pub fn apply_color_params(mut params: NoiseParams) -> NoiseParams {
-    if params.noise_type.is_empty() {
-        if let Some(Value::String(name)) = params.noise_parameters.get("name") {
-            params.noise_type = name.clone();
-        }
-    }
+    let noise_name = params
+        .noise_parameters
+        .get("name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("pink")
+        .to_string();
+
+    params
+        .noise_parameters
+        .entry("name".to_string())
+        .or_insert(Value::String(noise_name.clone()));
 
     if params.exponent.is_none() {
         params.exponent = color_val(&params.noise_parameters, "exponent");
