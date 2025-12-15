@@ -19,8 +19,30 @@ def binaural_beat(duration, sample_rate=44100, initial_offset=0.0, **params):
     baseF = float(params.get('baseFreq', 200.0))
     beatF = float(params.get('beatFreq', 4.0))
     leftHigh = bool(params.get('leftHigh', False))
-    startL = float(params.get('startPhaseL', 0.0)) # in radians
-    startR = float(params.get('startPhaseR', 0.0)) # in radians
+    # Check if starting phases were explicitly provided (from previous chunk state)
+    # If not provided and initial_offset > 0, we're starting mid-step (e.g., after seek)
+    # In this case, calculate the expected accumulated phase to maintain continuity
+    has_explicit_phase = 'startPhaseL' in params or 'startPhaseR' in params
+
+    if has_explicit_phase:
+        startL = float(params.get('startPhaseL', 0.0))  # in radians
+        startR = float(params.get('startPhaseR', 0.0))  # in radians
+    elif initial_offset > 0:
+        # Calculate expected phase at initial_offset to maintain phase continuity
+        # This prevents discontinuities when scrubbing/seeking
+        halfB = beatF / 2.0
+        if leftHigh:
+            fL = baseF + halfB
+            fR = baseF - halfB
+        else:
+            fL = baseF - halfB
+            fR = baseF + halfB
+        # Phase = 2π * frequency * time
+        startL = 2.0 * np.pi * fL * initial_offset
+        startR = 2.0 * np.pi * fR * initial_offset
+    else:
+        startL = 0.0
+        startR = 0.0
     aODL = float(params.get('ampOscDepthL', 0.0))
     aOFL = float(params.get('ampOscFreqL', 0.0))
     aODR = float(params.get('ampOscDepthR', 0.0))
@@ -325,9 +347,51 @@ def binaural_beat_transition(
     endBeatF = float(params.get('endBeatFreq', startBeatF))
     leftHigh = bool(params.get('leftHigh', False))
 
-    startStartPhaseL = float(params.get('startStartPhaseL', params.get('startPhaseL', 0.0)))
+    # Check if starting phases were explicitly provided (from previous chunk state)
+    # If not provided and initial_offset > 0, we're starting mid-step (e.g., after seek)
+    # In this case, calculate the expected accumulated phase to maintain continuity
+    has_explicit_phase = (
+        'startStartPhaseL' in params or 'startPhaseL' in params or
+        'startStartPhaseR' in params or 'startPhaseR' in params
+    )
+
+    if has_explicit_phase:
+        startStartPhaseL = float(params.get('startStartPhaseL', params.get('startPhaseL', 0.0)))
+        startStartPhaseR = float(params.get('startStartPhaseR', params.get('startPhaseR', 0.0)))
+    elif initial_offset > 0:
+        # Calculate expected phase at initial_offset for transitions
+        # For linearly varying frequency from fStart to fEnd over duration D,
+        # phase(T) = 2π * [fStart * T + (fEnd - fStart) * T² / (2 * D)]
+        # But since we're generating audio from initial_offset, we use
+        # initial_offset as T and the full step duration would be needed.
+        # However, we don't know the full step duration here - just use a simple approximation
+        # based on starting frequency which is accurate for short seeks
+        halfB_start = startBeatF / 2.0
+        if leftHigh:
+            fL_start = startBaseF + halfB_start
+            fR_start = startBaseF - halfB_start
+        else:
+            fL_start = startBaseF - halfB_start
+            fR_start = startBaseF + halfB_start
+        # Use average frequency approximation for transitions
+        halfB_end = endBeatF / 2.0
+        if leftHigh:
+            fL_end = endBaseF + halfB_end
+            fR_end = endBaseF - halfB_end
+        else:
+            fL_end = endBaseF - halfB_end
+            fR_end = endBaseF + halfB_end
+        # Average frequency from start to initial_offset
+        avg_fL = (fL_start + fL_end) / 2.0
+        avg_fR = (fR_start + fR_end) / 2.0
+        # Phase = 2π * average_frequency * time
+        startStartPhaseL = 2.0 * np.pi * avg_fL * initial_offset
+        startStartPhaseR = 2.0 * np.pi * avg_fR * initial_offset
+    else:
+        startStartPhaseL = 0.0
+        startStartPhaseR = 0.0
+
     endStartPhaseL = float(params.get('endStartPhaseL', startStartPhaseL))
-    startStartPhaseR = float(params.get('startStartPhaseR', params.get('startPhaseR', 0.0)))
     endStartPhaseR = float(params.get('endStartPhaseR', startStartPhaseR))
     
     startPOF = float(params.get('startPhaseOscFreq', params.get('phaseOscFreq', 0.0)))

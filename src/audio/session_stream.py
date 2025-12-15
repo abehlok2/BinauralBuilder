@@ -550,7 +550,8 @@ class AudioGeneratorWorker(QObject):
         target_sample = max(0, min(target_sample, self._total_samples_estimate))
 
         self._playback_sample = target_sample
-        # Reset states on seek (simplification)
+        # Reset states on seek - synth functions will auto-calculate expected phase
+        # from initial_offset to maintain phase continuity
         self._playback_step_states = {}
 
         # Clear buffer and reset consumed counter to seek position
