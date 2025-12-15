@@ -1070,7 +1070,7 @@ fn parse_sweeps_from_params(params: &HashMap<String, Value>, key: &str) -> Vec<(
                 .collect();
         }
     }
-    vec![(1000.0, 10000.0)] // default
+    vec![] // no default sweeps - steady state noise should not have sweeps
 }
 
 /// Parse Q values from JSON params - handles both single value and list
