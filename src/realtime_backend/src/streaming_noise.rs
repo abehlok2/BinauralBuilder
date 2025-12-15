@@ -16,7 +16,14 @@ const HOP_SIZE: usize = BLOCK_SIZE / 2; // 2048, 50% overlap
 const CROSSFADE_SAMPLES: usize = 2048;
 
 // --- Renormalization window for post-filter RMS tracking ---
-const RENORM_WINDOW: usize = 4096;
+// Increased from 4096 to reduce frequency of gain recalculations and improve
+// stability for steady-state noise (now ~186ms at 44.1kHz instead of ~93ms)
+const RENORM_WINDOW: usize = 8192;
+
+// --- Hysteresis threshold for gain adjustments ---
+// Only apply gain correction if the target differs by more than this ratio from current.
+// This prevents continuous micro-adjustments from RMS variations in steady-state noise.
+const RENORM_HYSTERESIS_RATIO: f32 = 0.05;
 
 // --- Helper Functions ---
 
@@ -407,11 +414,21 @@ impl FftNoiseGenerator {
 
             if pre_rms > 1e-6 && post_rms > 1e-6 {
                 let target_gain = (pre_rms / post_rms).clamp(0.25, 16.0);
-                // Smooth gain to avoid sudden jumps
-                self.renorm_gain = 0.9 * self.renorm_gain + 0.1 * target_gain;
+
+                // Apply hysteresis: only adjust if target differs significantly from current.
+                // This prevents continuous micro-adjustments from natural RMS variations
+                // in steady-state noise, which cause audible volume fluctuations.
+                let ratio_diff = (target_gain - self.renorm_gain).abs() / self.renorm_gain;
+                if ratio_diff > RENORM_HYSTERESIS_RATIO {
+                    // More aggressive smoothing (0.98/0.02 instead of 0.9/0.1) to
+                    // minimize volume fluctuations while still allowing necessary corrections
+                    self.renorm_gain = 0.98 * self.renorm_gain + 0.02 * target_gain;
+                }
+                // If within hysteresis band, don't adjust - keeps gain stable
             } else {
                 // Drift gain back toward unity if measurements are unreliable
-                self.renorm_gain = 0.9 * self.renorm_gain + 0.1;
+                // Use same aggressive smoothing for consistency
+                self.renorm_gain = 0.98 * self.renorm_gain + 0.02;
             }
 
             self.pre_rms_accum = 0.0;
@@ -845,8 +862,12 @@ impl StreamingNoise {
 
         // RMS compensation: restore original loudness after notch filtering
         // This matches Python's behavior where it computes rms_in before filtering
-        // and then scales output by (rms_in / rms_out) to restore loudness
-        if rms_in > 1e-8 {
+        // and then scales output by (rms_in / rms_out) to restore loudness.
+        //
+        // IMPORTANT: Only apply when we have active sweeps (notch filters).
+        // For steady-state noise without sweeps, skipping this avoids per-block
+        // volume fluctuations from minor RMS variations.
+        if !self.sweep_params.is_empty() && rms_in > 1e-8 {
             let mut sum_sq_l: f64 = 0.0;
             let mut sum_sq_r: f64 = 0.0;
             for i in 0..BLOCK_SIZE {
