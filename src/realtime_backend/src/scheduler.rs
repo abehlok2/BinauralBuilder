@@ -806,7 +806,19 @@ impl TrackScheduler {
             }
             Command::StartFrom(time) => {
                 let samples = (time * self.sample_rate as f64) as usize;
+                // Preserve current phases before seeking to prevent discontinuities
+                // when the user scrubs the audio timeline.
+                let preserved_phases = if !self.active_voices.is_empty() {
+                    Self::extract_phases_from_voices(&self.active_voices)
+                } else if !self.next_voices.is_empty() {
+                    Self::extract_phases_from_voices(&self.next_voices)
+                } else {
+                    self.accumulated_phases.clone()
+                };
                 self.seek_samples(samples);
+                // Restore the captured phases so the next render reuses the current
+                // oscillator states and remains continuous across the seek.
+                self.accumulated_phases = preserved_phases;
             }
             Command::SetMasterGain(gain) => {
                 self.master_gain = gain.clamp(0.0, 1.0);
