@@ -287,6 +287,69 @@ fn noise_configs_compatible(
     }
 }
 
+/// Check if only volume-related parameters changed between two track configurations.
+/// Volume-related parameters (binaural_volume, noise_volume, normalization_level)
+/// can be updated without rebuilding voices or seeking, preserving phase continuity.
+fn is_volume_only_change(old: &TrackData, new: &TrackData) -> bool {
+    // Must have same number of steps
+    if old.steps.len() != new.steps.len() {
+        return false;
+    }
+
+    // Must have same number of clips
+    if old.clips.len() != new.clips.len() {
+        return false;
+    }
+
+    // Global settings must match except for normalization_level
+    if old.global_settings.sample_rate != new.global_settings.sample_rate
+        || old.global_settings.crossfade_duration != new.global_settings.crossfade_duration
+        || old.global_settings.crossfade_curve != new.global_settings.crossfade_curve
+        || old.global_settings.output_filename != new.global_settings.output_filename
+    {
+        return false;
+    }
+
+    // Compare each step - everything must match except volume-related fields
+    for (old_step, new_step) in old.steps.iter().zip(new.steps.iter()) {
+        // Duration must match
+        if (old_step.duration - new_step.duration).abs() > 1e-9 {
+            return false;
+        }
+
+        // Voices must be identical
+        if old_step.voices.len() != new_step.voices.len() {
+            return false;
+        }
+        for (old_voice, new_voice) in old_step.voices.iter().zip(new_step.voices.iter()) {
+            if old_voice.synth_function_name != new_voice.synth_function_name
+                || old_voice.params != new_voice.params
+                || old_voice.is_transition != new_voice.is_transition
+                || old_voice.voice_type != new_voice.voice_type
+            {
+                return false;
+            }
+        }
+    }
+
+    // Clips must match exactly (including gain for now - could be relaxed later)
+    for (old_clip, new_clip) in old.clips.iter().zip(new.clips.iter()) {
+        if old_clip.file_path != new_clip.file_path
+            || (old_clip.start - new_clip.start).abs() > 1e-9
+            || (old_clip.amp - new_clip.amp).abs() > 1e-9
+        {
+            return false;
+        }
+    }
+
+    // Noise config must be compatible (same params, only gain may differ)
+    if !noise_configs_compatible(&old.background_noise, &new.background_noise) {
+        return false;
+    }
+
+    true
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum VoiceType {
     Binaural,
@@ -611,6 +674,26 @@ impl TrackScheduler {
 
     /// Replace the current track data while preserving playback progress.
     pub fn update_track(&mut self, track: TrackData) {
+        // Fast path: if only volume-related parameters changed, we can update
+        // the track data in place without rebuilding voices or seeking.
+        // This preserves perfect phase continuity for binaural_volume, noise_volume,
+        // and normalization_level changes.
+        if is_volume_only_change(&self.track, &track) {
+            // Just update the track data - volumes are applied at render time
+            // in render_step_audio via apply_gain_stage, so existing voices
+            // will automatically use the new volume values.
+            self.track = track.clone();
+
+            // Update noise gain if noise is active (noise config is compatible)
+            if let (Some(ref mut noise), Some(noise_cfg)) =
+                (&mut self.background_noise, &track.background_noise)
+            {
+                noise.set_gain(noise_cfg.amp * self.noise_gain);
+            }
+            return;
+        }
+
+        // Full update path: structural changes require rebuilding voices
         let abs_samples = self.absolute_sample as usize;
 
         // Preserve the currently accumulated phases so that live updates do not
