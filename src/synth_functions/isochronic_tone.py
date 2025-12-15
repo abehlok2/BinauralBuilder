@@ -157,24 +157,8 @@ def isochronic_tone(duration, sample_rate=44100, initial_offset=0.0, **params):
     baseFreq = float(params.get('baseFreq', 200.0))
     beatFreq = float(params.get('beatFreq', 4.0))  # Pulse rate
     force_mono = bool(params.get('forceMono', False))
-    # Check if starting phases were explicitly provided (from previous chunk state)
-    # If not provided and initial_offset > 0, we're starting mid-step (e.g., after seek)
-    # In this case, calculate the expected accumulated phase to maintain continuity
-    has_explicit_phase = 'startPhaseL' in params or 'startPhaseR' in params
-
-    if has_explicit_phase:
-        startPhaseL = float(params.get('startPhaseL', 0.0))
-        startPhaseR = float(params.get('startPhaseR', 0.0))
-    elif initial_offset > 0:
-        # Calculate expected phase at initial_offset to maintain phase continuity
-        # This prevents discontinuities when scrubbing/seeking
-        # Isochronic tones use the same base frequency for both channels
-        # Phase = 2π * frequency * time
-        startPhaseL = 2.0 * np.pi * baseFreq * initial_offset
-        startPhaseR = 2.0 * np.pi * baseFreq * initial_offset
-    else:
-        startPhaseL = 0.0
-        startPhaseR = 0.0
+    startPhaseL = float(params.get('startPhaseL', 0.0))
+    startPhaseR = float(params.get('startPhaseR', 0.0))
     ampOscDepthL = float(params.get('ampOscDepthL', 0.0))
     ampOscFreqL = float(params.get('ampOscFreqL', 0.0))
     ampOscDepthR = float(params.get('ampOscDepthR', 0.0))
@@ -284,30 +268,9 @@ def isochronic_tone_transition(
 
     startForceMono = float(params.get('startForceMono', params.get('forceMono', 0.0)))
     endForceMono = float(params.get('endForceMono', startForceMono))
-    # Check if starting phases were explicitly provided (from previous chunk state)
-    # If not provided and initial_offset > 0, we're starting mid-step (e.g., after seek)
-    # In this case, calculate the expected accumulated phase to maintain continuity
-    has_explicit_phase = (
-        'startStartPhaseL' in params or 'startPhaseL' in params or
-        'startStartPhaseR' in params or 'startPhaseR' in params
-    )
-
-    if has_explicit_phase:
-        startStartPhaseL = float(params.get('startStartPhaseL', params.get('startPhaseL', 0.0)))
-        startStartPhaseR = float(params.get('startStartPhaseR', params.get('startPhaseR', 0.0)))
-    elif initial_offset > 0:
-        # Calculate expected phase at initial_offset to maintain phase continuity
-        # For isochronic tones, both channels use the same base frequency
-        # Use average frequency approximation for transitions
-        avg_baseFreq = (startBaseFreq + endBaseFreq) / 2.0
-        # Phase = 2π * frequency * time
-        startStartPhaseL = 2.0 * np.pi * avg_baseFreq * initial_offset
-        startStartPhaseR = 2.0 * np.pi * avg_baseFreq * initial_offset
-    else:
-        startStartPhaseL = 0.0
-        startStartPhaseR = 0.0
-
+    startStartPhaseL = float(params.get('startStartPhaseL', params.get('startPhaseL', 0.0)))
     endStartPhaseL = float(params.get('endStartPhaseL', startStartPhaseL))
+    startStartPhaseR = float(params.get('startStartPhaseR', params.get('startPhaseR', 0.0)))
     endStartPhaseR = float(params.get('endStartPhaseR', startStartPhaseR))
 
     startAODL = float(params.get('startAmpOscDepthL', params.get('ampOscDepthL', 0.0)))
