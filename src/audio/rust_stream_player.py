@@ -8,13 +8,54 @@ it falls back to the pure Python SessionStreamPlayer.
 from __future__ import annotations
 
 import json
+import logging
 import time
 from typing import Callable, Dict, Optional, TYPE_CHECKING
 
+logger = logging.getLogger(__name__)
+
 # Try to import the Rust backend
+_rust_backend = None
+
+
+def _validate_rust_backend() -> bool:
+    """Check that the Rust backend exposes the required functions.
+
+    PyInstaller builds can sometimes bundle an incomplete ``realtime_backend``
+    module. When the expected symbols are missing we should disable the Rust
+    backend and fall back to the pure Python implementation instead of
+    triggering attribute errors at runtime.
+    """
+
+    required_symbols = (
+        "start_stream",
+        "stop_stream",
+        "pause_stream",
+        "resume_stream",
+        "start_from",
+        "update_track",
+    )
+
+    if _rust_backend is None:
+        return False
+
+    missing = [name for name in required_symbols if not hasattr(_rust_backend, name)]
+    if missing:
+        logger.warning(
+            "Rust realtime backend missing required symbols: %s. "
+            "Falling back to Python implementation.",
+            ", ".join(sorted(missing)),
+        )
+        return False
+
+    return True
+
+
 try:
-    import realtime_backend as _rust_backend
-    RUST_BACKEND_AVAILABLE = True
+    import realtime_backend as _rust_backend  # type: ignore[assignment]
+    RUST_BACKEND_AVAILABLE = _validate_rust_backend()
+    if not RUST_BACKEND_AVAILABLE:
+        _rust_backend = None
 except ImportError:
     _rust_backend = None
     RUST_BACKEND_AVAILABLE = False
