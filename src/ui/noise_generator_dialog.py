@@ -67,6 +67,8 @@ class NoiseGeneratorDialog(QDialog):
 
         layout = QVBoxLayout(self)
         form = QFormLayout()
+        self._end_widgets: list[QWidget] = []
+        self._transition_only_widgets: list[QWidget] = []
 
         # Output file
         file_layout = QHBoxLayout()
@@ -121,8 +123,10 @@ class NoiseGeneratorDialog(QDialog):
         self.lfo_end_spin.setToolTip("End LFO frequency")
         lfo_layout.addWidget(QLabel("Start:"))
         lfo_layout.addWidget(self.lfo_start_spin)
-        lfo_layout.addWidget(QLabel("End:"))
+        lfo_end_label = QLabel("End:")
+        lfo_layout.addWidget(lfo_end_label)
         lfo_layout.addWidget(self.lfo_end_spin)
+        self._end_widgets.extend([lfo_end_label, self.lfo_end_spin])
         form.addRow("LFO Freq (Hz):", lfo_layout)
 
         # Number of sweeps
@@ -161,20 +165,27 @@ class NoiseGeneratorDialog(QDialog):
 
             row_layout.addWidget(QLabel("Start Min:"), 0, 0)
             row_layout.addWidget(s_min, 0, 1)
-            row_layout.addWidget(QLabel("End Min:"), 0, 2)
+            end_min_label = QLabel("End Min:")
+            row_layout.addWidget(end_min_label, 0, 2)
             row_layout.addWidget(e_min, 0, 3)
             row_layout.addWidget(QLabel("Start Max:"), 1, 0)
             row_layout.addWidget(s_max, 1, 1)
-            row_layout.addWidget(QLabel("End Max:"), 1, 2)
+            end_max_label = QLabel("End Max:")
+            row_layout.addWidget(end_max_label, 1, 2)
             row_layout.addWidget(e_max, 1, 3)
             row_layout.addWidget(QLabel("Start Q:"), 2, 0)
             row_layout.addWidget(s_q, 2, 1)
-            row_layout.addWidget(QLabel("End Q:"), 2, 2)
+            end_q_label = QLabel("End Q:")
+            row_layout.addWidget(end_q_label, 2, 2)
             row_layout.addWidget(e_q, 2, 3)
             row_layout.addWidget(QLabel("Start Casc:"), 3, 0)
             row_layout.addWidget(s_casc, 3, 1)
-            row_layout.addWidget(QLabel("End Casc:"), 3, 2)
+            end_casc_label = QLabel("End Casc:")
+            row_layout.addWidget(end_casc_label, 3, 2)
             row_layout.addWidget(e_casc, 3, 3)
+            self._end_widgets.extend(
+                [end_min_label, e_min, end_max_label, e_max, end_q_label, e_q, end_casc_label, e_casc]
+            )
 
             form.addRow(f"Sweep {i+1}:", row_widget)
             self.sweep_rows.append(
@@ -190,8 +201,10 @@ class NoiseGeneratorDialog(QDialog):
         self.lfo_phase_end_spin = QSpinBox(); self.lfo_phase_end_spin.setRange(0, 360); self.lfo_phase_end_spin.setValue(0)
         phase_layout.addWidget(QLabel("Start:"))
         phase_layout.addWidget(self.lfo_phase_start_spin)
-        phase_layout.addWidget(QLabel("End:"))
+        lfo_phase_end_label = QLabel("End:")
+        phase_layout.addWidget(lfo_phase_end_label)
         phase_layout.addWidget(self.lfo_phase_end_spin)
+        self._end_widgets.extend([lfo_phase_end_label, self.lfo_phase_end_spin])
         form.addRow("LFO Phase Offset (deg):", phase_layout)
 
         # Intra-channel offset start/end
@@ -200,8 +213,10 @@ class NoiseGeneratorDialog(QDialog):
         self.intra_phase_end_spin = QSpinBox(); self.intra_phase_end_spin.setRange(0, 360); self.intra_phase_end_spin.setValue(0)
         intra_layout.addWidget(QLabel("Start:"))
         intra_layout.addWidget(self.intra_phase_start_spin)
-        intra_layout.addWidget(QLabel("End:"))
+        intra_phase_end_label = QLabel("End:")
+        intra_layout.addWidget(intra_phase_end_label)
         intra_layout.addWidget(self.intra_phase_end_spin)
+        self._end_widgets.extend([intra_phase_end_label, self.intra_phase_end_spin])
         form.addRow("Intra-Phase Offset (deg):", intra_layout)
 
         # Initial offset and transition duration
@@ -216,10 +231,15 @@ class NoiseGeneratorDialog(QDialog):
         self.transition_duration_spin.setDecimals(3)
         self.transition_duration_spin.setValue(0.0)
         self.transition_duration_spin.setToolTip("Duration of the transition")
-        offset_layout.addWidget(QLabel("Init:"))
+        initial_offset_label = QLabel("Init:")
+        offset_layout.addWidget(initial_offset_label)
         offset_layout.addWidget(self.initial_offset_spin)
-        offset_layout.addWidget(QLabel("Duration:"))
+        transition_duration_label = QLabel("Duration:")
+        offset_layout.addWidget(transition_duration_label)
         offset_layout.addWidget(self.transition_duration_spin)
+        self._transition_only_widgets.extend(
+            [initial_offset_label, self.initial_offset_spin, transition_duration_label, self.transition_duration_spin]
+        )
         form.addRow("Offset & Duration (s):", offset_layout)
 
         # Optional input file
@@ -262,6 +282,9 @@ class NoiseGeneratorDialog(QDialog):
 
         if not QT_MULTIMEDIA_AVAILABLE:
             self.test_btn.setEnabled(False)
+
+        self.transition_check.toggled.connect(self.on_transition_toggled)
+        self.on_transition_toggled(self.transition_check.isChecked())
 
         self._loaded_color_params: Dict[str, Dict[str, object]] = {}
         self._loaded_color_names: Dict[str, str] = {}
@@ -374,6 +397,12 @@ class NoiseGeneratorDialog(QDialog):
         for i, (row_widget, *_rest) in enumerate(self.sweep_rows):
             row_widget.setVisible(i < count)
 
+    def on_transition_toggled(self, enabled: bool) -> None:
+        for widget in self._end_widgets:
+            widget.setVisible(enabled)
+        for widget in self._transition_only_widgets:
+            widget.setVisible(enabled)
+
     def browse_file(self):
         path, _ = QFileDialog.getSaveFileName(self, "Save Audio", "src/presets/audio", "WAV Files (*.wav)")
         if path:
@@ -470,6 +499,7 @@ class NoiseGeneratorDialog(QDialog):
         self.initial_offset_spin.setValue(params.initial_offset)
         self.transition_duration_spin.setValue(params.duration)
         self.input_file_edit.setText(params.input_audio_path or "")
+        self.on_transition_toggled(self.transition_check.isChecked())
 
     @staticmethod
     def _scalar_or_list(values: list[int | float]):
@@ -679,4 +709,3 @@ class NoiseGeneratorDialog(QDialog):
     def on_audio_state_changed(self, state):
         if state in (QAudio.IdleState, QAudio.StoppedState):
             self.on_stop()
-
