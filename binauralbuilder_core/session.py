@@ -65,12 +65,15 @@ class SessionStep:
     duration: float
     start: Optional[float] = None
     noise_preset_id: Optional[str] = None
-    warmup_clip_path: Optional[str] = None
+    background_audio_path: Optional[str] = None
+    background_audio_volume: float = MAX_INDIVIDUAL_GAIN
     crossfade_duration: Optional[float] = None
     crossfade_curve: Optional[str] = None
     description: str = ""
     noise_volume: float = MAX_INDIVIDUAL_GAIN
     binaural_volume: float = MAX_INDIVIDUAL_GAIN
+    # Legacy alias for backward compatibility with saved sessions
+    warmup_clip_path: Optional[str] = None
 
 
 @dataclass
@@ -513,14 +516,16 @@ def session_to_track_data(
 
         track_data["steps"].append(step_entry)
 
-        if step.warmup_clip_path:
+        # Use background_audio_path with fallback to legacy warmup_clip_path
+        bg_audio_path = step.background_audio_path or step.warmup_clip_path
+        if bg_audio_path:
             track_data["clips"].append(
                 {
-                    "file_path": step.warmup_clip_path,
-                    "path": step.warmup_clip_path,
+                    "file_path": bg_audio_path,
+                    "path": bg_audio_path,
                     "start": step_start,
-                    "duration": 0.0,
-                    "amp": 1.0,
+                    "duration": 0.0,  # 0 means play full clip
+                    "amp": step.background_audio_volume,
                     "pan": 0.0,
                     "fade_in": 0.0,
                     "fade_out": 0.0,

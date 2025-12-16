@@ -467,17 +467,36 @@ class SessionBuilderWindow(QMainWindow):
         self.step_crossfade_curve_combo.addItems(["Use Session", "linear", "equal_power"])
         self.step_crossfade_curve_combo.setToolTip("Override the crossfade curve for this step.")
         
-        # Warmup composite widget
-        warmup_widget = QWidget()
-        warmup_layout = QHBoxLayout(warmup_widget)
-        warmup_layout.setContentsMargins(0,0,0,0)
-        self.warmup_edit = QLineEdit()
-        self.warmup_edit.setToolTip("Optional warmup audio file path used before the step starts.")
-        self.warmup_btn = QPushButton(self.style().standardIcon(QStyle.SP_DialogOpenButton), "Browse")
-        self.warmup_btn.setToolTip("Choose a warmup audio file from disk.")
-        warmup_layout.addWidget(self.warmup_edit)
-        warmup_layout.addWidget(self.warmup_btn)
-        
+        # Background Audio composite widget (file selector)
+        bg_audio_file_widget = QWidget()
+        bg_audio_file_layout = QHBoxLayout(bg_audio_file_widget)
+        bg_audio_file_layout.setContentsMargins(0,0,0,0)
+        self.bg_audio_edit = QLineEdit()
+        self.bg_audio_edit.setToolTip("Optional background audio file to play alongside binaural and noise.")
+        self.bg_audio_btn = QPushButton(self.style().standardIcon(QStyle.SP_DialogOpenButton), "Browse")
+        self.bg_audio_btn.setToolTip("Choose a background audio file from disk.")
+        self.bg_audio_clear_btn = QPushButton(self.style().standardIcon(QStyle.SP_DialogCloseButton), "")
+        self.bg_audio_clear_btn.setToolTip("Clear background audio selection.")
+        self.bg_audio_clear_btn.setFixedWidth(30)
+        bg_audio_file_layout.addWidget(self.bg_audio_edit)
+        bg_audio_file_layout.addWidget(self.bg_audio_btn)
+        bg_audio_file_layout.addWidget(self.bg_audio_clear_btn)
+
+        # Background Audio volume composite widget
+        bg_audio_vol_widget = QWidget()
+        bg_audio_vol_layout = QHBoxLayout(bg_audio_vol_widget)
+        bg_audio_vol_layout.setContentsMargins(0,0,0,0)
+        self.bg_audio_vol_slider = QSlider(Qt.Horizontal)
+        self.bg_audio_vol_slider.setRange(0, 100)
+        self.bg_audio_vol_slider.setToolTip(f"Volume of the background audio (0-100%, max {MAX_INDIVIDUAL_GAIN:.2f}).")
+        self.bg_audio_vol_spin = QDoubleSpinBox()
+        self.bg_audio_vol_spin.setDecimals(2)
+        self.bg_audio_vol_spin.setRange(0.0, MAX_INDIVIDUAL_GAIN)
+        self.bg_audio_vol_spin.setSingleStep(0.02)
+        self.bg_audio_vol_spin.setToolTip(f"Precise background audio volume (0.0-{MAX_INDIVIDUAL_GAIN:.2f}).")
+        bg_audio_vol_layout.addWidget(self.bg_audio_vol_slider)
+        bg_audio_vol_layout.addWidget(self.bg_audio_vol_spin)
+
         self.description_edit = QTextEdit()
         self.description_edit.setMaximumHeight(100)
         self.description_edit.setToolTip("Notes about the intention or feel of the step.")
@@ -489,7 +508,8 @@ class SessionBuilderWindow(QMainWindow):
         editor_form_layout.addRow("Duration:", self.duration_spin)
         editor_form_layout.addRow("Step Crossfade:", cf_widget)
         editor_form_layout.addRow("Step Curve:", self.step_crossfade_curve_combo)
-        editor_form_layout.addRow("Warmup Audio:", warmup_widget)
+        editor_form_layout.addRow("Background Audio:", bg_audio_file_widget)
+        editor_form_layout.addRow("Background Volume:", bg_audio_vol_widget)
         editor_form_layout.addRow("Description:", self.description_edit)
 
         editor_main_layout.addLayout(editor_form_layout)
@@ -607,7 +627,10 @@ class SessionBuilderWindow(QMainWindow):
         self.step_crossfade_slider.valueChanged.connect(self._sync_step_crossfade_spin_from_slider)
         self.step_crossfade_spin.valueChanged.connect(self._sync_step_crossfade_slider_from_spin)
         self.step_crossfade_curve_combo.currentIndexChanged.connect(self._on_step_curve_changed)
-        self.warmup_btn.clicked.connect(self._choose_warmup_file)
+        self.bg_audio_btn.clicked.connect(self._choose_background_audio_file)
+        self.bg_audio_clear_btn.clicked.connect(self._clear_background_audio)
+        self.bg_audio_vol_slider.valueChanged.connect(self._sync_bg_audio_vol_spin_from_slider)
+        self.bg_audio_vol_spin.valueChanged.connect(self._sync_bg_audio_vol_slider_from_spin)
         self.description_edit.textChanged.connect(self._on_description_changed)
 
         self.save_btn.clicked.connect(self._save_session)
@@ -795,11 +818,13 @@ class SessionBuilderWindow(QMainWindow):
         self.step_crossfade_slider.blockSignals(True)
         self.step_crossfade_spin.blockSignals(True)
         self.step_crossfade_curve_combo.blockSignals(True)
+        self.bg_audio_vol_slider.blockSignals(True)
+        self.bg_audio_vol_spin.blockSignals(True)
 
         idx = self.preset_combo.findData(step.binaural_preset_id)
         if idx >= 0:
             self.preset_combo.setCurrentIndex(idx)
-        
+
         binaural_vol = getattr(step, "binaural_volume", MAX_INDIVIDUAL_GAIN)
         # Slider 0-100 maps to 0-MAX_INDIVIDUAL_GAIN
         self.binaural_vol_slider.setValue(int(round((binaural_vol / MAX_INDIVIDUAL_GAIN) * 100)))
@@ -822,7 +847,16 @@ class SessionBuilderWindow(QMainWindow):
             self.step_crossfade_curve_combo.setCurrentIndex(idx if idx >= 0 else 0)
         else:
             self.step_crossfade_curve_combo.setCurrentIndex(0)
-        self.warmup_edit.setText(step.warmup_clip_path or "")
+
+        # Load background audio path (with fallback to legacy warmup_clip_path)
+        bg_audio_path = step.background_audio_path or step.warmup_clip_path or ""
+        self.bg_audio_edit.setText(bg_audio_path)
+
+        # Load background audio volume
+        bg_audio_vol = getattr(step, "background_audio_volume", MAX_INDIVIDUAL_GAIN)
+        self.bg_audio_vol_slider.setValue(int(round((bg_audio_vol / MAX_INDIVIDUAL_GAIN) * 100)))
+        self.bg_audio_vol_spin.setValue(bg_audio_vol)
+
         self.description_edit.blockSignals(True)
         self.description_edit.setPlainText(step.description)
         self.description_edit.blockSignals(False)
@@ -837,6 +871,8 @@ class SessionBuilderWindow(QMainWindow):
         self.step_crossfade_slider.blockSignals(False)
         self.step_crossfade_spin.blockSignals(False)
         self.step_crossfade_curve_combo.blockSignals(False)
+        self.bg_audio_vol_slider.blockSignals(False)
+        self.bg_audio_vol_spin.blockSignals(False)
 
     def _clear_step_editors(self) -> None:
         default_duration = float(self._defaults.get("step_duration", 1.0))
@@ -868,7 +904,10 @@ class SessionBuilderWindow(QMainWindow):
         self.step_crossfade_slider.setValue(0)
         self.step_crossfade_spin.setValue(0.0)
         self.step_crossfade_curve_combo.setCurrentIndex(0)
-        self.warmup_edit.clear()
+        # Clear background audio
+        self.bg_audio_edit.clear()
+        self.bg_audio_vol_slider.setValue(100)
+        self.bg_audio_vol_spin.setValue(MAX_INDIVIDUAL_GAIN)
         self.description_edit.blockSignals(True)
         self.description_edit.clear()
         self.description_edit.blockSignals(False)
@@ -986,15 +1025,40 @@ class SessionBuilderWindow(QMainWindow):
             step.crossfade_curve = self.step_crossfade_curve_combo.itemText(index)
         self._invalidate_assembler()
 
-    def _choose_warmup_file(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "Select Warmup Audio", "src/presets/audio", "Audio Files (*.wav *.flac *.mp3);;All Files (*)")
+    def _choose_background_audio_file(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "Select Background Audio", "src/presets/audio", "Audio Files (*.wav *.flac *.mp3 *.ogg *.aac);;All Files (*)")
         if not path:
             return
-        self.warmup_edit.setText(path)
+        self.bg_audio_edit.setText(path)
         step = self._get_selected_step()
         if step is not None:
-            step.warmup_clip_path = path
+            step.background_audio_path = path
             self._invalidate_assembler()
+
+    def _clear_background_audio(self) -> None:
+        self.bg_audio_edit.clear()
+        step = self._get_selected_step()
+        if step is not None:
+            step.background_audio_path = None
+            self._invalidate_assembler()
+
+    def _sync_bg_audio_vol_spin_from_slider(self, value: int) -> None:
+        # Slider 0-100 maps to 0-MAX_INDIVIDUAL_GAIN
+        vol = (value / 100.0) * MAX_INDIVIDUAL_GAIN
+        self.bg_audio_vol_spin.setValue(vol)
+        self._set_background_audio_volume(vol)
+
+    def _sync_bg_audio_vol_slider_from_spin(self, value: float) -> None:
+        # Value 0-MAX_INDIVIDUAL_GAIN maps to slider 0-100
+        self.bg_audio_vol_slider.setValue(int(round((value / MAX_INDIVIDUAL_GAIN) * 100)))
+        self._set_background_audio_volume(value)
+
+    def _set_background_audio_volume(self, value: float) -> None:
+        step = self._get_selected_step()
+        if step is None:
+            return
+        step.background_audio_volume = float(value)
+        self._invalidate_assembler()
 
     def _on_description_changed(self) -> None:
         step = self._get_selected_step()
@@ -1050,7 +1114,8 @@ class SessionBuilderWindow(QMainWindow):
             binaural_volume=self.binaural_vol_spin.value(),
             crossfade_duration=None,
             crossfade_curve=None,
-            warmup_clip_path=self.warmup_edit.text() or None,
+            background_audio_path=self.bg_audio_edit.text() or None,
+            background_audio_volume=self.bg_audio_vol_spin.value(),
             description=self.description_edit.toPlainText(),
         )
         self._session.steps.append(step)
