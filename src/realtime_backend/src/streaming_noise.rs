@@ -655,7 +655,7 @@ impl StreamingNoise {
             })
             .collect();
 
-        Self {
+        let mut gen = Self {
             sample_rate: sample_rate_f,
             duration_samples,
             start_lfo_freq: if params.start_lfo_freq > 0.0 {
@@ -681,7 +681,20 @@ impl StreamingNoise {
             fft_gen: FftNoiseGenerator::new(params, sample_rate_f),
             ola: OlaState::new(),
             total_samples_output: 0,
-        }
+        };
+
+        // Prime the OLA buffers to avoid fade-in at playback start.
+        // With 50% overlap (HOP_SIZE = BLOCK_SIZE / 2), we need at least 2 blocks
+        // processed for the window accumulators to reach their steady-state values.
+        // Generate and discard BLOCK_SIZE samples to fully warm up the OLA state.
+        let prime_frames = BLOCK_SIZE;
+        let mut prime_scratch = vec![0.0f32; prime_frames * 2];
+        gen.generate(&mut prime_scratch);
+        // Reset the output counter so time-based effects (LFO, transitions) start
+        // from the correct position when actual playback begins.
+        gen.total_samples_output = 0;
+
+        gen
     }
 
     pub fn new_with_calibrated_peak(
