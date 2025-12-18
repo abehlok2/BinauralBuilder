@@ -11,6 +11,7 @@ import traceback # For detailed error printing
 import time
 import importlib
 import pkgutil
+from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
 from src.utils.noise_file import load_noise_params
 
 # Maximum individual gain for binaural/noise to prevent clipping when combined.
@@ -1361,6 +1362,95 @@ def generate_wav(track_data, output_filename=None, target_level=0.25, progress_c
     """Backward compatible wrapper for generate_audio."""
     return generate_audio(track_data, output_filename, target_level, progress_callback)
 
+
+def _synthesize_voice_task(args):
+    """Worker helper for per-voice synthesis.
+
+    Returns a tuple of (index, voice_type, func_name_short, voice_audio, new_state).
+    """
+    (
+        i,
+        voice_data,
+        sample_rate,
+        step_generation_duration,
+        step_generation_samples,
+        chunk_start_time,
+        prev_state,
+        return_state,
+        full_step_duration,
+    ) = args
+
+    func_name_short = voice_data.get('synth_function_name', 'UnknownFunc')
+    voice_type = voice_data.get('voice_type', 'binaural')
+
+    cached_full_audio = None
+    if isinstance(prev_state, dict):
+        cached_full_audio = prev_state.get("full_audio")
+
+    new_state = None
+    voice_audio = None
+
+    try:
+        if voice_type == 'noise' and cached_full_audio is not None:
+            start_sample = int(chunk_start_time * sample_rate)
+            cached_len = cached_full_audio.shape[0]
+            end_sample = min(start_sample + step_generation_samples, cached_len)
+            voice_audio = cached_full_audio[start_sample:end_sample]
+            if voice_audio.shape[0] < step_generation_samples:
+                pad_len = step_generation_samples - voice_audio.shape[0]
+                voice_audio = np.pad(
+                    voice_audio,
+                    ((0, pad_len), (0, 0)),
+                    mode="constant",
+                    constant_values=0.0,
+                )
+            new_state = prev_state
+        elif voice_type == 'noise' and return_state:
+            full_duration = float(full_step_duration if full_step_duration is not None else step_generation_duration)
+            full_samples = int(full_duration * sample_rate)
+            full_audio, full_state = generate_voice_audio(
+                voice_data,
+                full_duration,
+                sample_rate,
+                0.0,
+                chunk_start_time=0.0,
+                previous_state=None,
+                return_state=True,
+            )
+            full_state = full_state or {}
+            full_state["full_audio"] = full_audio
+            full_peak = np.max(np.abs(full_audio))
+            full_state["noise_peak"] = full_peak if full_peak > 1e-9 else 1.0
+
+            start_sample = int(chunk_start_time * sample_rate)
+            end_sample = min(start_sample + step_generation_samples, full_samples)
+            voice_audio = full_audio[start_sample:end_sample]
+            if voice_audio.shape[0] < step_generation_samples:
+                pad_len = step_generation_samples - voice_audio.shape[0]
+                voice_audio = np.pad(
+                    voice_audio,
+                    ((0, pad_len), (0, 0)),
+                    mode="constant",
+                    constant_values=0.0,
+                )
+            new_state = full_state
+        else:
+            voice_audio, v_state = generate_voice_audio(
+                voice_data,
+                step_generation_duration,
+                sample_rate,
+                0.0,
+                chunk_start_time=chunk_start_time,
+                previous_state=prev_state,
+                return_state=True
+            )
+            new_state = v_state
+    except Exception as exc:
+        print(f"    Error generating Voice {i+1} ({func_name_short}): {exc}")
+        traceback.print_exc()
+
+    return (i, voice_type, func_name_short, voice_audio, new_state)
+
 def generate_single_step_audio_segment(step_data, global_settings, target_duration_seconds, duration_override=None, chunk_start_time=0.0, voice_states=None, return_state=False):
     """
     Generates a raw audio segment for a single step, looping or truncating 
@@ -1420,86 +1510,70 @@ def generate_single_step_audio_segment(step_data, global_settings, target_durati
     
     has_binaural = False
     has_noise = False
-    
-    new_voice_states = []
+
+    new_voice_states = [None] * len(voices_data)
     current_voice_states = voice_states if voice_states and len(voice_states) == len(voices_data) else [None] * len(voices_data)
 
-    for i, voice_data in enumerate(voices_data):
-        func_name_short = voice_data.get('synth_function_name', 'UnknownFunc')
-        voice_type = voice_data.get('voice_type', 'binaural') # Default to binaural for backward compat
-        
-        # print(f"    Generating Voice {i+1}/{len(voices_data)}: {func_name_short} ({voice_type})")
-        
-        prev_state = current_voice_states[i]
-        cached_full_audio = None
-        if isinstance(prev_state, dict):
-            cached_full_audio = prev_state.get("full_audio")
+    parallel_requested = bool(step_data.get("parallel_voices", global_settings.get("parallel_voices", False)))
+    max_workers_setting = step_data.get("parallel_voices_max_workers", global_settings.get("parallel_voices_max_workers"))
+    parallel_backend = step_data.get("parallel_backend", global_settings.get("parallel_backend", "thread"))
 
-        # If we already generated the full-length noise for this step, just slice
-        if voice_type == 'noise' and cached_full_audio is not None:
-            start_sample = int(chunk_start_time * sample_rate)
-            # Clamp end_sample to avoid out-of-bounds slicing
-            cached_len = cached_full_audio.shape[0]
-            end_sample = min(start_sample + step_generation_samples, cached_len)
-            voice_audio = cached_full_audio[start_sample:end_sample]
-            # Pad if the slice is shorter than expected (e.g., at step boundaries)
-            if voice_audio.shape[0] < step_generation_samples:
-                pad_len = step_generation_samples - voice_audio.shape[0]
-                voice_audio = np.pad(
-                    voice_audio,
-                    ((0, pad_len), (0, 0)),
-                    mode="constant",
-                    constant_values=0.0,
-                )
-            new_voice_states.append(prev_state)
-        # Otherwise, generate audio normally. For noise voices requested via
-        # streaming, generate the full step once and cache it so subsequent
-        # chunks don't restart the noise generator (which causes discontinuities
-        # between chunks).
-        elif voice_type == 'noise' and return_state:
-            full_duration = float(step_data.get("duration", step_generation_duration))
-            full_samples = int(full_duration * sample_rate)
-            full_audio, full_state = generate_voice_audio(
-                voice_data,
-                full_duration,
-                sample_rate,
-                0.0,
-                chunk_start_time=0.0,
-                previous_state=None,
-                return_state=True,
-            )
-            full_state = full_state or {}
-            full_state["full_audio"] = full_audio
-            # Pre-compute and cache the peak normalization factor from full audio
-            # to ensure consistent volume across all chunks
-            full_peak = np.max(np.abs(full_audio))
-            full_state["noise_peak"] = full_peak if full_peak > 1e-9 else 1.0
+    can_parallelize = parallel_requested and return_state and len(voices_data) > 1
+    if parallel_requested and not return_state:
+        print("    Parallel voice synthesis requested but disabled because return_state=False (streaming continuity not needed).")
+    if len(voices_data) <= 1 and parallel_requested:
+        print("    Parallel voice synthesis requested but only one voice present; running sequentially.")
 
-            start_sample = int(chunk_start_time * sample_rate)
-            end_sample = min(start_sample + step_generation_samples, full_samples)
-            voice_audio = full_audio[start_sample:end_sample]
-            # Pad if the slice is shorter than expected (e.g., at step boundaries)
-            if voice_audio.shape[0] < step_generation_samples:
-                pad_len = step_generation_samples - voice_audio.shape[0]
-                voice_audio = np.pad(
-                    voice_audio,
-                    ((0, pad_len), (0, 0)),
-                    mode="constant",
-                    constant_values=0.0,
-                )
-            new_voice_states.append(full_state)
+    tasks = [
+        (
+            i,
+            voice_data,
+            sample_rate,
+            step_generation_duration,
+            step_generation_samples,
+            chunk_start_time,
+            current_voice_states[i],
+            return_state,
+            step_data.get("duration", step_generation_duration),
+        )
+        for i, voice_data in enumerate(voices_data)
+    ]
+
+    voice_results = [None] * len(voices_data)
+
+    if can_parallelize:
+        cpu_count = os.cpu_count() or len(voices_data)
+        requested_workers = None
+        if isinstance(max_workers_setting, (int, float)) and max_workers_setting > 0:
+            requested_workers = int(max_workers_setting)
+        worker_count = min(requested_workers or cpu_count, len(voices_data))
+        Executor = ProcessPoolExecutor if str(parallel_backend).lower() == "process" else ThreadPoolExecutor
+        if worker_count <= 1:
+            can_parallelize = False
         else:
-            voice_audio, v_state = generate_voice_audio(
-                voice_data,
-                step_generation_duration,
-                sample_rate,
-                0.0,
-                chunk_start_time=chunk_start_time,
-                previous_state=current_voice_states[i],
-                return_state=True
-            )
-            new_voice_states.append(v_state)
-        
+            print(f"    Parallel voice synthesis enabled using {Executor.__name__} with {worker_count} workers.")
+            with Executor(max_workers=worker_count) as executor:
+                futures = {executor.submit(_synthesize_voice_task, task): task[0] for task in tasks}
+                for future in as_completed(futures):
+                    idx = futures[future]
+                    try:
+                        voice_results[idx] = future.result()
+                    except Exception as exc:
+                        func_name_short = voices_data[idx].get('synth_function_name', 'UnknownFunc')
+                        print(f"    Error generating Voice {idx+1} ({func_name_short}) in parallel: {exc}")
+                        traceback.print_exc()
+
+    if not can_parallelize:
+        for task in tasks:
+            result = _synthesize_voice_task(task)
+            voice_results[result[0]] = result
+
+    for result in voice_results:
+        if result is None:
+            continue
+        i, voice_type, func_name_short, voice_audio, v_state = result
+        new_voice_states[i] = v_state
+
         if voice_audio is not None and voice_audio.shape[0] == step_generation_samples and voice_audio.ndim == 2 and voice_audio.shape[1] == 2:
             if voice_type == 'noise':
                 noise_mix += voice_audio
