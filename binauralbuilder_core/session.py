@@ -94,6 +94,9 @@ class Session:
     background_noise_fade_out: float = 0.0
     background_noise_amp_envelope: Optional[List[List[float]]] = None
     normalization_level: float = 0.95
+    parallel_voices: bool = False
+    parallel_voices_max_workers: Optional[int] = None
+    parallel_backend: str = "thread"
 
 
 def _collect_files(directories: Iterable[Path], extension: str) -> List[Path]:
@@ -426,6 +429,9 @@ def session_to_track_data(
             "crossfade_curve": session.crossfade_curve,
             "output_filename": session.output_filename,
             "normalization_level": session.normalization_level,
+            "parallel_voices": session.parallel_voices,
+            "parallel_voices_max_workers": session.parallel_voices_max_workers,
+            "parallel_backend": session.parallel_backend,
         },
         "background_noise": {},
         "clips": [],

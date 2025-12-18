@@ -25,6 +25,8 @@ from PyQt5.QtWidgets import (
     QVBoxLayout,
     QWidget,
     QDoubleSpinBox,
+    QCheckBox,
+    QSpinBox,
     QComboBox,
     QSplitter,
     QFormLayout,
@@ -276,9 +278,26 @@ class SessionBuilderWindow(QMainWindow):
         self.normalization_slider.setToolTip(
             "Target normalization ceiling for rendered audio (0.00 – 0.95)."
         )
-        
+
         self.normalization_label = QLabel("0.00")
         self.normalization_label.setToolTip("Current normalization ceiling applied during rendering.")
+
+        self.parallel_checkbox = QCheckBox("Enable parallel voice synthesis")
+        self.parallel_checkbox.setToolTip(
+            "Toggle multi-worker synthesis for steps with multiple voices (requires streamable mode)."
+        )
+
+        self.parallel_workers_spin = QSpinBox()
+        self.parallel_workers_spin.setRange(0, 64)
+        self.parallel_workers_spin.setSpecialValueText("Auto")
+        self.parallel_workers_spin.setToolTip(
+            "Maximum workers when parallel synthesis is enabled (0 = auto based on CPU/voice count)."
+        )
+
+        self.parallel_backend_combo = QComboBox()
+        self.parallel_backend_combo.addItem("Thread Pool", "thread")
+        self.parallel_backend_combo.addItem("Process Pool", "process")
+        self.parallel_backend_combo.setToolTip("Execution backend used for parallel voice synthesis.")
 
         settings_layout.addWidget(QLabel("Crossfade:"), 1, 0)
         settings_layout.addWidget(self.crossfade_slider, 1, 1)
@@ -290,6 +309,15 @@ class SessionBuilderWindow(QMainWindow):
         settings_layout.addWidget(QLabel("Normalize:"), 3, 0)
         settings_layout.addWidget(self.normalization_slider, 3, 1)
         settings_layout.addWidget(self.normalization_label, 3, 2)
+
+        settings_layout.addWidget(QLabel("Parallel Voices:"), 4, 0)
+        settings_layout.addWidget(self.parallel_checkbox, 4, 1, 1, 2)
+
+        settings_layout.addWidget(QLabel("Max Workers:"), 5, 0)
+        settings_layout.addWidget(self.parallel_workers_spin, 5, 1, 1, 2)
+
+        settings_layout.addWidget(QLabel("Backend:"), 6, 0)
+        settings_layout.addWidget(self.parallel_backend_combo, 6, 1, 1, 2)
         
         control_layout.addLayout(settings_layout, 1) # Stretch factor 1
 
@@ -610,6 +638,9 @@ class SessionBuilderWindow(QMainWindow):
         self.crossfade_spin.valueChanged.connect(self._sync_crossfade_slider_from_spin)
         self.crossfade_curve_combo.currentTextChanged.connect(self._on_crossfade_curve_changed)
         self.normalization_slider.valueChanged.connect(self._on_normalization_changed)
+        self.parallel_checkbox.toggled.connect(self._on_parallel_toggled)
+        self.parallel_workers_spin.valueChanged.connect(self._on_parallel_workers_changed)
+        self.parallel_backend_combo.currentIndexChanged.connect(self._on_parallel_backend_changed)
 
         self.step_table.selectionModel().selectionChanged.connect(self._on_step_selection_changed)
         self.add_step_btn.clicked.connect(self._add_step)
@@ -722,6 +753,23 @@ class SessionBuilderWindow(QMainWindow):
         self.normalization_slider.setValue(int(round(current_norm * 100)))
         self.normalization_slider.blockSignals(False)
         self._update_normalization_label(self.normalization_slider.value())
+
+        self.parallel_checkbox.blockSignals(True)
+        self.parallel_checkbox.setChecked(bool(getattr(session, "parallel_voices", False)))
+        self.parallel_checkbox.blockSignals(False)
+
+        self.parallel_workers_spin.blockSignals(True)
+        workers = getattr(session, "parallel_voices_max_workers", None)
+        if isinstance(workers, (int, float)) and workers > 0:
+            self.parallel_workers_spin.setValue(int(workers))
+        else:
+            self.parallel_workers_spin.setValue(0)
+        self.parallel_workers_spin.blockSignals(False)
+
+        backend = getattr(session, "parallel_backend", "thread")
+        backend_idx = self.parallel_backend_combo.findData(str(backend))
+        if backend_idx >= 0:
+            self.parallel_backend_combo.setCurrentIndex(backend_idx)
         self.step_model.refresh(session.steps)
         if session.steps:
             self.step_table.selectRow(0)
@@ -932,6 +980,20 @@ class SessionBuilderWindow(QMainWindow):
         self._session.normalization_level = value / 100.0
         self._update_normalization_label(value)
         self._invalidate_assembler()
+
+    def _on_parallel_toggled(self, checked: bool) -> None:
+        self._session.parallel_voices = bool(checked)
+        self._invalidate_assembler()
+
+    def _on_parallel_workers_changed(self, value: int) -> None:
+        self._session.parallel_voices_max_workers = int(value) if value > 0 else None
+        self._invalidate_assembler()
+
+    def _on_parallel_backend_changed(self, index: int) -> None:
+        backend = self.parallel_backend_combo.itemData(index)
+        if backend:
+            self._session.parallel_backend = str(backend)
+            self._invalidate_assembler()
 
     def _update_normalization_label(self, slider_value: int) -> None:
         self.normalization_label.setText(f"{slider_value / 100:.2f}")
