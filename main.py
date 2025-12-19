@@ -310,7 +310,7 @@ class TrackEditorApp(QMainWindow):
                 "crossfade_curve": getattr(self.prefs, "crossfade_curve", "linear"),
                 "output_filename": "my_track.flac",
                 "parallel_voices": False,
-                "parallel_voices_max_workers": None,
+                "parallel_voices_max_workers": 4,
                 "parallel_backend": "thread",
             },
             "background_noise": {
@@ -614,10 +614,12 @@ class TrackEditorApp(QMainWindow):
         globals_layout.addWidget(QLabel("Parallel workers:"), 6, 0)
         self.parallel_workers_spin = QSpinBox()
         self.parallel_workers_spin.setRange(0, 256)
-        self.parallel_workers_spin.setSpecialValueText("Auto (CPU count)")
+        self.parallel_workers_spin.setValue(4)
+        self.parallel_workers_spin.setSpecialValueText("Default (4)")
         self.parallel_workers_spin.setToolTip(
             "Maximum workers to use for parallel voice rendering.\n"
-            "Set to Auto to match available CPU cores."
+            "Default is 4 workers. Memory-aware batching ensures RAM\n"
+            "usage stays under control for long audio generation."
         )
         globals_layout.addWidget(self.parallel_workers_spin, 6, 1)
 
@@ -1117,8 +1119,9 @@ class TrackEditorApp(QMainWindow):
             self.track_data["global_settings"]["parallel_voices"] = parallel_enabled
 
             workers_value = self.parallel_workers_spin.value()
+            # Default to 4 workers when set to 0 (special value)
             self.track_data["global_settings"]["parallel_voices_max_workers"] = (
-                None if workers_value == 0 else workers_value
+                4 if workers_value == 0 else workers_value
             )
 
             backend_value = self.parallel_backend_combo.currentText().strip().lower() or "thread"
@@ -1148,7 +1151,8 @@ class TrackEditorApp(QMainWindow):
         if isinstance(workers_setting, (int, float)) and workers_setting > 0:
             self.parallel_workers_spin.setValue(int(workers_setting))
         else:
-            self.parallel_workers_spin.setValue(0)
+            # Default to 4 workers when not specified or set to auto
+            self.parallel_workers_spin.setValue(4)
 
         backend_value = str(settings.get("parallel_backend", "thread")).lower()
         backend_index = self.parallel_backend_combo.findText(backend_value)
@@ -1419,8 +1423,9 @@ class TrackEditorApp(QMainWindow):
             self.track_data["global_settings"]["parallel_voices"] = parallel_enabled
 
             workers_value = self.parallel_workers_spin.value()
+            # Default to 4 workers when set to 0 (special value)
             self.track_data["global_settings"]["parallel_voices_max_workers"] = (
-                None if workers_value == 0 else workers_value
+                4 if workers_value == 0 else workers_value
             )
 
             backend_value = self.parallel_backend_combo.currentText().strip().lower() or "thread"
@@ -1450,7 +1455,8 @@ class TrackEditorApp(QMainWindow):
         if isinstance(workers_setting, (int, float)) and workers_setting > 0:
             self.parallel_workers_spin.setValue(int(workers_setting))
         else:
-            self.parallel_workers_spin.setValue(0)
+            # Default to 4 workers when not specified or set to auto
+            self.parallel_workers_spin.setValue(4)
 
         backend_value = str(settings.get("parallel_backend", "thread")).lower()
         backend_index = self.parallel_backend_combo.findText(backend_value)
