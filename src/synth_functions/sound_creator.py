@@ -17,6 +17,22 @@ from src.utils.noise_file import load_noise_params
 # Maximum individual gain for binaural/noise to prevent clipping when combined.
 # With both at max (0.48 + 0.48 = 0.96), the combined output stays under 1.0.
 MAX_INDIVIDUAL_GAIN = 0.48
+
+# Default number of parallel voice workers when parallel mode is enabled.
+# This controls how many voices are synthesized simultaneously.
+DEFAULT_PARALLEL_WORKERS = 4
+
+# Memory management constants for parallel voice generation.
+# Estimated bytes per sample for stereo float32 audio (2 channels * 4 bytes)
+BYTES_PER_SAMPLE = 8
+# Target maximum RAM usage for concurrent voice generation (in bytes).
+# Default: 10GB - allows processing many voices in parallel on modern systems.
+DEFAULT_MAX_CONCURRENT_MEMORY_GB = 10
+MAX_CONCURRENT_MEMORY_BYTES = DEFAULT_MAX_CONCURRENT_MEMORY_GB * 1024 * 1024 * 1024
+# Minimum batch size to avoid excessive overhead from small batches.
+MIN_BATCH_SIZE = 1
+# Maximum batch size even if memory allows more.
+MAX_BATCH_SIZE = 8
 from src.synth_functions.noise_flanger import (
     _generate_swept_notch_arrays,
     _generate_swept_notch_arrays_transition,
@@ -1542,26 +1558,65 @@ def generate_single_step_audio_segment(step_data, global_settings, target_durati
     voice_results = [None] * len(voices_data)
 
     if can_parallelize:
-        cpu_count = os.cpu_count() or len(voices_data)
+        # Determine worker count: use user setting, or default to DEFAULT_PARALLEL_WORKERS (4)
         requested_workers = None
         if isinstance(max_workers_setting, (int, float)) and max_workers_setting > 0:
             requested_workers = int(max_workers_setting)
-        worker_count = min(requested_workers or cpu_count, len(voices_data))
+        else:
+            requested_workers = DEFAULT_PARALLEL_WORKERS
+
+        # Get configurable max memory from settings (in GB), default to DEFAULT_MAX_CONCURRENT_MEMORY_GB
+        max_memory_gb_setting = step_data.get("parallel_max_memory_gb", global_settings.get("parallel_max_memory_gb"))
+        if isinstance(max_memory_gb_setting, (int, float)) and max_memory_gb_setting > 0:
+            max_concurrent_memory_bytes = int(max_memory_gb_setting * 1024 * 1024 * 1024)
+        else:
+            max_concurrent_memory_bytes = MAX_CONCURRENT_MEMORY_BYTES
+
+        # Calculate memory-aware batch size to prevent excessive RAM usage
+        # Each voice generates approximately step_generation_samples * BYTES_PER_SAMPLE bytes
+        estimated_bytes_per_voice = step_generation_samples * BYTES_PER_SAMPLE
+        # Account for some overhead (input buffers, processing temporaries, etc.)
+        estimated_bytes_per_voice_with_overhead = int(estimated_bytes_per_voice * 1.5)
+
+        # Calculate how many voices we can process concurrently within memory limits
+        if estimated_bytes_per_voice_with_overhead > 0:
+            max_concurrent_by_memory = max(
+                MIN_BATCH_SIZE,
+                min(MAX_BATCH_SIZE, max_concurrent_memory_bytes // estimated_bytes_per_voice_with_overhead)
+            )
+        else:
+            max_concurrent_by_memory = MAX_BATCH_SIZE
+
+        # Final worker count is the minimum of: requested workers, available voices, and memory-safe batch size
+        worker_count = min(requested_workers, len(voices_data), max_concurrent_by_memory)
+
+        # Calculate batch size for memory chunking
+        batch_size = min(worker_count, max_concurrent_by_memory)
+
         Executor = ProcessPoolExecutor if str(parallel_backend).lower() == "process" else ThreadPoolExecutor
         if worker_count <= 1:
             can_parallelize = False
         else:
+            memory_mb = (estimated_bytes_per_voice_with_overhead * batch_size) / (1024 * 1024)
             print(f"    Parallel voice synthesis enabled using {Executor.__name__} with {worker_count} workers.")
-            with Executor(max_workers=worker_count) as executor:
-                futures = {executor.submit(_synthesize_voice_task, task): task[0] for task in tasks}
-                for future in as_completed(futures):
-                    idx = futures[future]
-                    try:
-                        voice_results[idx] = future.result()
-                    except Exception as exc:
-                        func_name_short = voices_data[idx].get('synth_function_name', 'UnknownFunc')
-                        print(f"    Error generating Voice {idx+1} ({func_name_short}) in parallel: {exc}")
-                        traceback.print_exc()
+            print(f"    Memory-aware batching: {batch_size} voices per batch (~{memory_mb:.1f}MB estimated per batch)")
+
+            # Process voices in memory-safe batches
+            num_voices = len(tasks)
+            for batch_start in range(0, num_voices, batch_size):
+                batch_end = min(batch_start + batch_size, num_voices)
+                batch_tasks = tasks[batch_start:batch_end]
+
+                with Executor(max_workers=worker_count) as executor:
+                    futures = {executor.submit(_synthesize_voice_task, task): task[0] for task in batch_tasks}
+                    for future in as_completed(futures):
+                        idx = futures[future]
+                        try:
+                            voice_results[idx] = future.result()
+                        except Exception as exc:
+                            func_name_short = voices_data[idx].get('synth_function_name', 'UnknownFunc')
+                            print(f"    Error generating Voice {idx+1} ({func_name_short}) in parallel: {exc}")
+                            traceback.print_exc()
 
     if not can_parallelize:
         for task in tasks:
