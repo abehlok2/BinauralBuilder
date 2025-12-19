@@ -33,6 +33,13 @@ MAX_CONCURRENT_MEMORY_BYTES = int(DEFAULT_MAX_CONCURRENT_MEMORY_GB * 1024 * 1024
 MIN_BATCH_SIZE = 1
 # Maximum batch size even if memory allows more.
 MAX_BATCH_SIZE = 8
+
+# Memory management constants for sequential (offline) generation chunking.
+# When generating long steps in sequential mode, process in chunks to reduce
+# peak RAM usage. This prevents multi-GB allocations for hour-long steps.
+SEQUENTIAL_CHUNK_DURATION_SECONDS = 30.0  # Generate 30 seconds at a time
+# Minimum step duration before chunking is applied (avoid overhead for short steps)
+SEQUENTIAL_CHUNK_THRESHOLD_SECONDS = 60.0  # Only chunk steps longer than 1 minute
 from src.synth_functions.noise_flanger import (
     _generate_swept_notch_arrays,
     _generate_swept_notch_arrays_transition,
@@ -829,11 +836,62 @@ def assemble_track_from_data(track_data, sample_rate, crossfade_duration, crossf
             f"Duration: {step_duration:.2f}s, Samples: {N_step}"
         )
 
-        step_audio_mix = generate_single_step_audio_segment(
-            step_data,
-            global_settings,
-            step_duration,
-        )
+        # --- Memory-efficient chunked generation for long steps ---
+        # For steps longer than the threshold, process in chunks to reduce peak RAM.
+        # This prevents multi-GB allocations when generating hour-long steps.
+        if step_duration > SEQUENTIAL_CHUNK_THRESHOLD_SECONDS:
+            chunk_duration = SEQUENTIAL_CHUNK_DURATION_SECONDS
+            chunk_samples = int(chunk_duration * sample_rate)
+            num_chunks = int(np.ceil(step_duration / chunk_duration))
+
+            print(f"        Using chunked generation: {num_chunks} chunks of {chunk_duration:.1f}s each")
+
+            # Allocate the output buffer for this step
+            step_audio_mix = np.zeros((N_step, 2), dtype=np.float32)
+
+            # Generate each chunk and write directly to the output buffer
+            chunk_offset_samples = 0
+            for chunk_idx in range(num_chunks):
+                # Calculate this chunk's parameters
+                remaining_samples = N_step - chunk_offset_samples
+                this_chunk_samples = min(chunk_samples, remaining_samples)
+                this_chunk_duration = this_chunk_samples / sample_rate
+                chunk_start_time_local = chunk_offset_samples / sample_rate
+
+                # Generate this chunk with proper timing offset for voice continuity
+                chunk_audio = generate_single_step_audio_segment(
+                    step_data,
+                    global_settings,
+                    this_chunk_duration,
+                    duration_override=this_chunk_duration,
+                    chunk_start_time=chunk_start_time_local,
+                    voice_states=None,  # No state tracking needed for offline assembly
+                    return_state=False
+                )
+
+                # Handle potential size mismatches
+                actual_chunk_len = min(chunk_audio.shape[0], this_chunk_samples)
+                if actual_chunk_len > 0:
+                    step_audio_mix[chunk_offset_samples:chunk_offset_samples + actual_chunk_len] = chunk_audio[:actual_chunk_len]
+
+                chunk_offset_samples += this_chunk_samples
+
+                # Report progress for long steps
+                if progress_callback and num_chunks > 1:
+                    try:
+                        # Sub-step progress within overall track progress
+                        step_progress = (chunk_idx + 1) / num_chunks
+                        overall_progress = (i + step_progress) / total_steps
+                        progress_callback(overall_progress)
+                    except Exception as e:
+                        print(f"Progress callback error: {e}")
+        else:
+            # Short step - generate all at once (original behavior)
+            step_audio_mix = generate_single_step_audio_segment(
+                step_data,
+                global_settings,
+                step_duration,
+            )
         # --- Placement and Crossfading ---
         # Clip placement indices to the allocated track buffer boundaries
         safe_place_start = max(0, step_start_sample_abs)
