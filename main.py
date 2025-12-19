@@ -604,15 +604,16 @@ class TrackEditorApp(QMainWindow):
         self.noise_amp_entry.setToolTip("Amplitude adjustment for background noise")
         globals_layout.addWidget(self.noise_amp_entry, 4, 1)
 
+        parallel_layout = QGridLayout()
         self.parallel_checkbox = QCheckBox("Enable parallel voice rendering")
         self.parallel_checkbox.setToolTip(
             "Process multiple voices concurrently for each step.\n"
             "When disabled, voices are generated sequentially."
         )
         self.parallel_checkbox.toggled.connect(self._update_parallel_controls_enabled)
-        globals_layout.addWidget(self.parallel_checkbox, 5, 0, 1, 3)
+        parallel_layout.addWidget(self.parallel_checkbox, 0, 0, 1, 2)
 
-        globals_layout.addWidget(QLabel("Parallel workers:"), 6, 0)
+        parallel_layout.addWidget(QLabel("Parallel workers:"), 1, 0)
         self.parallel_workers_spin = QSpinBox()
         self.parallel_workers_spin.setRange(0, 256)
         self.parallel_workers_spin.setValue(4)
@@ -622,9 +623,9 @@ class TrackEditorApp(QMainWindow):
             "Default is 4 workers. Memory-aware batching ensures RAM\n"
             "usage stays under control for long audio generation."
         )
-        globals_layout.addWidget(self.parallel_workers_spin, 6, 1)
+        parallel_layout.addWidget(self.parallel_workers_spin, 1, 1)
 
-        globals_layout.addWidget(QLabel("Max RAM (GB):"), 7, 0)
+        parallel_layout.addWidget(QLabel("Max RAM (GB):"), 2, 0)
         self.parallel_max_memory_spin = QSpinBox()
         self.parallel_max_memory_spin.setRange(1, 128)
         self.parallel_max_memory_spin.setValue(10)
@@ -633,21 +634,22 @@ class TrackEditorApp(QMainWindow):
             "voice generation. Voices are processed in batches to stay\n"
             "within this limit. Default: 10GB."
         )
-        globals_layout.addWidget(self.parallel_max_memory_spin, 7, 1)
+        parallel_layout.addWidget(self.parallel_max_memory_spin, 2, 1)
 
-        globals_layout.addWidget(QLabel("Parallel backend:"), 8, 0)
+        parallel_layout.addWidget(QLabel("Parallel backend:"), 3, 0)
         self.parallel_backend_combo = QComboBox()
         self.parallel_backend_combo.addItems(["thread", "process"])
         self.parallel_backend_combo.setToolTip(
             "Use threads for lighter tasks or processes for heavy CPU work."
         )
-        globals_layout.addWidget(self.parallel_backend_combo, 8, 1)
+        parallel_layout.addWidget(self.parallel_backend_combo, 3, 1)
 
         self._update_parallel_controls_enabled()
 
         # Add a spacer to the right to prevent text fields from stretching too far
         globals_layout.setColumnStretch(1, 1)
         globals_layout.setColumnStretch(3, 1)
+        globals_layout.addLayout(parallel_layout, 0, 3, 5, 1)
         control_layout.addWidget(globals_groupbox, 2)
 
         # Generate Button
