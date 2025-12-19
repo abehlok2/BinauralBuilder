@@ -17,6 +17,9 @@ from PyQt5.QtWidgets import (
     QPushButton,
     QLabel,
     QLineEdit,
+    QCheckBox,
+    QComboBox,
+    QSpinBox,
     QTreeView,
     QTreeWidget,
     QTreeWidgetItem,
@@ -306,6 +309,9 @@ class TrackEditorApp(QMainWindow):
                 "crossfade_duration": DEFAULT_CROSSFADE,
                 "crossfade_curve": getattr(self.prefs, "crossfade_curve", "linear"),
                 "output_filename": "my_track.flac",
+                "parallel_voices": False,
+                "parallel_voices_max_workers": None,
+                "parallel_backend": "thread",
             },
             "background_noise": {
                 "file_path": "",
@@ -596,6 +602,34 @@ class TrackEditorApp(QMainWindow):
         self.noise_amp_entry.setValidator(self.double_validator)
         self.noise_amp_entry.setToolTip("Amplitude adjustment for background noise")
         globals_layout.addWidget(self.noise_amp_entry, 4, 1)
+
+        self.parallel_checkbox = QCheckBox("Enable parallel voice rendering")
+        self.parallel_checkbox.setToolTip(
+            "Process multiple voices concurrently for each step.\n"
+            "When disabled, voices are generated sequentially."
+        )
+        self.parallel_checkbox.toggled.connect(self._update_parallel_controls_enabled)
+        globals_layout.addWidget(self.parallel_checkbox, 5, 0, 1, 3)
+
+        globals_layout.addWidget(QLabel("Parallel workers:"), 6, 0)
+        self.parallel_workers_spin = QSpinBox()
+        self.parallel_workers_spin.setRange(0, 256)
+        self.parallel_workers_spin.setSpecialValueText("Auto (CPU count)")
+        self.parallel_workers_spin.setToolTip(
+            "Maximum workers to use for parallel voice rendering.\n"
+            "Set to Auto to match available CPU cores."
+        )
+        globals_layout.addWidget(self.parallel_workers_spin, 6, 1)
+
+        globals_layout.addWidget(QLabel("Parallel backend:"), 7, 0)
+        self.parallel_backend_combo = QComboBox()
+        self.parallel_backend_combo.addItems(["thread", "process"])
+        self.parallel_backend_combo.setToolTip(
+            "Use threads for lighter tasks or processes for heavy CPU work."
+        )
+        globals_layout.addWidget(self.parallel_backend_combo, 7, 1)
+
+        self._update_parallel_controls_enabled()
 
         # Add a spacer to the right to prevent text fields from stretching too far
         globals_layout.setColumnStretch(1, 1)
@@ -1026,6 +1060,11 @@ class TrackEditorApp(QMainWindow):
         self.remove_clip_button.setEnabled(has_selection)
         self.play_clip_button.setEnabled(is_single or self.is_clip_playing)
 
+    def _update_parallel_controls_enabled(self):
+        enabled = self.parallel_checkbox.isChecked()
+        self.parallel_workers_spin.setEnabled(enabled)
+        self.parallel_backend_combo.setEnabled(enabled)
+
     @pyqtSlot()
     def on_clip_select(self):
         self._update_clip_actions_state()
@@ -1073,6 +1112,19 @@ class TrackEditorApp(QMainWindow):
                 raise ValueError("Invalid noise amplitude")
             self.track_data["background_noise"]["amp"] = noise_amp
             # Noise pan parameter removed from UI; value remains unchanged
+
+            parallel_enabled = self.parallel_checkbox.isChecked()
+            self.track_data["global_settings"]["parallel_voices"] = parallel_enabled
+
+            workers_value = self.parallel_workers_spin.value()
+            self.track_data["global_settings"]["parallel_voices_max_workers"] = (
+                None if workers_value == 0 else workers_value
+            )
+
+            backend_value = self.parallel_backend_combo.currentText().strip().lower() or "thread"
+            if backend_value not in {"thread", "process"}:
+                raise ValueError("Parallel backend must be 'thread' or 'process'.")
+            self.track_data["global_settings"]["parallel_backend"] = backend_value
         except ValueError as e:
             QMessageBox.critical(self, "Input Error", f"Invalid global settings:\n{e}")
             return False
@@ -1089,6 +1141,23 @@ class TrackEditorApp(QMainWindow):
         noise = self.track_data.get("background_noise", {})
         self.noise_file_entry.setText(noise.get("file_path", ""))
         self.noise_amp_entry.setText(str(noise.get("amp", 0.0)))
+
+        self.parallel_checkbox.setChecked(bool(settings.get("parallel_voices", False)))
+
+        workers_setting = settings.get("parallel_voices_max_workers")
+        if isinstance(workers_setting, (int, float)) and workers_setting > 0:
+            self.parallel_workers_spin.setValue(int(workers_setting))
+        else:
+            self.parallel_workers_spin.setValue(0)
+
+        backend_value = str(settings.get("parallel_backend", "thread")).lower()
+        backend_index = self.parallel_backend_combo.findText(backend_value)
+        if backend_index < 0:
+            backend_index = self.parallel_backend_combo.findText(backend_value.capitalize())
+        if backend_index < 0:
+            backend_index = 0
+        self.parallel_backend_combo.setCurrentIndex(backend_index)
+        self._update_parallel_controls_enabled()
 
     def _recalculate_step_start_times(self):
         crossfade = float(self.track_data.get("global_settings", {}).get("crossfade_duration", 0.0))
@@ -1345,6 +1414,19 @@ class TrackEditorApp(QMainWindow):
                 raise ValueError("Invalid noise amplitude")
             self.track_data["background_noise"]["amp"] = noise_amp
             # Noise pan parameter removed from UI; value remains unchanged
+
+            parallel_enabled = self.parallel_checkbox.isChecked()
+            self.track_data["global_settings"]["parallel_voices"] = parallel_enabled
+
+            workers_value = self.parallel_workers_spin.value()
+            self.track_data["global_settings"]["parallel_voices_max_workers"] = (
+                None if workers_value == 0 else workers_value
+            )
+
+            backend_value = self.parallel_backend_combo.currentText().strip().lower() or "thread"
+            if backend_value not in {"thread", "process"}:
+                raise ValueError("Parallel backend must be 'thread' or 'process'.")
+            self.track_data["global_settings"]["parallel_backend"] = backend_value
         except ValueError as e:
             QMessageBox.critical(self, "Input Error", f"Invalid global settings:\n{e}")
             return False
@@ -1361,6 +1443,23 @@ class TrackEditorApp(QMainWindow):
         noise = self.track_data.get("background_noise", {})
         self.noise_file_entry.setText(noise.get("file_path", ""))
         self.noise_amp_entry.setText(str(noise.get("amp", 0.0)))
+
+        self.parallel_checkbox.setChecked(bool(settings.get("parallel_voices", False)))
+
+        workers_setting = settings.get("parallel_voices_max_workers")
+        if isinstance(workers_setting, (int, float)) and workers_setting > 0:
+            self.parallel_workers_spin.setValue(int(workers_setting))
+        else:
+            self.parallel_workers_spin.setValue(0)
+
+        backend_value = str(settings.get("parallel_backend", "thread")).lower()
+        backend_index = self.parallel_backend_combo.findText(backend_value)
+        if backend_index < 0:
+            backend_index = self.parallel_backend_combo.findText(backend_value.capitalize())
+        if backend_index < 0:
+            backend_index = 0
+        self.parallel_backend_combo.setCurrentIndex(backend_index)
+        self._update_parallel_controls_enabled()
 
     def _recalculate_step_start_times(self):
         crossfade = float(self.track_data.get("global_settings", {}).get("crossfade_duration", 0.0))
