@@ -311,6 +311,7 @@ class TrackEditorApp(QMainWindow):
                 "output_filename": "my_track.flac",
                 "parallel_voices": False,
                 "parallel_voices_max_workers": 4,
+                "parallel_max_memory_gb": 10,
                 "parallel_backend": "thread",
             },
             "background_noise": {
@@ -623,13 +624,24 @@ class TrackEditorApp(QMainWindow):
         )
         globals_layout.addWidget(self.parallel_workers_spin, 6, 1)
 
-        globals_layout.addWidget(QLabel("Parallel backend:"), 7, 0)
+        globals_layout.addWidget(QLabel("Max RAM (GB):"), 7, 0)
+        self.parallel_max_memory_spin = QSpinBox()
+        self.parallel_max_memory_spin.setRange(1, 128)
+        self.parallel_max_memory_spin.setValue(10)
+        self.parallel_max_memory_spin.setToolTip(
+            "Maximum estimated concurrent RAM usage (in GB) for parallel\n"
+            "voice generation. Voices are processed in batches to stay\n"
+            "within this limit. Default: 10GB."
+        )
+        globals_layout.addWidget(self.parallel_max_memory_spin, 7, 1)
+
+        globals_layout.addWidget(QLabel("Parallel backend:"), 8, 0)
         self.parallel_backend_combo = QComboBox()
         self.parallel_backend_combo.addItems(["thread", "process"])
         self.parallel_backend_combo.setToolTip(
             "Use threads for lighter tasks or processes for heavy CPU work."
         )
-        globals_layout.addWidget(self.parallel_backend_combo, 7, 1)
+        globals_layout.addWidget(self.parallel_backend_combo, 8, 1)
 
         self._update_parallel_controls_enabled()
 
@@ -1065,6 +1077,7 @@ class TrackEditorApp(QMainWindow):
     def _update_parallel_controls_enabled(self):
         enabled = self.parallel_checkbox.isChecked()
         self.parallel_workers_spin.setEnabled(enabled)
+        self.parallel_max_memory_spin.setEnabled(enabled)
         self.parallel_backend_combo.setEnabled(enabled)
 
     @pyqtSlot()
@@ -1124,6 +1137,9 @@ class TrackEditorApp(QMainWindow):
                 4 if workers_value == 0 else workers_value
             )
 
+            max_memory_gb = self.parallel_max_memory_spin.value()
+            self.track_data["global_settings"]["parallel_max_memory_gb"] = max_memory_gb
+
             backend_value = self.parallel_backend_combo.currentText().strip().lower() or "thread"
             if backend_value not in {"thread", "process"}:
                 raise ValueError("Parallel backend must be 'thread' or 'process'.")
@@ -1153,6 +1169,13 @@ class TrackEditorApp(QMainWindow):
         else:
             # Default to 4 workers when not specified or set to auto
             self.parallel_workers_spin.setValue(4)
+
+        max_memory_setting = settings.get("parallel_max_memory_gb")
+        if isinstance(max_memory_setting, (int, float)) and max_memory_setting > 0:
+            self.parallel_max_memory_spin.setValue(int(max_memory_setting))
+        else:
+            # Default to 10GB when not specified
+            self.parallel_max_memory_spin.setValue(10)
 
         backend_value = str(settings.get("parallel_backend", "thread")).lower()
         backend_index = self.parallel_backend_combo.findText(backend_value)
@@ -1428,6 +1451,9 @@ class TrackEditorApp(QMainWindow):
                 4 if workers_value == 0 else workers_value
             )
 
+            max_memory_gb = self.parallel_max_memory_spin.value()
+            self.track_data["global_settings"]["parallel_max_memory_gb"] = max_memory_gb
+
             backend_value = self.parallel_backend_combo.currentText().strip().lower() or "thread"
             if backend_value not in {"thread", "process"}:
                 raise ValueError("Parallel backend must be 'thread' or 'process'.")
@@ -1457,6 +1483,13 @@ class TrackEditorApp(QMainWindow):
         else:
             # Default to 4 workers when not specified or set to auto
             self.parallel_workers_spin.setValue(4)
+
+        max_memory_setting = settings.get("parallel_max_memory_gb")
+        if isinstance(max_memory_setting, (int, float)) and max_memory_setting > 0:
+            self.parallel_max_memory_spin.setValue(int(max_memory_setting))
+        else:
+            # Default to 10GB when not specified
+            self.parallel_max_memory_spin.setValue(10)
 
         backend_value = str(settings.get("parallel_backend", "thread")).lower()
         backend_index = self.parallel_backend_combo.findText(backend_value)

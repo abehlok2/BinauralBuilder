@@ -26,8 +26,9 @@ DEFAULT_PARALLEL_WORKERS = 4
 # Estimated bytes per sample for stereo float32 audio (2 channels * 4 bytes)
 BYTES_PER_SAMPLE = 8
 # Target maximum RAM usage for concurrent voice generation (in bytes).
-# Default: 512MB - conservative to work well on most systems.
-MAX_CONCURRENT_MEMORY_BYTES = 512 * 1024 * 1024
+# Default: 10GB - allows processing many voices in parallel on modern systems.
+DEFAULT_MAX_CONCURRENT_MEMORY_GB = 10
+MAX_CONCURRENT_MEMORY_BYTES = DEFAULT_MAX_CONCURRENT_MEMORY_GB * 1024 * 1024 * 1024
 # Minimum batch size to avoid excessive overhead from small batches.
 MIN_BATCH_SIZE = 1
 # Maximum batch size even if memory allows more.
@@ -1564,6 +1565,13 @@ def generate_single_step_audio_segment(step_data, global_settings, target_durati
         else:
             requested_workers = DEFAULT_PARALLEL_WORKERS
 
+        # Get configurable max memory from settings (in GB), default to DEFAULT_MAX_CONCURRENT_MEMORY_GB
+        max_memory_gb_setting = step_data.get("parallel_max_memory_gb", global_settings.get("parallel_max_memory_gb"))
+        if isinstance(max_memory_gb_setting, (int, float)) and max_memory_gb_setting > 0:
+            max_concurrent_memory_bytes = int(max_memory_gb_setting * 1024 * 1024 * 1024)
+        else:
+            max_concurrent_memory_bytes = MAX_CONCURRENT_MEMORY_BYTES
+
         # Calculate memory-aware batch size to prevent excessive RAM usage
         # Each voice generates approximately step_generation_samples * BYTES_PER_SAMPLE bytes
         estimated_bytes_per_voice = step_generation_samples * BYTES_PER_SAMPLE
@@ -1574,7 +1582,7 @@ def generate_single_step_audio_segment(step_data, global_settings, target_durati
         if estimated_bytes_per_voice_with_overhead > 0:
             max_concurrent_by_memory = max(
                 MIN_BATCH_SIZE,
-                min(MAX_BATCH_SIZE, MAX_CONCURRENT_MEMORY_BYTES // estimated_bytes_per_voice_with_overhead)
+                min(MAX_BATCH_SIZE, max_concurrent_memory_bytes // estimated_bytes_per_voice_with_overhead)
             )
         else:
             max_concurrent_by_memory = MAX_BATCH_SIZE
