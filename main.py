@@ -311,7 +311,7 @@ class TrackEditorApp(QMainWindow):
                 "output_filename": "my_track.flac",
                 "parallel_voices": False,
                 "parallel_voices_max_workers": 4,
-                "parallel_max_memory_gb": 10,
+                "parallel_max_memory_gb": sound_creator.DEFAULT_MAX_CONCURRENT_MEMORY_GB,
                 "parallel_backend": "thread",
             },
             "background_noise": {
@@ -626,13 +626,16 @@ class TrackEditorApp(QMainWindow):
         parallel_layout.addWidget(self.parallel_workers_spin, 1, 1)
 
         parallel_layout.addWidget(QLabel("Max RAM (GB):"), 2, 0)
-        self.parallel_max_memory_spin = QSpinBox()
-        self.parallel_max_memory_spin.setRange(1, 128)
-        self.parallel_max_memory_spin.setValue(10)
+        self.parallel_max_memory_spin = QDoubleSpinBox()
+        self.parallel_max_memory_spin.setRange(0.1, 128.0)
+        self.parallel_max_memory_spin.setDecimals(2)
+        self.parallel_max_memory_spin.setSingleStep(0.25)
+        self.parallel_max_memory_spin.setSuffix(" GB")
+        self.parallel_max_memory_spin.setValue(sound_creator.DEFAULT_MAX_CONCURRENT_MEMORY_GB)
         self.parallel_max_memory_spin.setToolTip(
             "Maximum estimated concurrent RAM usage (in GB) for parallel\n"
             "voice generation. Voices are processed in batches to stay\n"
-            "within this limit. Default: 10GB."
+            "within this limit. Default: 0.5GB (512MB)."
         )
         parallel_layout.addWidget(self.parallel_max_memory_spin, 2, 1)
 
@@ -1174,10 +1177,10 @@ class TrackEditorApp(QMainWindow):
 
         max_memory_setting = settings.get("parallel_max_memory_gb")
         if isinstance(max_memory_setting, (int, float)) and max_memory_setting > 0:
-            self.parallel_max_memory_spin.setValue(int(max_memory_setting))
+            self.parallel_max_memory_spin.setValue(float(max_memory_setting))
         else:
-            # Default to 10GB when not specified
-            self.parallel_max_memory_spin.setValue(10)
+            # Default to 0.5GB when not specified
+            self.parallel_max_memory_spin.setValue(sound_creator.DEFAULT_MAX_CONCURRENT_MEMORY_GB)
 
         backend_value = str(settings.get("parallel_backend", "thread")).lower()
         backend_index = self.parallel_backend_combo.findText(backend_value)
@@ -1488,10 +1491,10 @@ class TrackEditorApp(QMainWindow):
 
         max_memory_setting = settings.get("parallel_max_memory_gb")
         if isinstance(max_memory_setting, (int, float)) and max_memory_setting > 0:
-            self.parallel_max_memory_spin.setValue(int(max_memory_setting))
+            self.parallel_max_memory_spin.setValue(float(max_memory_setting))
         else:
-            # Default to 10GB when not specified
-            self.parallel_max_memory_spin.setValue(10)
+            # Default to 0.5GB when not specified
+            self.parallel_max_memory_spin.setValue(sound_creator.DEFAULT_MAX_CONCURRENT_MEMORY_GB)
 
         backend_value = str(settings.get("parallel_backend", "thread")).lower()
         backend_index = self.parallel_backend_combo.findText(backend_value)
