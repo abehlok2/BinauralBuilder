@@ -26,9 +26,9 @@ DEFAULT_PARALLEL_WORKERS = 4
 # Estimated bytes per sample for stereo float32 audio (2 channels * 4 bytes)
 BYTES_PER_SAMPLE = 8
 # Target maximum RAM usage for concurrent voice generation (in bytes).
-# Default: 10GB - allows processing many voices in parallel on modern systems.
-DEFAULT_MAX_CONCURRENT_MEMORY_GB = 10
-MAX_CONCURRENT_MEMORY_BYTES = DEFAULT_MAX_CONCURRENT_MEMORY_GB * 1024 * 1024 * 1024
+# Default: 0.5GB (512MB) to keep concurrency memory usage modest by default.
+DEFAULT_MAX_CONCURRENT_MEMORY_GB = 0.5
+MAX_CONCURRENT_MEMORY_BYTES = int(DEFAULT_MAX_CONCURRENT_MEMORY_GB * 1024 * 1024 * 1024)
 # Minimum batch size to avoid excessive overhead from small batches.
 MIN_BATCH_SIZE = 1
 # Maximum batch size even if memory allows more.
