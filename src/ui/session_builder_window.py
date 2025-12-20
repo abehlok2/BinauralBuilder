@@ -421,6 +421,9 @@ class SessionBuilderWindow(QMainWindow):
         self.preset_combo.setToolTip("Select the binaural preset used for this step.")
         self.preset_combo.setMinimumWidth(100)
         self.preset_combo.setMaximumWidth(140)
+        self.preset_combo.setEditable(True)
+        self.preset_combo.lineEdit().setAlignment(Qt.AlignCenter)
+        self.preset_combo.lineEdit().setReadOnly(True)
         binaural_col_layout.addWidget(self.preset_combo, alignment=Qt.AlignCenter)
 
         self.binaural_vol_slider = QSlider(Qt.Vertical)
@@ -429,6 +432,10 @@ class SessionBuilderWindow(QMainWindow):
         self.binaural_vol_slider.setMinimumHeight(120)
         self.binaural_vol_slider.setFixedWidth(30)
         binaural_col_layout.addWidget(self.binaural_vol_slider, alignment=Qt.AlignCenter)
+
+        self.binaural_vol_display = QLabel("0.00")
+        self.binaural_vol_display.setAlignment(Qt.AlignCenter)
+        binaural_col_layout.addWidget(self.binaural_vol_display, alignment=Qt.AlignCenter)
 
         self.binaural_vol_spin = QDoubleSpinBox()
         self.binaural_vol_spin.setDecimals(2)
@@ -458,6 +465,9 @@ class SessionBuilderWindow(QMainWindow):
         self.noise_combo.setToolTip("Optional noise preset blended with the step.")
         self.noise_combo.setMinimumWidth(100)
         self.noise_combo.setMaximumWidth(140)
+        self.noise_combo.setEditable(True)
+        self.noise_combo.lineEdit().setAlignment(Qt.AlignCenter)
+        self.noise_combo.lineEdit().setReadOnly(True)
         noise_col_layout.addWidget(self.noise_combo, alignment=Qt.AlignCenter)
 
         self.noise_vol_slider = QSlider(Qt.Vertical)
@@ -466,6 +476,10 @@ class SessionBuilderWindow(QMainWindow):
         self.noise_vol_slider.setMinimumHeight(120)
         self.noise_vol_slider.setFixedWidth(30)
         noise_col_layout.addWidget(self.noise_vol_slider, alignment=Qt.AlignCenter)
+
+        self.noise_vol_display = QLabel("0.00")
+        self.noise_vol_display.setAlignment(Qt.AlignCenter)
+        noise_col_layout.addWidget(self.noise_vol_display, alignment=Qt.AlignCenter)
 
         self.noise_vol_spin = QDoubleSpinBox()
         self.noise_vol_spin.setDecimals(2)
@@ -491,11 +505,12 @@ class SessionBuilderWindow(QMainWindow):
         bg_label.setAlignment(Qt.AlignCenter)
         bg_col_layout.addWidget(bg_label)
 
-        self.bg_audio_btn = QPushButton("<none>")
+        self.bg_audio_btn = QPushButton("None")
         self.bg_audio_btn.setObjectName("preset_button")
         self.bg_audio_btn.setToolTip("Click to choose a background audio file from disk.")
         self.bg_audio_btn.setMinimumWidth(100)
         self.bg_audio_btn.setMaximumWidth(140)
+        self.bg_audio_btn.setStyleSheet("text-align: center;")
         bg_col_layout.addWidget(self.bg_audio_btn, alignment=Qt.AlignCenter)
 
         # Hidden line edit to store the actual path
@@ -508,6 +523,10 @@ class SessionBuilderWindow(QMainWindow):
         self.bg_audio_vol_slider.setMinimumHeight(120)
         self.bg_audio_vol_slider.setFixedWidth(30)
         bg_col_layout.addWidget(self.bg_audio_vol_slider, alignment=Qt.AlignCenter)
+
+        self.bg_audio_vol_display = QLabel("0.00")
+        self.bg_audio_vol_display.setAlignment(Qt.AlignCenter)
+        bg_col_layout.addWidget(self.bg_audio_vol_display, alignment=Qt.AlignCenter)
 
         self.bg_audio_vol_spin = QDoubleSpinBox()
         self.bg_audio_vol_spin.setDecimals(2)
@@ -561,6 +580,11 @@ class SessionBuilderWindow(QMainWindow):
         self.step_crossfade_spin.setToolTip("Crossfade override for this step (seconds).")
         self.step_crossfade_spin.setFixedWidth(80)
         crossfade_layout.addWidget(self.step_crossfade_spin, alignment=Qt.AlignCenter)
+
+        self.step_crossfade_use_global = QCheckBox("Use Global")
+        self.step_crossfade_use_global.setToolTip("Use the session's global crossfade duration for this step.")
+        crossfade_layout.addWidget(self.step_crossfade_use_global, alignment=Qt.AlignCenter)
+
         # Hidden slider for compatibility (not displayed in new UI)
         self.step_crossfade_slider = QSlider(Qt.Horizontal)
         self.step_crossfade_slider.setRange(0, 300)
@@ -613,7 +637,7 @@ class SessionBuilderWindow(QMainWindow):
         extend_layout.addWidget(extend_label)
         self.bg_audio_extend_checkbox = QCheckBox()
         self.bg_audio_extend_checkbox.setToolTip(
-            "When checked, background audio continues playing into subsequent steps "
+            "When checked, the loaded background audio continues into subsequent steps "
             "if it is longer than this step's duration."
         )
         self.bg_audio_extend_checkbox.setChecked(True)
@@ -796,6 +820,7 @@ class SessionBuilderWindow(QMainWindow):
         self.step_crossfade_slider.valueChanged.connect(self._sync_step_crossfade_spin_from_slider)
         self.step_crossfade_spin.valueChanged.connect(self._sync_step_crossfade_slider_from_spin)
         self.step_crossfade_curve_combo.currentIndexChanged.connect(self._on_step_curve_changed)
+        self.step_crossfade_use_global.stateChanged.connect(self._on_use_global_crossfade_changed)
         self.bg_audio_btn.clicked.connect(self._choose_background_audio_file)
         self.browse_btn.clicked.connect(self._choose_background_audio_file)
         self.bg_audio_clear_btn.clicked.connect(self._clear_background_audio)
@@ -988,6 +1013,7 @@ class SessionBuilderWindow(QMainWindow):
         self.duration_spin.blockSignals(True)
         self.step_crossfade_slider.blockSignals(True)
         self.step_crossfade_spin.blockSignals(True)
+        self.step_crossfade_use_global.blockSignals(True)
         self.step_crossfade_curve_combo.blockSignals(True)
         self.bg_audio_vol_slider.blockSignals(True)
         self.bg_audio_vol_spin.blockSignals(True)
@@ -1022,6 +1048,9 @@ class SessionBuilderWindow(QMainWindow):
             self.step_crossfade_curve_combo.setCurrentIndex(idx if idx >= 0 else 0)
         else:
             self.step_crossfade_curve_combo.setCurrentIndex(0)
+        use_global_crossfade = step.crossfade_duration is None
+        self.step_crossfade_use_global.setChecked(use_global_crossfade)
+        self._update_crossfade_editor_state(use_global_crossfade)
 
         # Load background audio path (with fallback to legacy warmup_clip_path)
         bg_audio_path = step.background_audio_path or step.warmup_clip_path or ""
@@ -1050,10 +1079,12 @@ class SessionBuilderWindow(QMainWindow):
         self.duration_spin.blockSignals(False)
         self.step_crossfade_slider.blockSignals(False)
         self.step_crossfade_spin.blockSignals(False)
+        self.step_crossfade_use_global.blockSignals(False)
         self.step_crossfade_curve_combo.blockSignals(False)
         self.bg_audio_vol_slider.blockSignals(False)
         self.bg_audio_vol_spin.blockSignals(False)
         self.bg_audio_extend_checkbox.blockSignals(False)
+        self._refresh_volume_displays()
 
     def _clear_step_editors(self) -> None:
         default_duration = float(self._defaults.get("step_duration", 1.0))
@@ -1084,6 +1115,8 @@ class SessionBuilderWindow(QMainWindow):
         self.duration_spin.setValue(default_duration)
         self.step_crossfade_slider.setValue(0)
         self.step_crossfade_spin.setValue(0.0)
+        self.step_crossfade_use_global.setChecked(True)
+        self._update_crossfade_editor_state(True)
         self.step_crossfade_curve_combo.setCurrentIndex(0)
         # Clear background audio
         self.bg_audio_edit.clear()
@@ -1094,17 +1127,20 @@ class SessionBuilderWindow(QMainWindow):
         self.description_edit.blockSignals(True)
         self.description_edit.clear()
         self.description_edit.blockSignals(False)
+        self._refresh_volume_displays()
 
     def _sync_crossfade_spin_from_slider(self, value: int) -> None:
         seconds = value / 10.0
         self.crossfade_spin.setValue(seconds)
         self._session.crossfade_duration = seconds
         self._invalidate_assembler()
+        self._refresh_global_crossfade_display_for_step()
 
     def _sync_crossfade_slider_from_spin(self, value: float) -> None:
         self.crossfade_slider.setValue(int(round(value * 10)))
         self._session.crossfade_duration = float(value)
         self._invalidate_assembler()
+        self._refresh_global_crossfade_display_for_step()
 
     def _on_crossfade_curve_changed(self, text: str) -> None:
         self._session.crossfade_curve = text
@@ -1118,6 +1154,15 @@ class SessionBuilderWindow(QMainWindow):
 
     def _update_normalization_label(self, slider_value: int) -> None:
         self.normalization_label.setText(f"{slider_value / 100:.2f}")
+
+    def _update_volume_display_label(self, label: QLabel, slider_value: int) -> None:
+        normalized = min(slider_value, 99) / 100.0
+        label.setText(f"{normalized:.2f}")
+
+    def _refresh_volume_displays(self) -> None:
+        self._update_volume_display_label(self.binaural_vol_display, self.binaural_vol_slider.value())
+        self._update_volume_display_label(self.noise_vol_display, self.noise_vol_slider.value())
+        self._update_volume_display_label(self.bg_audio_vol_display, self.bg_audio_vol_slider.value())
 
     def _on_preset_changed(self, index: int) -> None:
         step = self._get_selected_step()
@@ -1141,11 +1186,13 @@ class SessionBuilderWindow(QMainWindow):
         vol = (value / 100.0) * MAX_INDIVIDUAL_GAIN
         self.noise_vol_spin.setValue(vol)
         self._set_noise_volume(vol)
+        self._update_volume_display_label(self.noise_vol_display, value)
 
     def _sync_noise_vol_slider_from_spin(self, value: float) -> None:
         # Value 0-MAX_INDIVIDUAL_GAIN maps to slider 0-100
         self.noise_vol_slider.setValue(int(round((value / MAX_INDIVIDUAL_GAIN) * 100)))
         self._set_noise_volume(value)
+        self._update_volume_display_label(self.noise_vol_display, self.noise_vol_slider.value())
 
     def _set_noise_volume(self, value: float) -> None:
         step = self._get_selected_step()
@@ -1159,11 +1206,13 @@ class SessionBuilderWindow(QMainWindow):
         vol = (value / 100.0) * MAX_INDIVIDUAL_GAIN
         self.binaural_vol_spin.setValue(vol)
         self._set_binaural_volume(vol)
+        self._update_volume_display_label(self.binaural_vol_display, value)
 
     def _sync_binaural_vol_slider_from_spin(self, value: float) -> None:
         # Value 0-MAX_INDIVIDUAL_GAIN maps to slider 0-100
         self.binaural_vol_slider.setValue(int(round((value / MAX_INDIVIDUAL_GAIN) * 100)))
         self._set_binaural_volume(value)
+        self._update_volume_display_label(self.binaural_vol_display, self.binaural_vol_slider.value())
 
     def _set_binaural_volume(self, value: float) -> None:
         step = self._get_selected_step()
@@ -1189,6 +1238,13 @@ class SessionBuilderWindow(QMainWindow):
         self._set_step_crossfade(value)
 
     def _set_step_crossfade(self, value: float) -> None:
+        if self.step_crossfade_use_global.isChecked():
+            self._apply_global_crossfade_display()
+            step = self._get_selected_step()
+            if step is not None:
+                step.crossfade_duration = None
+                self._invalidate_assembler()
+            return
         step = self._get_selected_step()
         if step is None:
             return
@@ -1228,7 +1284,7 @@ class SessionBuilderWindow(QMainWindow):
             self._invalidate_assembler()
 
     def _update_bg_audio_btn_text(self, path: str) -> None:
-        """Update the background audio button text to show filename or <none>."""
+        """Update the background audio button text to show filename or indicate no selection."""
         if path:
             filename = Path(path).name
             # Truncate if too long
@@ -1236,18 +1292,20 @@ class SessionBuilderWindow(QMainWindow):
                 filename = filename[:9] + "..."
             self.bg_audio_btn.setText(f"<{filename}>")
         else:
-            self.bg_audio_btn.setText("<none>")
+            self.bg_audio_btn.setText("None")
 
     def _sync_bg_audio_vol_spin_from_slider(self, value: int) -> None:
         # Slider 0-100 maps to 0-MAX_INDIVIDUAL_GAIN
         vol = (value / 100.0) * MAX_INDIVIDUAL_GAIN
         self.bg_audio_vol_spin.setValue(vol)
         self._set_background_audio_volume(vol)
+        self._update_volume_display_label(self.bg_audio_vol_display, value)
 
     def _sync_bg_audio_vol_slider_from_spin(self, value: float) -> None:
         # Value 0-MAX_INDIVIDUAL_GAIN maps to slider 0-100
         self.bg_audio_vol_slider.setValue(int(round((value / MAX_INDIVIDUAL_GAIN) * 100)))
         self._set_background_audio_volume(value)
+        self._update_volume_display_label(self.bg_audio_vol_display, self.bg_audio_vol_slider.value())
 
     def _set_background_audio_volume(self, value: float) -> None:
         step = self._get_selected_step()
@@ -1270,6 +1328,43 @@ class SessionBuilderWindow(QMainWindow):
         step.description = self.description_edit.toPlainText()
         self._refresh_step_model()
         self._invalidate_assembler()
+
+    def _on_use_global_crossfade_changed(self, state: int) -> None:
+        use_global = bool(state)
+        self._update_crossfade_editor_state(use_global)
+        step = self._get_selected_step()
+        if step is None:
+            return
+        if use_global:
+            step.crossfade_duration = None
+            self._apply_global_crossfade_display()
+        else:
+            step.crossfade_duration = float(self.step_crossfade_spin.value())
+        self._invalidate_assembler()
+
+    def _update_crossfade_editor_state(self, use_global: bool) -> None:
+        self.step_crossfade_spin.setEnabled(not use_global)
+        self.step_crossfade_slider.setEnabled(not use_global)
+        self.step_crossfade_curve_combo.setEnabled(not use_global)
+        if use_global:
+            self._apply_global_crossfade_display()
+
+    def _apply_global_crossfade_display(self) -> None:
+        value = float(self._session.crossfade_duration or 0.0)
+        self.step_crossfade_spin.blockSignals(True)
+        self.step_crossfade_slider.blockSignals(True)
+        self.step_crossfade_spin.setValue(value)
+        self.step_crossfade_slider.setValue(int(round(value * 10)))
+        self.step_crossfade_spin.blockSignals(False)
+        self.step_crossfade_slider.blockSignals(False)
+
+    def _refresh_global_crossfade_display_for_step(self) -> None:
+        if not self.step_crossfade_use_global.isChecked():
+            return
+        self._apply_global_crossfade_display()
+        step = self._get_selected_step()
+        if step is not None:
+            step.crossfade_duration = None
 
     # ------------------------------------------------------------------
     # Step list manipulation
