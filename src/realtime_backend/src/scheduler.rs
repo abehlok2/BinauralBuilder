@@ -19,6 +19,8 @@ pub trait Voice: Send + Sync {
     fn is_finished(&self) -> bool;
 }
 
+const STARTUP_FADE_SECONDS: f32 = 3.0;
+
 #[derive(Clone, Copy)]
 pub enum CrossfadeCurve {
     Linear,
@@ -90,6 +92,8 @@ pub struct TrackScheduler {
     pub noise_gain: f32,
     pub clip_gain: f32,
     pub master_gain: f32,
+    startup_fade_samples: usize,
+    startup_fade_enabled: bool,
     #[cfg(feature = "gpu")]
     pub gpu: GpuMixer,
     /// Temporary buffer for mixing per-voice output
@@ -129,7 +133,8 @@ impl BackgroundNoise {
     fn from_params(mut params: NoiseParams, base_gain: f32, device_rate: u32) -> Self {
         params.sample_rate = device_rate;
         let start_sample = (params.start_time.max(0.0) * device_rate as f32) as usize;
-        let fade_in_samples = (params.fade_in.max(0.0) * device_rate as f32) as usize;
+        // Global startup fading is applied elsewhere; keep the per-noise envelope immediate.
+        let fade_in_samples = 0;
         let fade_out_samples = (params.fade_out.max(0.0) * device_rate as f32) as usize;
         let duration_samples = if params.duration_seconds > 0.0 {
             Some((params.duration_seconds * device_rate as f32) as usize)
@@ -586,6 +591,9 @@ impl TrackScheduler {
             None
         };
 
+        let startup_fade_samples = (STARTUP_FADE_SECONDS * sample_rate) as usize;
+        let startup_fade_enabled = start_time <= 0.0;
+
         let mut sched = Self {
             track,
             current_sample: 0,
@@ -611,6 +619,8 @@ impl TrackScheduler {
             noise_gain: cfg.noise_gain,
             clip_gain: cfg.clip_gain,
             master_gain: 1.0,
+            startup_fade_samples,
+            startup_fade_enabled,
             #[cfg(feature = "gpu")]
             gpu: GpuMixer::new(),
             voice_temp: Vec::new(),
@@ -625,6 +635,7 @@ impl TrackScheduler {
 
     fn seek_samples(&mut self, abs_samples: usize) {
         self.absolute_sample = abs_samples as u64;
+        self.startup_fade_enabled = abs_samples == 0 && self.startup_fade_samples > 0;
 
         for clip in &mut self.clips {
             clip.position = if abs_samples > clip.start_sample {
@@ -721,8 +732,8 @@ impl TrackScheduler {
         // Must be done BEFORE updating self.track to compare old vs new config.
         let old_noise_cfg = self.track.background_noise.clone();
         let new_noise_cfg = &track.background_noise;
-        let can_reuse_noise =
-            self.background_noise.is_some() && noise_configs_compatible(&old_noise_cfg, new_noise_cfg);
+        let can_reuse_noise = self.background_noise.is_some()
+            && noise_configs_compatible(&old_noise_cfg, new_noise_cfg);
 
         self.track = track.clone();
 
@@ -1127,6 +1138,26 @@ impl TrackScheduler {
                 self.scratch.resize(buffer.len(), 0.0);
             }
             noise.mix_into(buffer, &mut self.scratch, start_sample);
+        }
+
+        if self.startup_fade_enabled && self.startup_fade_samples > 0 {
+            if start_sample >= self.startup_fade_samples {
+                self.startup_fade_enabled = false;
+            } else {
+                let fade_len = self.startup_fade_samples;
+                let frames_to_fade = (fade_len.saturating_sub(start_sample)).min(frames);
+                let fade_len_f = fade_len as f32;
+                for i in 0..frames_to_fade {
+                    let idx = i * 2;
+                    let absolute_idx = start_sample + i;
+                    let gain = (absolute_idx as f32 / fade_len_f).clamp(0.0, 1.0);
+                    buffer[idx] *= gain;
+                    buffer[idx + 1] *= gain;
+                }
+                if start_sample + frames >= fade_len {
+                    self.startup_fade_enabled = false;
+                }
+            }
         }
 
         for clip in &mut self.clips {

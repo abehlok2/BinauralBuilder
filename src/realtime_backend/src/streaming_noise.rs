@@ -203,6 +203,7 @@ struct FftNoiseGenerator {
     normal: Normal<f32>,
     renorm_gain: f32,
     smoothed_gain: f32,
+    renorm_initialized: bool,
     pre_rms_accum: f32,
     post_rms_accum: f32,
     rms_samples: usize,
@@ -319,6 +320,7 @@ impl FftNoiseGenerator {
             normal,
             renorm_gain: 1.0,
             smoothed_gain: 1.0,
+            renorm_initialized: false,
             pre_rms_accum: 0.0,
             post_rms_accum: 0.0,
             rms_samples: 0,
@@ -468,15 +470,28 @@ impl FftNoiseGenerator {
                 // in steady-state noise, which cause audible volume fluctuations.
                 let ratio_diff = (target_gain - self.renorm_gain).abs() / self.renorm_gain;
                 if ratio_diff > RENORM_HYSTERESIS_RATIO {
-                    // More aggressive smoothing (0.98/0.02 instead of 0.9/0.1) to
-                    // minimize volume fluctuations while still allowing necessary corrections
-                    self.renorm_gain = 0.98 * self.renorm_gain + 0.02 * target_gain;
+                    if !self.renorm_initialized {
+                        // Snap immediately on first measurement so startup volume reaches target quickly.
+                        self.renorm_gain = target_gain;
+                        self.smoothed_gain = target_gain;
+                        self.renorm_initialized = true;
+                    } else {
+                        // Blend toward the target more quickly to avoid long startup ramps.
+                        self.renorm_gain = 0.8 * self.renorm_gain + 0.2 * target_gain;
+                    }
                 }
                 // If within hysteresis band, don't adjust - keeps gain stable
             } else {
                 // Drift gain back toward unity if measurements are unreliable
-                // Use same aggressive smoothing for consistency
-                self.renorm_gain = 0.98 * self.renorm_gain + 0.02;
+                // Use faster blending to prevent drawn-out volume ramps on re-entry.
+                let fallback_target = 1.0;
+                if !self.renorm_initialized {
+                    self.renorm_gain = fallback_target;
+                    self.smoothed_gain = fallback_target;
+                    self.renorm_initialized = true;
+                } else {
+                    self.renorm_gain = 0.8 * self.renorm_gain + 0.2 * fallback_target;
+                }
             }
 
             self.pre_rms_accum = 0.0;
