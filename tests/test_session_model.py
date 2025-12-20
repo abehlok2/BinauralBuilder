@@ -113,3 +113,27 @@ def test_session_to_track_data_conversion(sample_presets, tmp_path):
 
     assert track_data["clips"][0]["file_path"] == str(tmp_path / "warmup.wav")
     assert track_data["clips"][0]["start"] == pytest.approx(0.0)
+
+
+def test_empty_sweeps_noise_preserved():
+    noise_catalog = build_noise_preset_catalog()
+    preset_id = "noise_preset:Brown Noise"
+    assert preset_id in noise_catalog
+
+    session = Session(
+        steps=[
+            SessionStep(
+                binaural_preset_id=None,
+                duration=30.0,
+                noise_preset_id=preset_id,
+            )
+        ]
+    )
+
+    track_data = session_to_track_data(session, {}, noise_catalog)
+    voices = track_data["steps"][0]["voices"]
+    noise_voice = next(v for v in voices if v.get("voice_type") == "noise")
+
+    assert noise_voice["synth_function_name"] == "noise_swept_notch"
+    assert "sweeps" in noise_voice["params"]
+    assert noise_voice["params"]["sweeps"] == []
