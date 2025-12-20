@@ -752,7 +752,7 @@ class SessionBuilderWindow(QMainWindow):
 
         # Status label with backend indicator
         backend_type = "Rust" if self._using_rust_backend else "Python"
-        self.status_label = QLabel(f"Ready (Streaming: {backend_type} backend)", central)
+        self.status_label = QLabel(f"Ready (Streaming)", central)
         self.status_label.setStyleSheet("color: #888888;")
         self.status_label.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
 
