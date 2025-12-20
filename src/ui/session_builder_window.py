@@ -368,6 +368,7 @@ class SessionBuilderWindow(QMainWindow):
         self.step_model.modelReset.connect(self._update_total_duration)
 
         step_buttons = QHBoxLayout()
+        step_buttons.setContentsMargins(0, 10, 0, 15)  # Add top and bottom padding
         self.add_step_btn = QPushButton(self.style().standardIcon(QStyle.SP_FileDialogNewFolder), "Add")
         self.add_step_btn.setToolTip("Insert a new step.")
         self.remove_step_btn = QPushButton(self.style().standardIcon(QStyle.SP_TrashIcon), "Remove")
@@ -421,24 +422,28 @@ class SessionBuilderWindow(QMainWindow):
         self.preset_combo.setToolTip("Select the binaural preset used for this step.")
         self.preset_combo.setMinimumWidth(100)
         self.preset_combo.setMaximumWidth(140)
+        self.preset_combo.setEditable(True)
+        self.preset_combo.lineEdit().setReadOnly(True)
+        self.preset_combo.lineEdit().setAlignment(Qt.AlignCenter)
         binaural_col_layout.addWidget(self.preset_combo, alignment=Qt.AlignCenter)
 
         self.binaural_vol_slider = QSlider(Qt.Vertical)
         self.binaural_vol_slider.setRange(0, 100)
-        self.binaural_vol_slider.setToolTip(f"Volume of the binaural preset (0-100%, max {MAX_INDIVIDUAL_GAIN:.2f}).")
+        self.binaural_vol_slider.setToolTip("Volume of the binaural preset (0-100%).")
         self.binaural_vol_slider.setMinimumHeight(120)
         self.binaural_vol_slider.setFixedWidth(30)
         binaural_col_layout.addWidget(self.binaural_vol_slider, alignment=Qt.AlignCenter)
 
         self.binaural_vol_display = QLabel("0.00")
         self.binaural_vol_display.setAlignment(Qt.AlignCenter)
+        self.binaural_vol_display.setVisible(False)
         binaural_col_layout.addWidget(self.binaural_vol_display, alignment=Qt.AlignCenter)
 
         self.binaural_vol_spin = QDoubleSpinBox()
         self.binaural_vol_spin.setDecimals(2)
-        self.binaural_vol_spin.setRange(0.0, MAX_INDIVIDUAL_GAIN)
+        self.binaural_vol_spin.setRange(0.0, 1.0)
         self.binaural_vol_spin.setSingleStep(0.02)
-        self.binaural_vol_spin.setToolTip(f"Precise binaural volume (0.0-{MAX_INDIVIDUAL_GAIN:.2f}).")
+        self.binaural_vol_spin.setToolTip("Binaural volume (0.0-1.0).")
         self.binaural_vol_spin.setFixedWidth(70)
         self.binaural_vol_spin.setAlignment(Qt.AlignCenter)
         self.binaural_vol_spin.setButtonSymbols(QDoubleSpinBox.NoButtons)
@@ -462,24 +467,28 @@ class SessionBuilderWindow(QMainWindow):
         self.noise_combo.setToolTip("Optional noise preset blended with the step.")
         self.noise_combo.setMinimumWidth(100)
         self.noise_combo.setMaximumWidth(140)
+        self.noise_combo.setEditable(True)
+        self.noise_combo.lineEdit().setReadOnly(True)
+        self.noise_combo.lineEdit().setAlignment(Qt.AlignCenter)
         noise_col_layout.addWidget(self.noise_combo, alignment=Qt.AlignCenter)
 
         self.noise_vol_slider = QSlider(Qt.Vertical)
         self.noise_vol_slider.setRange(0, 100)
-        self.noise_vol_slider.setToolTip(f"Volume of the noise preset (0-100%, max {MAX_INDIVIDUAL_GAIN:.2f}).")
+        self.noise_vol_slider.setToolTip("Volume of the noise preset (0-100%).")
         self.noise_vol_slider.setMinimumHeight(120)
         self.noise_vol_slider.setFixedWidth(30)
         noise_col_layout.addWidget(self.noise_vol_slider, alignment=Qt.AlignCenter)
 
         self.noise_vol_display = QLabel("0.00")
         self.noise_vol_display.setAlignment(Qt.AlignCenter)
+        self.noise_vol_display.setVisible(False)
         noise_col_layout.addWidget(self.noise_vol_display, alignment=Qt.AlignCenter)
 
         self.noise_vol_spin = QDoubleSpinBox()
         self.noise_vol_spin.setDecimals(2)
-        self.noise_vol_spin.setRange(0.0, MAX_INDIVIDUAL_GAIN)
+        self.noise_vol_spin.setRange(0.0, 1.0)
         self.noise_vol_spin.setSingleStep(0.02)
-        self.noise_vol_spin.setToolTip(f"Precise noise volume (0.0-{MAX_INDIVIDUAL_GAIN:.2f}).")
+        self.noise_vol_spin.setToolTip("Noise volume (0.0-1.0).")
         self.noise_vol_spin.setFixedWidth(70)
         self.noise_vol_spin.setAlignment(Qt.AlignCenter)
         self.noise_vol_spin.setButtonSymbols(QDoubleSpinBox.NoButtons)
@@ -513,20 +522,21 @@ class SessionBuilderWindow(QMainWindow):
 
         self.bg_audio_vol_slider = QSlider(Qt.Vertical)
         self.bg_audio_vol_slider.setRange(0, 100)
-        self.bg_audio_vol_slider.setToolTip(f"Volume of the background audio (0-100%, max {MAX_INDIVIDUAL_GAIN:.2f}).")
+        self.bg_audio_vol_slider.setToolTip("Volume of the background audio (0-100%).")
         self.bg_audio_vol_slider.setMinimumHeight(120)
         self.bg_audio_vol_slider.setFixedWidth(30)
         bg_col_layout.addWidget(self.bg_audio_vol_slider, alignment=Qt.AlignCenter)
 
         self.bg_audio_vol_display = QLabel("0.00")
         self.bg_audio_vol_display.setAlignment(Qt.AlignCenter)
+        self.bg_audio_vol_display.setVisible(False)
         bg_col_layout.addWidget(self.bg_audio_vol_display, alignment=Qt.AlignCenter)
 
         self.bg_audio_vol_spin = QDoubleSpinBox()
         self.bg_audio_vol_spin.setDecimals(2)
-        self.bg_audio_vol_spin.setRange(0.0, MAX_INDIVIDUAL_GAIN)
+        self.bg_audio_vol_spin.setRange(0.0, 1.0)
         self.bg_audio_vol_spin.setSingleStep(0.02)
-        self.bg_audio_vol_spin.setToolTip(f"Precise background audio volume (0.0-{MAX_INDIVIDUAL_GAIN:.2f}).")
+        self.bg_audio_vol_spin.setToolTip("Background audio volume (0.0-1.0).")
         self.bg_audio_vol_spin.setFixedWidth(70)
         self.bg_audio_vol_spin.setAlignment(Qt.AlignCenter)
         self.bg_audio_vol_spin.setButtonSymbols(QDoubleSpinBox.NoButtons)
@@ -559,29 +569,34 @@ class SessionBuilderWindow(QMainWindow):
         duration_layout.addWidget(self.duration_spin, alignment=Qt.AlignCenter)
         bottom_layout.addWidget(duration_widget)
 
-        # Crossfade
+        # Crossfade - label centered above spin box, checkbox to the right
         crossfade_widget = QWidget()
-        crossfade_layout = QVBoxLayout(crossfade_widget)
-        crossfade_layout.setContentsMargins(0, 0, 0, 0)
-        crossfade_layout.setSpacing(4)
+        crossfade_outer_layout = QHBoxLayout(crossfade_widget)
+        crossfade_outer_layout.setContentsMargins(0, 0, 0, 0)
+        crossfade_outer_layout.setSpacing(6)
+        crossfade_outer_layout.setAlignment(Qt.AlignBottom)
+
+        # Column with label + spin box
+        crossfade_spin_col = QWidget()
+        crossfade_spin_layout = QVBoxLayout(crossfade_spin_col)
+        crossfade_spin_layout.setContentsMargins(0, 0, 0, 0)
+        crossfade_spin_layout.setSpacing(4)
         crossfade_label = QLabel("Crossfade")
         crossfade_label.setAlignment(Qt.AlignCenter)
-        crossfade_layout.addWidget(crossfade_label)
-        crossfade_row = QHBoxLayout()
-        crossfade_row.setContentsMargins(0, 0, 0, 0)
-        crossfade_row.setSpacing(6)
-        crossfade_row.setAlignment(Qt.AlignCenter)
+        crossfade_spin_layout.addWidget(crossfade_label)
         self.step_crossfade_spin = QDoubleSpinBox()
         self.step_crossfade_spin.setDecimals(2)
         self.step_crossfade_spin.setRange(0.0, 30.0)
         self.step_crossfade_spin.setSingleStep(0.1)
         self.step_crossfade_spin.setToolTip("Crossfade override for this step (seconds).")
         self.step_crossfade_spin.setFixedWidth(80)
-        crossfade_row.addWidget(self.step_crossfade_spin)
+        crossfade_spin_layout.addWidget(self.step_crossfade_spin, alignment=Qt.AlignCenter)
+        crossfade_outer_layout.addWidget(crossfade_spin_col)
+
+        # Checkbox to the right
         self.step_crossfade_use_global = QCheckBox("Use Global")
         self.step_crossfade_use_global.setToolTip("Use the session's global crossfade duration for this step.")
-        crossfade_row.addWidget(self.step_crossfade_use_global)
-        crossfade_layout.addLayout(crossfade_row)
+        crossfade_outer_layout.addWidget(self.step_crossfade_use_global, alignment=Qt.AlignBottom)
 
         # Hidden slider for compatibility (not displayed in new UI)
         self.step_crossfade_slider = QSlider(Qt.Horizontal)
@@ -1032,17 +1047,19 @@ class SessionBuilderWindow(QMainWindow):
             self.preset_combo.setCurrentIndex(0)
 
         binaural_vol = getattr(step, "binaural_volume", MAX_INDIVIDUAL_GAIN)
-        # Slider 0-100 maps to 0-MAX_INDIVIDUAL_GAIN
-        self.binaural_vol_slider.setValue(int(round((binaural_vol / MAX_INDIVIDUAL_GAIN) * 100)))
-        self.binaural_vol_spin.setValue(binaural_vol)
+        # Internal value (0-MAX_INDIVIDUAL_GAIN) -> display value (0-1.0)
+        normalized_binaural = binaural_vol / MAX_INDIVIDUAL_GAIN
+        self.binaural_vol_slider.setValue(int(round(normalized_binaural * 100)))
+        self.binaural_vol_spin.setValue(normalized_binaural)
 
         idx = self.noise_combo.findData(step.noise_preset_id)
         self.noise_combo.setCurrentIndex(idx if idx >= 0 else 0)
 
         noise_vol = getattr(step, "noise_volume", MAX_INDIVIDUAL_GAIN)
-        # Slider 0-100 maps to 0-MAX_INDIVIDUAL_GAIN
-        self.noise_vol_slider.setValue(int(round((noise_vol / MAX_INDIVIDUAL_GAIN) * 100)))
-        self.noise_vol_spin.setValue(noise_vol)
+        # Internal value (0-MAX_INDIVIDUAL_GAIN) -> display value (0-1.0)
+        normalized_noise = noise_vol / MAX_INDIVIDUAL_GAIN
+        self.noise_vol_slider.setValue(int(round(normalized_noise * 100)))
+        self.noise_vol_spin.setValue(normalized_noise)
 
         self.duration_spin.setValue(step.duration)
         crossfade_duration = step.crossfade_duration if step.crossfade_duration is not None else 0.0
@@ -1064,8 +1081,10 @@ class SessionBuilderWindow(QMainWindow):
 
         # Load background audio volume
         bg_audio_vol = getattr(step, "background_audio_volume", MAX_INDIVIDUAL_GAIN)
-        self.bg_audio_vol_slider.setValue(int(round((bg_audio_vol / MAX_INDIVIDUAL_GAIN) * 100)))
-        self.bg_audio_vol_spin.setValue(bg_audio_vol)
+        # Internal value (0-MAX_INDIVIDUAL_GAIN) -> display value (0-1.0)
+        normalized_bg = bg_audio_vol / MAX_INDIVIDUAL_GAIN
+        self.bg_audio_vol_slider.setValue(int(round(normalized_bg * 100)))
+        self.bg_audio_vol_spin.setValue(normalized_bg)
 
         # Load background audio extend flag (default True for backwards compatibility)
         bg_audio_extend = getattr(step, "background_audio_extend", True)
@@ -1103,9 +1122,9 @@ class SessionBuilderWindow(QMainWindow):
         else:
             self.preset_combo.setCurrentIndex(-1)
 
-        # Default to max volume (slider at 100 = MAX_INDIVIDUAL_GAIN)
+        # Default to max volume (slider at 100, spin at 1.0)
         self.binaural_vol_slider.setValue(100)
-        self.binaural_vol_spin.setValue(MAX_INDIVIDUAL_GAIN)
+        self.binaural_vol_spin.setValue(1.0)
 
         # Noise preset selection ("None" entry is index 0)
         if default_noise:
@@ -1114,9 +1133,9 @@ class SessionBuilderWindow(QMainWindow):
         else:
             self.noise_combo.setCurrentIndex(0 if self.noise_combo.count() else -1)
 
-        # Default to max volume (slider at 100 = MAX_INDIVIDUAL_GAIN)
+        # Default to max volume (slider at 100, spin at 1.0)
         self.noise_vol_slider.setValue(100)
-        self.noise_vol_spin.setValue(MAX_INDIVIDUAL_GAIN)
+        self.noise_vol_spin.setValue(1.0)
         self.duration_spin.setValue(default_duration)
         self.step_crossfade_slider.setValue(0)
         self.step_crossfade_spin.setValue(0.0)
@@ -1127,7 +1146,7 @@ class SessionBuilderWindow(QMainWindow):
         self.bg_audio_edit.clear()
         self._update_bg_audio_btn_text("")
         self.bg_audio_vol_slider.setValue(100)
-        self.bg_audio_vol_spin.setValue(MAX_INDIVIDUAL_GAIN)
+        self.bg_audio_vol_spin.setValue(1.0)
         self.bg_audio_extend_checkbox.setChecked(True)
         self.description_edit.blockSignals(True)
         self.description_edit.clear()
@@ -1187,17 +1206,17 @@ class SessionBuilderWindow(QMainWindow):
         self._invalidate_assembler()
 
     def _sync_noise_vol_spin_from_slider(self, value: int) -> None:
-        # Slider 0-100 maps to 0-MAX_INDIVIDUAL_GAIN
-        vol = (value / 100.0) * MAX_INDIVIDUAL_GAIN
-        self.noise_vol_spin.setValue(vol)
-        self._set_noise_volume(vol)
-        self._update_volume_display_label(self.noise_vol_display, value)
+        # Slider 0-100 maps to spin 0-1.0 (display), which maps to 0-MAX_INDIVIDUAL_GAIN (internal)
+        normalized = value / 100.0
+        self.noise_vol_spin.setValue(normalized)
+        internal_vol = normalized * MAX_INDIVIDUAL_GAIN
+        self._set_noise_volume(internal_vol)
 
     def _sync_noise_vol_slider_from_spin(self, value: float) -> None:
-        # Value 0-MAX_INDIVIDUAL_GAIN maps to slider 0-100
-        self.noise_vol_slider.setValue(int(round((value / MAX_INDIVIDUAL_GAIN) * 100)))
-        self._set_noise_volume(value)
-        self._update_volume_display_label(self.noise_vol_display, self.noise_vol_slider.value())
+        # Spin 0-1.0 maps to slider 0-100
+        self.noise_vol_slider.setValue(int(round(value * 100)))
+        internal_vol = value * MAX_INDIVIDUAL_GAIN
+        self._set_noise_volume(internal_vol)
 
     def _set_noise_volume(self, value: float) -> None:
         step = self._get_selected_step()
@@ -1207,17 +1226,17 @@ class SessionBuilderWindow(QMainWindow):
         self._invalidate_assembler()
 
     def _sync_binaural_vol_spin_from_slider(self, value: int) -> None:
-        # Slider 0-100 maps to 0-MAX_INDIVIDUAL_GAIN
-        vol = (value / 100.0) * MAX_INDIVIDUAL_GAIN
-        self.binaural_vol_spin.setValue(vol)
-        self._set_binaural_volume(vol)
-        self._update_volume_display_label(self.binaural_vol_display, value)
+        # Slider 0-100 maps to spin 0-1.0 (display), which maps to 0-MAX_INDIVIDUAL_GAIN (internal)
+        normalized = value / 100.0
+        self.binaural_vol_spin.setValue(normalized)
+        internal_vol = normalized * MAX_INDIVIDUAL_GAIN
+        self._set_binaural_volume(internal_vol)
 
     def _sync_binaural_vol_slider_from_spin(self, value: float) -> None:
-        # Value 0-MAX_INDIVIDUAL_GAIN maps to slider 0-100
-        self.binaural_vol_slider.setValue(int(round((value / MAX_INDIVIDUAL_GAIN) * 100)))
-        self._set_binaural_volume(value)
-        self._update_volume_display_label(self.binaural_vol_display, self.binaural_vol_slider.value())
+        # Spin 0-1.0 maps to slider 0-100
+        self.binaural_vol_slider.setValue(int(round(value * 100)))
+        internal_vol = value * MAX_INDIVIDUAL_GAIN
+        self._set_binaural_volume(internal_vol)
 
     def _set_binaural_volume(self, value: float) -> None:
         step = self._get_selected_step()
@@ -1300,17 +1319,17 @@ class SessionBuilderWindow(QMainWindow):
             self.bg_audio_btn.setText("None")
 
     def _sync_bg_audio_vol_spin_from_slider(self, value: int) -> None:
-        # Slider 0-100 maps to 0-MAX_INDIVIDUAL_GAIN
-        vol = (value / 100.0) * MAX_INDIVIDUAL_GAIN
-        self.bg_audio_vol_spin.setValue(vol)
-        self._set_background_audio_volume(vol)
-        self._update_volume_display_label(self.bg_audio_vol_display, value)
+        # Slider 0-100 maps to spin 0-1.0 (display), which maps to 0-MAX_INDIVIDUAL_GAIN (internal)
+        normalized = value / 100.0
+        self.bg_audio_vol_spin.setValue(normalized)
+        internal_vol = normalized * MAX_INDIVIDUAL_GAIN
+        self._set_background_audio_volume(internal_vol)
 
     def _sync_bg_audio_vol_slider_from_spin(self, value: float) -> None:
-        # Value 0-MAX_INDIVIDUAL_GAIN maps to slider 0-100
-        self.bg_audio_vol_slider.setValue(int(round((value / MAX_INDIVIDUAL_GAIN) * 100)))
-        self._set_background_audio_volume(value)
-        self._update_volume_display_label(self.bg_audio_vol_display, self.bg_audio_vol_slider.value())
+        # Spin 0-1.0 maps to slider 0-100
+        self.bg_audio_vol_slider.setValue(int(round(value * 100)))
+        internal_vol = value * MAX_INDIVIDUAL_GAIN
+        self._set_background_audio_volume(internal_vol)
 
     def _set_background_audio_volume(self, value: float) -> None:
         step = self._get_selected_step()
@@ -1406,12 +1425,12 @@ class SessionBuilderWindow(QMainWindow):
             binaural_preset_id=preset_id,  # Can be None for no binaural
             duration=self.duration_spin.value(),
             noise_preset_id=noise_id,
-            noise_volume=self.noise_vol_spin.value(),
-            binaural_volume=self.binaural_vol_spin.value(),
+            noise_volume=self.noise_vol_spin.value() * MAX_INDIVIDUAL_GAIN,  # Convert display (0-1) to internal
+            binaural_volume=self.binaural_vol_spin.value() * MAX_INDIVIDUAL_GAIN,  # Convert display (0-1) to internal
             crossfade_duration=None,
             crossfade_curve=None,
             background_audio_path=self.bg_audio_edit.text() or None,
-            background_audio_volume=self.bg_audio_vol_spin.value(),
+            background_audio_volume=self.bg_audio_vol_spin.value() * MAX_INDIVIDUAL_GAIN,  # Convert display (0-1) to internal
             background_audio_extend=self.bg_audio_extend_checkbox.isChecked(),
             description=self.description_edit.toPlainText(),
         )
