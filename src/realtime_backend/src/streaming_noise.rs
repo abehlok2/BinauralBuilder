@@ -143,6 +143,44 @@ fn biquad_block(block: &mut [f64], coeffs: &Coeffs, st: &mut BiquadState64) {
     st.z2 = z2;
 }
 
+/// Apply a biquad with time-varying coefficients per sample while keeping state continuous.
+fn biquad_time_varying_block(
+    block: &mut [f64],
+    freq_series: &[f64],
+    q_series: &[f64],
+    casc_counts: &[usize],
+    state: &mut [BiquadState64],
+    sample_rate: f64,
+) {
+    let n = block.len();
+    let max_stage = state.len();
+    for i in 0..n {
+        let mut casc = casc_counts[i];
+        if casc < 1 {
+            casc = 1;
+        } else if casc > max_stage {
+            casc = max_stage;
+        }
+
+        let freq = freq_series[i];
+        if !freq.is_finite() || freq <= 0.0 || freq >= sample_rate * 0.49 {
+            continue;
+        }
+        let q = q_series[i].max(1e-6);
+        let coeffs = notch_coeffs_f64(freq, q, sample_rate);
+
+        let mut sample = block[i];
+        for stage in 0..casc {
+            let st = &mut state[stage];
+            let out = sample * coeffs.b0 + st.z1;
+            st.z1 = sample * coeffs.b1 - out * coeffs.a1 + st.z2;
+            st.z2 = sample * coeffs.b2 - out * coeffs.a2;
+            sample = out;
+        }
+        block[i] = sample;
+    }
+}
+
 // --- FFT Based Noise Generator (Matches Python's ColoredNoiseGenerator) ---
 
 struct FftNoiseGenerator {
@@ -448,8 +486,8 @@ impl FftNoiseGenerator {
 
         // Apply per-sample gain smoothing to prevent clicking from abrupt gain changes.
         // This smoothly transitions the applied gain toward renorm_gain over time.
-        self.smoothed_gain =
-            GAIN_SMOOTHING_COEFF * self.smoothed_gain + (1.0 - GAIN_SMOOTHING_COEFF) * self.renorm_gain;
+        self.smoothed_gain = GAIN_SMOOTHING_COEFF * self.smoothed_gain
+            + (1.0 - GAIN_SMOOTHING_COEFF) * self.renorm_gain;
 
         post * self.smoothed_gain
     }
@@ -460,9 +498,7 @@ impl FftNoiseGenerator {
 fn hann_window(size: usize) -> Vec<f64> {
     // np.hanning(N) = 0.5 - 0.5 * cos(2*pi*n/(N-1)), n = 0..N-1
     (0..size)
-        .map(|n| {
-            0.5 - 0.5 * (2.0 * std::f64::consts::PI * n as f64 / (size as f64 - 1.0)).cos()
-        })
+        .map(|n| 0.5 - 0.5 * (2.0 * std::f64::consts::PI * n as f64 / (size as f64 - 1.0)).cos())
         .collect()
 }
 
@@ -785,27 +821,32 @@ impl StreamingNoise {
         let acc_size = self.ola.out_acc_l.len();
         let block_start_idx = self.ola.absolute_block_start;
 
-        // Get transition fraction at block center
-        let block_center_idx = block_start_idx + BLOCK_SIZE / 2;
-        let t = self.transition_fraction(block_center_idx);
+        // Precompute per-sample transition and LFO values to smoothly vary coefficients.
+        let mut t_vals = vec![0.0f32; BLOCK_SIZE];
+        let mut lfo_main_l = vec![0.0f64; BLOCK_SIZE];
+        let mut lfo_main_r = vec![0.0f64; BLOCK_SIZE];
+        let mut lfo_extra_l = vec![0.0f64; BLOCK_SIZE];
+        let mut lfo_extra_r = vec![0.0f64; BLOCK_SIZE];
+        let do_extra = self.start_intra_offset.abs() > 1e-6 || self.end_intra_offset.abs() > 1e-6;
 
-        // Interpolate LFO parameters at block center
-        let lfo_freq = self.interpolate_lfo_freq(t);
-        let phase_offset = self.interpolate_phase_offset(t);
-        let intra_offset = self.interpolate_intra_offset(t);
+        for i in 0..BLOCK_SIZE {
+            let abs_idx = block_start_idx + i;
+            let t = self.transition_fraction(abs_idx);
+            t_vals[i] = t;
 
-        // Compute LFO phase at block center for L and R channels
-        // Python: phase = 2*pi*lfo_freq*t + phase_offset, where phase_offset is in radians
-        // For L channel: no extra offset (base phase)
-        // For R channel: add lfo_phase_offset
-        let l_phase_base = self.compute_lfo_phase(block_center_idx, lfo_freq, 0.0);
-        let r_phase_base = self.compute_lfo_phase(block_center_idx, lfo_freq, phase_offset);
+            let lfo_freq = self.interpolate_lfo_freq(t);
+            let phase_offset = self.interpolate_phase_offset(t);
+            let intra_offset = self.interpolate_intra_offset(t);
 
-        // Get LFO values at block center (frozen for entire block)
-        let lfo_l_main = lfo_value(l_phase_base, &self.lfo_waveform);
-        let lfo_r_main = lfo_value(r_phase_base, &self.lfo_waveform);
-        let lfo_l_extra = lfo_value(l_phase_base + intra_offset, &self.lfo_waveform);
-        let lfo_r_extra = lfo_value(r_phase_base + intra_offset, &self.lfo_waveform);
+            let l_phase = self.compute_lfo_phase(abs_idx, lfo_freq, 0.0);
+            let r_phase = self.compute_lfo_phase(abs_idx, lfo_freq, phase_offset);
+            lfo_main_l[i] = lfo_value(l_phase, &self.lfo_waveform) as f64;
+            lfo_main_r[i] = lfo_value(r_phase, &self.lfo_waveform) as f64;
+            if do_extra {
+                lfo_extra_l[i] = lfo_value(l_phase + intra_offset, &self.lfo_waveform) as f64;
+                lfo_extra_r[i] = lfo_value(r_phase + intra_offset, &self.lfo_waveform) as f64;
+            }
+        }
 
         // Copy input block from ring buffer and apply Hann window
         // Also compute RMS of the input for later compensation (matching Python's rms_in)
@@ -822,62 +863,85 @@ impl StreamingNoise {
         }
         let rms_in = (sum_sq_in / BLOCK_SIZE as f64).sqrt();
 
-        // Apply notch filters for each sweep (coefficients frozen per block at block center)
-        // NOTE: We keep per-stage filter state across blocks to avoid block-edge ringing spikes.
+        // Apply notch filters for each sweep using smoothly changing coefficients.
+        // We keep per-stage filter state across blocks and vary coefficients per-sample
+        // to avoid block-edge clicks when parameters move quickly.
+        let mut min_series = vec![0.0f64; BLOCK_SIZE];
+        let mut max_series = vec![0.0f64; BLOCK_SIZE];
+        let mut q_series = vec![0.0f64; BLOCK_SIZE];
+        let mut casc_series = vec![0usize; BLOCK_SIZE];
+        let mut notch_freq_l = vec![0.0f64; BLOCK_SIZE];
+        let mut notch_freq_r = vec![0.0f64; BLOCK_SIZE];
+        let mut notch_freq_l_extra = vec![0.0f64; BLOCK_SIZE];
+        let mut notch_freq_r_extra = vec![0.0f64; BLOCK_SIZE];
+
         for (si, sp) in self.sweep_params.iter().enumerate() {
             let rt = &mut self.sweep_runtime[si];
-            let (min_freq, max_freq, q, casc) = sp.interpolate_at(t);
-            let casc = casc.min(rt.max_casc);
-            let center_freq = (min_freq + max_freq) * 0.5;
-            let freq_range = (max_freq - min_freq) * 0.5;
+            for i in 0..BLOCK_SIZE {
+                let t = t_vals[i];
+                let min_f =
+                    sp.start_min as f64 + (sp.end_min as f64 - sp.start_min as f64) * t as f64;
+                let max_f =
+                    sp.start_max as f64 + (sp.end_max as f64 - sp.start_max as f64) * t as f64;
+                let q = sp.start_q as f64 + (sp.end_q as f64 - sp.start_q as f64) * t as f64;
+                let casc_f =
+                    sp.start_casc as f64 + (sp.end_casc as f64 - sp.start_casc as f64) * t as f64;
+                min_series[i] = min_f;
+                max_series[i] = max_f;
+                q_series[i] = q;
+                casc_series[i] = casc_f.round().max(1.0) as usize;
+            }
 
-            // Left channel - main pass
-            let notch_freq_l_main = center_freq + freq_range * lfo_l_main;
-            if notch_freq_l_main > 0.0 && notch_freq_l_main < self.sample_rate * 0.49 {
-                let coeffs =
-                    notch_coeffs_f64(notch_freq_l_main as f64, q as f64, self.sample_rate as f64);
-                for stage in 0..casc {
-                    biquad_block(&mut self.ola.block_l, &coeffs, &mut rt.l_main[stage]);
+            for i in 0..BLOCK_SIZE {
+                let center_freq = (min_series[i] + max_series[i]) * 0.5;
+                let freq_range = (max_series[i] - min_series[i]) * 0.5;
+                notch_freq_l[i] = center_freq + freq_range * lfo_main_l[i];
+                notch_freq_r[i] = center_freq + freq_range * lfo_main_r[i];
+                if do_extra {
+                    notch_freq_l_extra[i] = center_freq + freq_range * lfo_extra_l[i];
+                    notch_freq_r_extra[i] = center_freq + freq_range * lfo_extra_r[i];
                 }
             }
 
-            // Right channel - main pass
-            let notch_freq_r_main = center_freq + freq_range * lfo_r_main;
-            if notch_freq_r_main > 0.0 && notch_freq_r_main < self.sample_rate * 0.49 {
-                let coeffs =
-                    notch_coeffs_f64(notch_freq_r_main as f64, q as f64, self.sample_rate as f64);
-                for stage in 0..casc {
-                    biquad_block(&mut self.ola.block_r, &coeffs, &mut rt.r_main[stage]);
-                }
-            }
+            let casc_series_clamped: Vec<usize> = casc_series
+                .iter()
+                .map(|c| (*c).min(rt.max_casc).max(1))
+                .collect();
 
-            // Extra pass if intra_offset is non-zero
-            if intra_offset.abs() > 1e-6 {
-                // Left channel - extra pass
-                let notch_freq_l_extra = center_freq + freq_range * lfo_l_extra;
-                if notch_freq_l_extra > 0.0 && notch_freq_l_extra < self.sample_rate * 0.49 {
-                    let coeffs = notch_coeffs_f64(
-                        notch_freq_l_extra as f64,
-                        q as f64,
-                        self.sample_rate as f64,
-                    );
-                    for stage in 0..casc {
-                        biquad_block(&mut self.ola.block_l, &coeffs, &mut rt.l_extra[stage]);
-                    }
-                }
+            biquad_time_varying_block(
+                &mut self.ola.block_l,
+                &notch_freq_l,
+                &q_series,
+                &casc_series_clamped,
+                &mut rt.l_main,
+                self.sample_rate as f64,
+            );
+            biquad_time_varying_block(
+                &mut self.ola.block_r,
+                &notch_freq_r,
+                &q_series,
+                &casc_series_clamped,
+                &mut rt.r_main,
+                self.sample_rate as f64,
+            );
 
-                // Right channel - extra pass
-                let notch_freq_r_extra = center_freq + freq_range * lfo_r_extra;
-                if notch_freq_r_extra > 0.0 && notch_freq_r_extra < self.sample_rate * 0.49 {
-                    let coeffs = notch_coeffs_f64(
-                        notch_freq_r_extra as f64,
-                        q as f64,
-                        self.sample_rate as f64,
-                    );
-                    for stage in 0..casc {
-                        biquad_block(&mut self.ola.block_r, &coeffs, &mut rt.r_extra[stage]);
-                    }
-                }
+            if do_extra {
+                biquad_time_varying_block(
+                    &mut self.ola.block_l,
+                    &notch_freq_l_extra,
+                    &q_series,
+                    &casc_series_clamped,
+                    &mut rt.l_extra,
+                    self.sample_rate as f64,
+                );
+                biquad_time_varying_block(
+                    &mut self.ola.block_r,
+                    &notch_freq_r_extra,
+                    &q_series,
+                    &casc_series_clamped,
+                    &mut rt.r_extra,
+                    self.sample_rate as f64,
+                );
             }
         }
 
