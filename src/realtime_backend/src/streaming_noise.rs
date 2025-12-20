@@ -807,18 +807,18 @@ impl StreamingNoise {
         let lfo_l_extra = lfo_value(l_phase_base + intra_offset, &self.lfo_waveform);
         let lfo_r_extra = lfo_value(r_phase_base + intra_offset, &self.lfo_waveform);
 
-        // Copy input block from ring buffer and apply Hann window
-        // Also compute RMS of the input for later compensation (matching Python's rms_in)
+        // Copy input block from ring buffer WITHOUT windowing.
+        // The window is applied AFTER filtering to avoid IIR filter state discontinuities.
+        // Also compute RMS of the unwindowed input for later compensation.
         let mut sum_sq_in: f64 = 0.0;
         for i in 0..BLOCK_SIZE {
             let ring_idx =
                 (self.ola.input_write_pos + BLOCK_SIZE - self.ola.input_samples_buffered + i)
                     % BLOCK_SIZE;
             let base = self.ola.input_ring[ring_idx] as f64;
-            let windowed = base * self.ola.window[i];
-            self.ola.block_l[i] = windowed;
-            self.ola.block_r[i] = windowed;
-            sum_sq_in += windowed * windowed;
+            self.ola.block_l[i] = base;
+            self.ola.block_r[i] = base;
+            sum_sq_in += base * base;
         }
         let rms_in = (sum_sq_in / BLOCK_SIZE as f64).sqrt();
 
@@ -931,7 +931,14 @@ impl StreamingNoise {
             }
         }
 
-        // Overlap-add: accumulate filtered blocks and window into ring accumulators
+        // Apply window AFTER filtering (filter-before-window architecture).
+        // This ensures the IIR filter sees a continuous signal without windowing artifacts.
+        for i in 0..BLOCK_SIZE {
+            self.ola.block_l[i] *= self.ola.window[i];
+            self.ola.block_r[i] *= self.ola.window[i];
+        }
+
+        // Overlap-add: accumulate windowed filtered blocks into ring accumulators
         let write_base = self.ola.acc_write_pos;
         for i in 0..BLOCK_SIZE {
             let acc_idx = (write_base + i) % acc_size;

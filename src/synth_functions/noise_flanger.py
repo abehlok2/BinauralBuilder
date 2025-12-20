@@ -842,6 +842,15 @@ def _apply_deep_swept_notches_varying(
     num_blocks = (n_samples + hop_size - 1) // hop_size
     num_sweeps = len(min_freq_arrays)
 
+    # Initialize persistent filter states for each sweep.
+    # For varying mode, we need to track max cascade count per sweep.
+    # Structure: filter_states[sweep_idx][cascade_idx] = zi
+    max_cascades = []
+    for i in range(num_sweeps):
+        max_casc = int(np.max(cascade_count_arrays[i]))
+        max_cascades.append(max(1, max_casc))
+    filter_states = [[None] * max_cascades[i] for i in range(num_sweeps)]
+
     for block_idx in range(num_blocks):
         start_idx = block_idx * hop_size
         end_idx = min(start_idx + block_size, n_samples)
@@ -849,11 +858,12 @@ def _apply_deep_swept_notches_varying(
         if actual_block_size < 100:
             continue
 
+        # Copy block WITHOUT windowing - filter sees continuous signal
         block = np.zeros(block_size)
         block[:actual_block_size] = output[start_idx:end_idx]
 
-        windowed_block = block * window
-        filtered_block = windowed_block.copy()
+        # Filter the unwindowed block (filter-before-window architecture)
+        filtered_block = block.copy()
 
         center_idx = start_idx + actual_block_size // 2
 
@@ -864,20 +874,28 @@ def _apply_deep_swept_notches_varying(
             freq_range = (max_f - min_f) / 2.0
             notch_freq = center_freq + freq_range * lfo_array[center_idx]
 
-            if notch_freq >= sample_rate * 0.49:
+            if notch_freq >= sample_rate * 0.49 or notch_freq <= 0:
                 continue
 
             q_val = float(notch_q_arrays[i][center_idx])
             casc = int(round(cascade_count_arrays[i][center_idx]))
-            casc = max(1, casc)
-            for _ in range(casc):
+            casc = max(1, min(casc, max_cascades[i]))
+            for casc_idx in range(casc):
                 try:
                     b, a = signal.iirnotch(notch_freq, q_val, sample_rate)
-                    filtered_block = signal.lfilter(b, a, filtered_block)
+                    # Use persistent filter state to avoid block-edge transients
+                    zi = filter_states[i][casc_idx]
+                    if zi is None:
+                        zi = signal.lfilter_zi(b, a) * filtered_block[0]
+                    filtered_block, zi = signal.lfilter(b, a, filtered_block, zi=zi)
+                    filter_states[i][casc_idx] = zi
                 except ValueError:
                     continue
 
-        output_accumulator[start_idx : start_idx + block_size] += filtered_block
+        # Apply window AFTER filtering to ensure proper OLA reconstruction
+        windowed_filtered = filtered_block * window
+
+        output_accumulator[start_idx : start_idx + block_size] += windowed_filtered
         window_accumulator[start_idx : start_idx + block_size] += window
 
     valid_idx = window_accumulator > 1e-8
@@ -975,6 +993,15 @@ def _apply_deep_swept_notches_single_phase(
 
     num_blocks = (n_samples + hop_size - 1) // hop_size
 
+    # Initialize persistent filter states for each sweep and cascade stage.
+    # This prevents transients at block boundaries by maintaining filter memory.
+    # Structure: filter_states[sweep_idx][cascade_idx] = zi (filter state array)
+    filter_states = []
+    for sweep_idx in range(len(filter_sweeps)):
+        cascades = cascade_counts[sweep_idx]
+        sweep_states = [None] * cascades  # Will be initialized on first use
+        filter_states.append(sweep_states)
+
     for block_idx in range(num_blocks):
         start_idx = block_idx * hop_size
         end_idx = min(start_idx + block_size, n_samples)
@@ -982,28 +1009,39 @@ def _apply_deep_swept_notches_single_phase(
         if actual_block_size < 100:
             continue
 
+        # Copy block WITHOUT windowing - filter sees continuous signal
         block = np.zeros(block_size)
         block[:actual_block_size] = output[start_idx:end_idx]
 
-        windowed_block = block * window
-        filtered_block = windowed_block.copy()
+        # Filter the unwindowed block (filter-before-window architecture)
+        filtered_block = block.copy()
 
         block_center_idx = start_idx + actual_block_size // 2
 
         for sweep_idx, sweep in enumerate(base_freq_sweeps):
             notch_freq = sweep[block_center_idx]
-            if notch_freq >= sample_rate * 0.49:
+            if notch_freq >= sample_rate * 0.49 or notch_freq <= 0:
                 continue
             q_val = notch_qs[sweep_idx]
             cascades = cascade_counts[sweep_idx]
-            for _ in range(cascades):
+            for casc_idx in range(cascades):
                 try:
                     b, a = signal.iirnotch(notch_freq, q_val, sample_rate)
-                    filtered_block = signal.lfilter(b, a, filtered_block)
+                    # Use persistent filter state to avoid block-edge transients
+                    zi = filter_states[sweep_idx][casc_idx]
+                    if zi is None:
+                        # Initialize filter state on first use
+                        zi = signal.lfilter_zi(b, a) * filtered_block[0]
+                    filtered_block, zi = signal.lfilter(b, a, filtered_block, zi=zi)
+                    filter_states[sweep_idx][casc_idx] = zi
                 except ValueError:
                     continue
 
-        output_accumulator[start_idx : start_idx + block_size] += filtered_block
+        # Apply window AFTER filtering to ensure proper OLA reconstruction
+        # without IIR filter state discontinuities
+        windowed_filtered = filtered_block * window
+
+        output_accumulator[start_idx : start_idx + block_size] += windowed_filtered
         window_accumulator[start_idx : start_idx + block_size] += window
 
     valid_idx = window_accumulator > 1e-8
