@@ -151,7 +151,10 @@ class RustStreamPlayer(QObject if QT_AVAILABLE else object):
         The Rust models treat ``clips`` and ``overlay_clips`` as aliases. If
         both keys are present in the JSON payload, Serde will raise a duplicate
         field error. Merge any clip aliases into a single ``clips`` entry and
-        drop the redundant key before serializing.
+        drop the redundant key before serializing. Likewise, clip dictionaries
+        sometimes include both ``file_path`` and ``path`` (or ``file``) keys,
+        which map to the same field in the Rust model. Strip those aliases so
+        only one canonical ``file_path`` key is emitted.
         """
 
         normalized: Dict[str, object] = dict(track_data)
@@ -165,8 +168,50 @@ class RustStreamPlayer(QObject if QT_AVAILABLE else object):
         if isinstance(overlay_clips, list):
             merged_clips.extend(overlay_clips)
 
-        normalized["clips"] = merged_clips
+        normalized_clips: list = []
+        for clip in merged_clips:
+            if isinstance(clip, dict):
+                normalized_clips.append(self._normalize_clip_entry(clip))
+            else:
+                normalized_clips.append(clip)
+        normalized["clips"] = normalized_clips
+
+        if isinstance(normalized.get("background_noise"), dict):
+            normalized["background_noise"] = self._normalize_background_noise(
+                normalized["background_noise"]  # type: ignore[arg-type]
+            )
         return normalized
+
+    @staticmethod
+    def _normalize_clip_entry(clip: Dict[str, object]) -> Dict[str, object]:
+        """Return a clip with canonical keys the Rust backend accepts."""
+
+        clip_data = dict(clip)
+        file_path = (
+            clip_data.pop("file_path", None)
+            or clip_data.pop("path", None)
+            or clip_data.pop("file", None)
+        )
+
+        normalized_clip = dict(clip_data)
+        normalized_clip["file_path"] = file_path or ""
+        return normalized_clip
+
+    @staticmethod
+    def _normalize_background_noise(noise: Dict[str, object]) -> Dict[str, object]:
+        """Ensure background noise settings do not contain aliased file keys."""
+
+        noise_data = dict(noise)
+        file_path = (
+            noise_data.pop("file_path", None)
+            or noise_data.pop("file", None)
+            or noise_data.pop("params_path", None)
+            or noise_data.pop("noise_file", None)
+        )
+
+        normalized_noise = dict(noise_data)
+        normalized_noise["file_path"] = file_path or ""
+        return normalized_noise
 
     def set_progress_callback(self, callback: Optional[Callable[[float], None]]) -> None:
         """Set callback for progress updates (0.0 - 1.0)."""
