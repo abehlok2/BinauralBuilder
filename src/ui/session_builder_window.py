@@ -421,9 +421,6 @@ class SessionBuilderWindow(QMainWindow):
         self.preset_combo.setToolTip("Select the binaural preset used for this step.")
         self.preset_combo.setMinimumWidth(100)
         self.preset_combo.setMaximumWidth(140)
-        self.preset_combo.setEditable(True)
-        self.preset_combo.lineEdit().setAlignment(Qt.AlignCenter)
-        self.preset_combo.lineEdit().setReadOnly(True)
         binaural_col_layout.addWidget(self.preset_combo, alignment=Qt.AlignCenter)
 
         self.binaural_vol_slider = QSlider(Qt.Vertical)
@@ -465,9 +462,6 @@ class SessionBuilderWindow(QMainWindow):
         self.noise_combo.setToolTip("Optional noise preset blended with the step.")
         self.noise_combo.setMinimumWidth(100)
         self.noise_combo.setMaximumWidth(140)
-        self.noise_combo.setEditable(True)
-        self.noise_combo.lineEdit().setAlignment(Qt.AlignCenter)
-        self.noise_combo.lineEdit().setReadOnly(True)
         noise_col_layout.addWidget(self.noise_combo, alignment=Qt.AlignCenter)
 
         self.noise_vol_slider = QSlider(Qt.Vertical)
@@ -573,17 +567,21 @@ class SessionBuilderWindow(QMainWindow):
         crossfade_label = QLabel("Crossfade")
         crossfade_label.setAlignment(Qt.AlignCenter)
         crossfade_layout.addWidget(crossfade_label)
+        crossfade_row = QHBoxLayout()
+        crossfade_row.setContentsMargins(0, 0, 0, 0)
+        crossfade_row.setSpacing(6)
+        crossfade_row.setAlignment(Qt.AlignCenter)
         self.step_crossfade_spin = QDoubleSpinBox()
         self.step_crossfade_spin.setDecimals(2)
         self.step_crossfade_spin.setRange(0.0, 30.0)
         self.step_crossfade_spin.setSingleStep(0.1)
         self.step_crossfade_spin.setToolTip("Crossfade override for this step (seconds).")
         self.step_crossfade_spin.setFixedWidth(80)
-        crossfade_layout.addWidget(self.step_crossfade_spin, alignment=Qt.AlignCenter)
-
+        crossfade_row.addWidget(self.step_crossfade_spin)
         self.step_crossfade_use_global = QCheckBox("Use Global")
         self.step_crossfade_use_global.setToolTip("Use the session's global crossfade duration for this step.")
-        crossfade_layout.addWidget(self.step_crossfade_use_global, alignment=Qt.AlignCenter)
+        crossfade_row.addWidget(self.step_crossfade_use_global)
+        crossfade_layout.addLayout(crossfade_row)
 
         # Hidden slider for compatibility (not displayed in new UI)
         self.step_crossfade_slider = QSlider(Qt.Horizontal)
@@ -788,15 +786,22 @@ class SessionBuilderWindow(QMainWindow):
             if idx >= 0:
                 self.noise_combo.setCurrentIndex(idx)
 
+    def _center_combo_items(self, combo: QComboBox) -> None:
+        """Center the display text for all items in the combo box."""
+        for idx in range(combo.count()):
+            combo.setItemData(idx, Qt.AlignCenter, Qt.TextAlignmentRole)
+
     def _populate_presets(self) -> None:
         self.preset_combo.clear()
         self.preset_combo.addItem("None", None)
         for preset_id, preset in sorted(self._binaural_catalog.items()):
             self.preset_combo.addItem(preset.label, preset_id)
+        self._center_combo_items(self.preset_combo)
         self.noise_combo.clear()
         self.noise_combo.addItem("None", None)
         for preset_id, preset in sorted(self._noise_catalog.items()):
             self.noise_combo.addItem(preset.label, preset_id)
+        self._center_combo_items(self.noise_combo)
 
     def _bind_signals(self) -> None:
         self.crossfade_slider.valueChanged.connect(self._sync_crossfade_spin_from_slider)
