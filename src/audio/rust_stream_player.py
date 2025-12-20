@@ -187,11 +187,11 @@ class RustStreamPlayer(QObject if QT_AVAILABLE else object):
         """Return a clip with canonical keys the Rust backend accepts."""
 
         clip_data = dict(clip)
-        file_path = (
-            clip_data.pop("file_path", None)
-            or clip_data.pop("path", None)
-            or clip_data.pop("file", None)
-        )
+        file_path: Optional[object] = None
+        for key in ("file_path", "path", "file"):
+            value = clip_data.pop(key, None)
+            if file_path is None and value not in (None, ""):
+                file_path = value
 
         normalized_clip = dict(clip_data)
         normalized_clip["file_path"] = file_path or ""
@@ -202,12 +202,11 @@ class RustStreamPlayer(QObject if QT_AVAILABLE else object):
         """Ensure background noise settings do not contain aliased file keys."""
 
         noise_data = dict(noise)
-        file_path = (
-            noise_data.pop("file_path", None)
-            or noise_data.pop("file", None)
-            or noise_data.pop("params_path", None)
-            or noise_data.pop("noise_file", None)
-        )
+        file_path: Optional[object] = None
+        for key in ("file_path", "file", "params_path", "noise_file"):
+            value = noise_data.pop(key, None)
+            if file_path is None and value not in (None, ""):
+                file_path = value
 
         normalized_noise = dict(noise_data)
         normalized_noise["file_path"] = file_path or ""
