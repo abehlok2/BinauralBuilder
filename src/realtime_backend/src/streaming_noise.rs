@@ -201,6 +201,8 @@ struct FftNoiseGenerator {
     fft_inverse: Arc<dyn Fft<f32>>,
     rng: StdRng,
     normal: Normal<f32>,
+    target_rms: f32,
+    target_rms_initialized: bool,
     renorm_gain: f32,
     smoothed_gain: f32,
     renorm_initialized: bool,
@@ -318,6 +320,8 @@ impl FftNoiseGenerator {
             fft_inverse,
             rng,
             normal,
+            target_rms: 1.0,
+            target_rms_initialized: false,
             renorm_gain: 1.0,
             smoothed_gain: 1.0,
             renorm_initialized: false,
@@ -378,6 +382,28 @@ impl FftNoiseGenerator {
             if max_val > 1e-9 {
                 for x in &mut output {
                     *x /= max_val;
+                }
+            }
+        }
+
+        // Normalize the regenerated buffer to a consistent RMS so back-to-back
+        // buffers don't produce audible level jumps when streamed. We lock onto
+        // the RMS of the first buffer and rescale subsequent regenerations toward
+        // that target with conservative bounds to avoid runaway gain.
+        if !output.is_empty() {
+            let mut sum_sq = 0.0f32;
+            for &v in &output {
+                sum_sq += v * v;
+            }
+            let rms = (sum_sq / output.len() as f32).sqrt();
+            if rms.is_finite() && rms > 1e-9 {
+                if !self.target_rms_initialized {
+                    self.target_rms = rms;
+                    self.target_rms_initialized = true;
+                }
+                let gain = (self.target_rms / rms).clamp(0.25, 4.0);
+                for v in &mut output {
+                    *v *= gain;
                 }
             }
         }
