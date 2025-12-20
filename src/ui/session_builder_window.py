@@ -24,6 +24,7 @@ from PyQt5.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QSlider,
     QSplitter,
@@ -706,6 +707,7 @@ class SessionBuilderWindow(QMainWindow):
 
         vertical_splitter = QSplitter(Qt.Vertical)
         vertical_splitter.setHandleWidth(6)
+        vertical_splitter.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         vertical_splitter.addWidget(control_panel)
         vertical_splitter.addWidget(splitter)
         vertical_splitter.addWidget(bottom_container)
@@ -720,8 +722,23 @@ class SessionBuilderWindow(QMainWindow):
             ]
         )
 
-        # Add splitter to central layout
-        main_layout.addWidget(vertical_splitter, 1)
+        # Add scrollable container so the window remains usable when vertically constrained
+        scroll_area = QScrollArea(self)
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll_area.setFrameShape(QFrame.NoFrame)
+
+        content_wrapper = QWidget()
+        content_layout = QVBoxLayout(content_wrapper)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(0)
+        content_layout.addWidget(vertical_splitter)
+
+        scroll_area.setWidget(content_wrapper)
+
+        # Add scroll area to central layout
+        main_layout.addWidget(scroll_area, 1)
 
         self._populate_presets()
         self._apply_initial_defaults()
