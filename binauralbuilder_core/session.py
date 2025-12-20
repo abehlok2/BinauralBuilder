@@ -61,12 +61,13 @@ class SessionPresetChoice:
 class SessionStep:
     """One step of a session timeline."""
 
-    binaural_preset_id: str
+    binaural_preset_id: Optional[str]
     duration: float
     start: Optional[float] = None
     noise_preset_id: Optional[str] = None
     background_audio_path: Optional[str] = None
     background_audio_volume: float = MAX_INDIVIDUAL_GAIN
+    background_audio_extend: bool = True
     crossfade_duration: Optional[float] = None
     crossfade_curve: Optional[str] = None
     description: str = ""
@@ -477,24 +478,28 @@ def session_to_track_data(
 
     current_time = 0.0
     for step in session.steps:
-        choice = binaural_catalog.get(step.binaural_preset_id)
-        if choice is None:
-            raise KeyError(f"Unknown binaural preset: {step.binaural_preset_id}")
-        voice_payload = choice.payload.get("voice_data")
-        voices_payload = choice.payload.get("voices")
-        
-        if voices_payload:
-             # New JSON format with multiple voices
-             voice_entries = [copy.deepcopy(v) for v in voices_payload]
-        elif isinstance(voice_payload, dict):
-            # Old .voice format with single voice
-            voice_entries = [copy.deepcopy(voice_payload)]
-        else:
-            raise ValueError(f"Binaural preset '{choice.id}' is missing voice data.")
+        voice_entries = []
 
-        # Tag binaural voices
-        for voice in voice_entries:
-            voice["voice_type"] = "binaural"
+        # Handle binaural preset (can be None for no binaural audio)
+        if step.binaural_preset_id:
+            choice = binaural_catalog.get(step.binaural_preset_id)
+            if choice is None:
+                raise KeyError(f"Unknown binaural preset: {step.binaural_preset_id}")
+            voice_payload = choice.payload.get("voice_data")
+            voices_payload = choice.payload.get("voices")
+
+            if voices_payload:
+                 # New JSON format with multiple voices
+                 voice_entries = [copy.deepcopy(v) for v in voices_payload]
+            elif isinstance(voice_payload, dict):
+                # Old .voice format with single voice
+                voice_entries = [copy.deepcopy(voice_payload)]
+            else:
+                raise ValueError(f"Binaural preset '{choice.id}' is missing voice data.")
+
+            # Tag binaural voices
+            for voice in voice_entries:
+                voice["voice_type"] = "binaural"
 
         step_start = step.start if step.start is not None else current_time
         step_entry: Dict[str, object] = {
@@ -519,17 +524,26 @@ def session_to_track_data(
         # Use background_audio_path with fallback to legacy warmup_clip_path
         bg_audio_path = step.background_audio_path or step.warmup_clip_path
         if bg_audio_path:
+            # Get extend flag with default True for backwards compatibility
+            extend_audio = getattr(step, "background_audio_extend", True)
+            # duration 0.0 means play full clip; positive value limits duration
+            clip_duration = 0.0 if extend_audio else step.duration
+            preset_label = ""
+            if step.binaural_preset_id:
+                preset_choice = binaural_catalog.get(step.binaural_preset_id)
+                if preset_choice:
+                    preset_label = preset_choice.label
             track_data["clips"].append(
                 {
                     "file_path": bg_audio_path,
                     "path": bg_audio_path,
                     "start": step_start,
-                    "duration": 0.0,  # 0 means play full clip
+                    "duration": clip_duration,
                     "amp": step.background_audio_volume,
                     "pan": 0.0,
                     "fade_in": 0.0,
                     "fade_out": 0.0,
-                    "description": step.description or choice.label,
+                    "description": step.description or preset_label,
                 }
             )
 
