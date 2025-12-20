@@ -170,6 +170,7 @@ class SessionBuilderWindow(QMainWindow):
         self._stream_player: Optional[SessionStreamPlayer] = None
         self._using_rust_backend = is_rust_backend_available()
         self._current_assembler: Optional[SessionAssembler] = None
+        self._is_paused = False  # Track pause state for reliable play/pause toggling
 
         # Coalesce rapid UI changes before pushing live updates to the backend
         self._stream_update_timer = QTimer(self)
@@ -1223,19 +1224,15 @@ class SessionBuilderWindow(QMainWindow):
         if self._stream_player is None:
             self._start_playback()
         else:
-            # Check if playing or paused (no direct state query in SessionStreamPlayer yet, assume tracking)
-            # We can check QAudioOutput state if exposed, or just track it.
-            # For now, let's add a simple state tracker or check _audio_output.
-            # Since SessionStreamPlayer wraps QAudioOutput, we can try to pause/resume.
-            # But we don't know the current state easily without exposing it.
-            # Let's assume if it exists, we are either playing or paused.
-            # We'll use a flag or check the icon.
-            if self.play_pause_btn.icon().cacheKey() == self.style().standardIcon(QStyle.SP_MediaPause).cacheKey():
-                 self._stream_player.pause()
-                 self.play_pause_btn.setIcon(self.style().standardIcon(QStyle.SP_MediaPlay))
+            # Use explicit state tracking for reliable pause/resume toggling
+            if not self._is_paused:
+                self._stream_player.pause()
+                self._is_paused = True
+                self.play_pause_btn.setIcon(self.style().standardIcon(QStyle.SP_MediaPlay))
             else:
-                 self._stream_player.resume()
-                 self.play_pause_btn.setIcon(self.style().standardIcon(QStyle.SP_MediaPause))
+                self._stream_player.resume()
+                self._is_paused = False
+                self.play_pause_btn.setIcon(self.style().standardIcon(QStyle.SP_MediaPause))
 
     def _start_playback(self) -> None:
         try:
@@ -1252,6 +1249,7 @@ class SessionBuilderWindow(QMainWindow):
         self._stream_player.start(use_prebuffer=False)
 
         self._playback_timer.start()
+        self._is_paused = False
         self.play_pause_btn.setIcon(self.style().standardIcon(QStyle.SP_MediaPause))
 
         # Indicate which backend is being used
@@ -1263,6 +1261,7 @@ class SessionBuilderWindow(QMainWindow):
             self._stream_player.stop()
             self._stream_player = None
         self._playback_timer.stop()
+        self._is_paused = False
         self.play_pause_btn.setIcon(self.style().standardIcon(QStyle.SP_MediaPlay))
         self.seek_slider.setValue(0)
         self.time_label.setText("00:00")
