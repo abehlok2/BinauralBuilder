@@ -140,11 +140,10 @@ def _normalize_noise_voice_params(raw_params: Mapping[str, Any]) -> Dict[str, An
     params = dict(raw_params)
     sweeps = params.get("sweeps")
 
-    # Empty sweeps should fall back to the synth defaults rather than passing
-    # an empty list (which triggers a length mismatch error).
-    if sweeps == []:
-        params.pop("sweeps", None)
-        sweeps = None
+    # Preserve explicit empty sweeps so unmodulated presets don't get the
+    # default moving notch applied by the synth wrapper.
+    if isinstance(sweeps, list) and not sweeps:
+        params["sweeps"] = []
 
     if isinstance(sweeps, list) and sweeps and isinstance(sweeps[0], Mapping):
         start_sweeps: list[tuple[float, float]] = []
