@@ -49,6 +49,70 @@ DEFAULT_SAMPLE_RATE = 44100  # Hz
 DEFAULT_LFO_FREQ = 1.0 / 12.0  # Hz, for 12-second period
 
 
+def _time_varying_notch_coefficients(freq_series, q_series, sample_rate):
+    """Compute per-sample normalized biquad coefficients for a swept notch."""
+    freq_series = np.clip(np.asarray(freq_series, dtype=np.float64), 1.0, sample_rate * 0.49 - 1e-6)
+    q_series = np.maximum(np.asarray(q_series, dtype=np.float64), 1e-6)
+    w0 = 2.0 * np.pi * freq_series / sample_rate
+    cos_w0 = np.cos(w0)
+    sin_w0 = np.sin(w0)
+    alpha = sin_w0 / (2.0 * q_series)
+
+    a0 = 1.0 + alpha
+    inv_a0 = 1.0 / a0
+    b0 = inv_a0
+    b1 = (-2.0 * cos_w0) * inv_a0
+    b2 = inv_a0
+    a1 = (-2.0 * cos_w0) * inv_a0
+    a2 = (1.0 - alpha) * inv_a0
+    return b0, b1, b2, a1, a2
+
+
+@numba.njit(cache=False)
+def _time_varying_biquad(block, b0, b1, b2, a1, a2, state, casc_counts):
+    """Apply time-varying notch coefficients with persistent state per cascade."""
+    n = block.shape[0]
+    max_stages = state.shape[0]
+    for i in range(n):
+        sample = block[i]
+        casc = casc_counts[i]
+        if casc < 1:
+            casc = 1
+        elif casc > max_stages:
+            casc = max_stages
+        for s in range(casc):
+            z1 = state[s, 0]
+            z2 = state[s, 1]
+            y = sample * b0[i] + z1
+            z1 = sample * b1[i] - y * a1[i] + z2
+            z2 = sample * b2[i] - y * a2[i]
+            state[s, 0] = z1
+            state[s, 1] = z2
+            sample = y
+        block[i] = sample
+    return block
+
+
+def _pad_series(series, start_idx, block_size, fallback_value=0.0):
+    """Slice `series` for a block and pad with the last available value."""
+    segment = series[start_idx : start_idx + block_size]
+    if segment.shape[0] < block_size:
+        if segment.shape[0] == 0:
+            pad_val = fallback_value
+        else:
+            pad_val = float(segment[-1])
+        segment = np.pad(segment, (0, block_size - segment.shape[0]), constant_values=pad_val)
+    return np.asarray(segment, dtype=np.float64)
+
+
+def _filter_block_with_swept_notch(block, freq_series, q_series, casc_counts, state, sample_rate):
+    """Filter a block in-place with per-sample notch coefficients and persistent state."""
+    b0, b1, b2, a1, a2 = _time_varying_notch_coefficients(freq_series, q_series, sample_rate)
+    casc_counts = np.asarray(casc_counts, dtype=np.int64)
+    casc_counts = np.clip(casc_counts, 1, state.shape[0])
+    return _time_varying_biquad(block, b0, b1, b2, a1, a2, state, casc_counts)
+
+
 # =========================================================
 # Loudness / limiting / dynamics helpers (POST PROCESSING)
 # =========================================================

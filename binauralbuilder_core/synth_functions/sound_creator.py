@@ -1055,12 +1055,28 @@ def assemble_track_from_data(track_data, sample_rate, crossfade_duration, crossf
                         )
                 if clip_audio.ndim == 1:
                     clip_audio = np.column_stack((clip_audio, clip_audio))
-                start_sample = int(float(clip.get("start_time", 0)) * sample_rate)
+
+                # Check for duration limit (0 or negative means full clip)
+                clip_duration = float(clip.get("duration", 0.0))
+                if clip_duration > 0:
+                    max_samples = int(clip_duration * sample_rate)
+                    if clip_audio.shape[0] > max_samples:
+                        # Apply short fade out to avoid clicks
+                        fade_samples = min(int(0.05 * sample_rate), max_samples // 4)
+                        if fade_samples > 0:
+                            fade_curve = np.linspace(1.0, 0.0, fade_samples).reshape(-1, 1)
+                            clip_audio[max_samples - fade_samples:max_samples] *= fade_curve
+                        clip_audio = clip_audio[:max_samples]
+
+                # Support both "start" and "start_time" keys
+                start_time = float(clip.get("start", clip.get("start_time", 0)))
+                start_sample = int(start_time * sample_rate)
                 end_sample = start_sample + clip_audio.shape[0]
                 if end_sample > track.shape[0]:
                     track = np.pad(track, ((0, end_sample - track.shape[0]), (0, 0)), "constant")
                     final_track_samples = max(final_track_samples, end_sample)
-                gain = float(clip.get("gain", 1.0))
+                # Support both "amp" and "gain" keys
+                gain = float(clip.get("amp", clip.get("gain", 1.0)))
                 track[start_sample:end_sample] += clip_audio * gain
             except Exception as e:
                 print(f"Error overlaying clip {clip}: {e}")
