@@ -201,14 +201,15 @@ struct FftNoiseGenerator {
     fft_inverse: Arc<dyn Fft<f32>>,
     rng: StdRng,
     normal: Normal<f32>,
-    target_rms: f32,
-    target_rms_initialized: bool,
+    target_rms: Option<f32>,
+
     renorm_gain: f32,
     smoothed_gain: f32,
     renorm_initialized: bool,
     pre_rms_accum: f32,
     post_rms_accum: f32,
     rms_samples: usize,
+    is_unmodulated: bool,
 }
 
 impl FftNoiseGenerator {
@@ -320,14 +321,15 @@ impl FftNoiseGenerator {
             fft_inverse,
             rng,
             normal,
-            target_rms: 1.0,
-            target_rms_initialized: false,
+            target_rms: None,
+
             renorm_gain: 1.0,
             smoothed_gain: 1.0,
             renorm_initialized: false,
             pre_rms_accum: 0.0,
             post_rms_accum: 0.0,
             rms_samples: 0,
+            is_unmodulated: params.sweeps.is_empty(),
         };
 
         gen.buffer = gen.regenerate_buffer();
@@ -376,34 +378,44 @@ impl FftNoiseGenerator {
         self.fft_inverse.process(&mut white);
 
         let mut output: Vec<f32> = white.iter().map(|c| c.re / self.size as f32).collect();
-        if let Some(max_val) = output.iter().fold(None, |acc: Option<f32>, &v| {
-            Some(acc.map_or(v.abs(), |m| m.max(v.abs())))
-        }) {
-            if max_val > 1e-9 {
-                for x in &mut output {
-                    *x /= max_val;
-                }
-            }
-        }
 
-        // Normalize the regenerated buffer to a consistent RMS so back-to-back
-        // buffers don't produce audible level jumps when streamed. We lock onto
-        // the RMS of the first buffer and rescale subsequent regenerations toward
-        // that target with conservative bounds to avoid runaway gain.
-        if !output.is_empty() {
-            let mut sum_sq = 0.0f32;
-            for &v in &output {
-                sum_sq += v * v;
-            }
-            let rms = (sum_sq / output.len() as f32).sqrt();
-            if rms.is_finite() && rms > 1e-9 {
-                if !self.target_rms_initialized {
-                    self.target_rms = rms;
-                    self.target_rms_initialized = true;
-                }
-                let gain = (self.target_rms / rms).clamp(0.25, 4.0);
-                for v in &mut output {
-                    *v *= gain;
+        // --- RMS Locking Strategy ---
+        // 1. Calculate the RMS of the raw generated buffer (before normalization).
+        // 2. If this is the FIRST buffer (target_rms is None):
+        //    - Normalize to Peak 1.0 (Standard Peak Norm).
+        //    - Calculate the resulting RMS and store it as `target_rms`.
+        // 3. If this is a SUBSEQUENT buffer:
+        //    - Calculate gain = target_rms / current_rms.
+        //    - Apply gain.
+        //    - Soft clamp to [-1.0, 1.0] to prevent harsh clipping from outliers.
+        
+        let mut sum_sq = 0.0;
+        for x in &output {
+            sum_sq += x * x;
+        }
+        let current_rms = (sum_sq / output.len() as f32).sqrt();
+
+        if current_rms > 1e-9 {
+            if let Some(target) = self.target_rms {
+                 // LOCK TO TARGET RMS
+                 let gain = target / current_rms;
+                 for x in &mut output {
+                     *x = (*x * gain).clamp(-1.0, 1.0);
+                 }
+            } else {
+                // FIRST BUFFER: PEAK NORM + SET TARGET
+                let max_val = output.iter().fold(0.0f32, |acc, &v| acc.max(v.abs()));
+                if max_val > 1e-9 {
+                    for x in &mut output {
+                        *x /= max_val;
+                    }
+                    // Calculate the RMS of this peak-normalized buffer to use as target
+                    let mut sum_sq_norm = 0.0;
+                    for x in &output {
+                        sum_sq_norm += x * x;
+                    }
+                    let final_rms = (sum_sq_norm / output.len() as f32).sqrt();
+                    self.target_rms = Some(final_rms);
                 }
             }
         }
@@ -490,34 +502,42 @@ impl FftNoiseGenerator {
 
             if pre_rms > 1e-6 && post_rms > 1e-6 {
                 let target_gain = (pre_rms / post_rms).clamp(0.25, 16.0);
-
-                // Apply hysteresis: only adjust if target differs significantly from current.
-                // This prevents continuous micro-adjustments from natural RMS variations
-                // in steady-state noise, which cause audible volume fluctuations.
-                let ratio_diff = (target_gain - self.renorm_gain).abs() / self.renorm_gain;
-                if ratio_diff > RENORM_HYSTERESIS_RATIO {
+                
+                if self.is_unmodulated {
+                    // STATIC CALIBRATION FOR UNMODULATED NOISE
+                    // Once we calculate the correct makeup gain (during warmup), we LOCK it.
+                    // This provides the correct volume boost without any "pumping" or instability.
                     if !self.renorm_initialized {
-                        // Snap immediately on first measurement so startup volume reaches target quickly.
                         self.renorm_gain = target_gain;
                         self.smoothed_gain = target_gain;
-                        self.renorm_initialized = true;
-                    } else {
-                        // Blend toward the target more quickly to avoid long startup ramps.
-                        self.renorm_gain = 0.8 * self.renorm_gain + 0.2 * target_gain;
+                         self.renorm_initialized = true;
+                    }
+                    // If already initialized, DO NOT CHANGE IT.
+                    
+                } else {
+                    // DYNAMIC TRACKING FOR SWEPT NOISE
+                    // For sweeps, the filter response changes over time, so we must track it.
+                    
+                    // Apply hysteresis to avoid micro-jitters
+                    let ratio_diff = (target_gain - self.renorm_gain).abs() / self.renorm_gain;
+                    if ratio_diff > RENORM_HYSTERESIS_RATIO {
+                        if !self.renorm_initialized {
+                            self.renorm_gain = target_gain;
+                            self.smoothed_gain = target_gain;
+                            self.renorm_initialized = true;
+                        } else {
+                             // Blend toward the target
+                            self.renorm_gain = 0.8 * self.renorm_gain + 0.2 * target_gain;
+                        }
                     }
                 }
-                // If within hysteresis band, don't adjust - keeps gain stable
             } else {
-                // Drift gain back toward unity if measurements are unreliable
-                // Use faster blending to prevent drawn-out volume ramps on re-entry.
-                let fallback_target = 1.0;
-                if !self.renorm_initialized {
-                    self.renorm_gain = fallback_target;
-                    self.smoothed_gain = fallback_target;
-                    self.renorm_initialized = true;
-                } else {
-                    self.renorm_gain = 0.8 * self.renorm_gain + 0.2 * fallback_target;
-                }
+                 // Fallback if signal is too quiet (shouldn't happen with RMS locking)
+                 if !self.renorm_initialized {
+                     self.renorm_gain = 1.0;
+                     self.smoothed_gain = 1.0;
+                     self.renorm_initialized = true;
+                 }
             }
 
             self.pre_rms_accum = 0.0;
@@ -525,8 +545,7 @@ impl FftNoiseGenerator {
             self.rms_samples = 0;
         }
 
-        // Apply per-sample gain smoothing to prevent clicking from abrupt gain changes.
-        // This smoothly transitions the applied gain toward renorm_gain over time.
+        // Apply per-sample gain smoothing
         self.smoothed_gain = GAIN_SMOOTHING_COEFF * self.smoothed_gain
             + (1.0 - GAIN_SMOOTHING_COEFF) * self.renorm_gain;
 
@@ -753,7 +772,7 @@ impl StreamingNoise {
             })
             .collect();
 
-        Self {
+        let mut gen = Self {
             sample_rate: sample_rate_f,
             duration_samples,
             start_lfo_freq: if params.start_lfo_freq > 0.0 {
@@ -779,7 +798,28 @@ impl StreamingNoise {
             fft_gen: FftNoiseGenerator::new(params, sample_rate_f),
             ola: OlaState::new(),
             total_samples_output: 0,
+        };
+
+        // --- WARMUP / CALIBRATION LOOP ---
+        // For unmodulated noise, we rely on the first renormalization calculation
+        // to set the static makeup gain. We need to run enough samples through
+        // the generator here so that it has "latched" onto the correct gain
+        // *before* we start outputting real audio. This prevents a "quiet start"
+        // or fade-in artifact.
+        if params.sweeps.is_empty() {
+            // Run exactly one window's worth of samples to trigger the first calc
+            // RENORM_WINDOW is currently 8192
+            for _ in 0..RENORM_WINDOW {
+                // discard output, just warming up state
+                gen.fft_gen.next();
+            }
+            // Reset state that shouldn't persist (optional, but good practice)
+            // Actually, we WANT to keep the renorm_gain, so we don't reset that.
+            // But we might want to reset the cursor or buffer if we wanted to align things,
+            // but for noise it doesn't matter.
         }
+
+        gen
     }
 
     pub fn new_with_calibrated_peak(
