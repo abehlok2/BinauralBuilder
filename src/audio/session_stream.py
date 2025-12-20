@@ -400,7 +400,8 @@ class AudioGeneratorWorker(QObject):
             return
 
         bg_file = (
-            bg_cfg.get("file")
+            bg_cfg.get("file_path")
+            or bg_cfg.get("file")
             or bg_cfg.get("params_path")
             or bg_cfg.get("noise_file")
         )
@@ -1143,4 +1144,3 @@ class SessionStreamPlayer(QObject):  # type: ignore[misc]
 
 
 __all__ = ["SessionStreamPlayer"]
-

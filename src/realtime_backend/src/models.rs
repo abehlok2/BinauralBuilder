@@ -2,6 +2,10 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::Path;
 
+fn default_zero_f64() -> f64 {
+    0.0
+}
+
 fn default_amp() -> f32 {
     1.0
 }
@@ -111,12 +115,26 @@ pub struct ClipData {
 
 #[derive(Deserialize, Debug, Clone)]
 pub struct BackgroundNoiseData {
-    #[serde(default, alias = "file", alias = "file_path", alias = "params_path")]
+    #[serde(
+        default,
+        alias = "file",
+        alias = "file_path",
+        alias = "params_path",
+        alias = "noise_file"
+    )]
     pub file_path: String,
     #[serde(default = "default_amp", alias = "gain", alias = "amp")]
     pub amp: f32,
     #[serde(default)]
     pub params: Option<crate::noise_params::NoiseParams>,
+    #[serde(default = "default_zero_f64", alias = "start_time_seconds")]
+    pub start_time: f64,
+    #[serde(default = "default_zero_f64")]
+    pub fade_in: f64,
+    #[serde(default = "default_zero_f64")]
+    pub fade_out: f64,
+    #[serde(default)]
+    pub amp_envelope: Vec<[f32; 2]>,
 }
 
 impl TrackData {
@@ -139,5 +157,39 @@ impl TrackData {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TrackData;
+
+    #[test]
+    fn background_noise_deserializes_with_file_path() {
+        let json = r#"
+        {
+            "global_settings": {
+                "sample_rate": 44100
+            },
+            "steps": [],
+            "background_noise": {
+                "file_path": "presets/test.noise",
+                "gain": 0.8,
+                "start_time": 1.5,
+                "fade_in": 0.25,
+                "fade_out": 0.5,
+                "amp_envelope": [[0.0, 0.2], [1.0, 1.0]]
+            }
+        }
+        "#;
+
+        let track: TrackData = serde_json::from_str(json).expect("valid track data");
+        let noise = track.background_noise.expect("background noise present");
+        assert_eq!(noise.file_path, "presets/test.noise");
+        assert!((noise.amp - 0.8).abs() < f32::EPSILON);
+        assert!((noise.start_time - 1.5).abs() < f64::EPSILON);
+        assert!((noise.fade_in - 0.25).abs() < f64::EPSILON);
+        assert!((noise.fade_out - 0.5).abs() < f64::EPSILON);
+        assert_eq!(noise.amp_envelope.len(), 2);
     }
 }
