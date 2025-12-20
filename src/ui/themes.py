@@ -67,6 +67,45 @@ QLabel#panel_header {
     margin-bottom: 8px;
 }
 
+QLabel#column_header {
+    font-size: 10pt;
+    font-weight: bold;
+    color: #cccccc;
+}
+
+QPushButton#preset_button {
+    background-color: #333337;
+    border: 1px solid #555555;
+    border-radius: 4px;
+    padding: 4px 8px;
+    color: #ffffff;
+}
+
+QPushButton#preset_button:hover {
+    border-color: #2a82da;
+}
+
+/* Vertical Slider (Dark) */
+QSlider::groove:vertical {
+    border: 1px solid #555555;
+    width: 6px;
+    background: #333337;
+    border-radius: 3px;
+}
+
+QSlider::handle:vertical {
+    background: #cccccc;
+    border: 1px solid #999999;
+    height: 12px;
+    width: 12px;
+    margin: 0 -3px;
+    border-radius: 6px;
+}
+
+QSlider::handle:vertical:hover {
+    background: #ffffff;
+}
+
 QPushButton[class="primary"] {
     background-color: #2a82da;
     border: 1px solid #2a82da;
@@ -170,6 +209,46 @@ QLabel#panel_header {
     margin-bottom: 8px;
 }
 
+QLabel#column_header {
+    font-size: 10pt;
+    font-weight: bold;
+    color: #00ffaa;
+}
+
+QPushButton#preset_button {
+    background-color: rgba(0, 255, 136, 0.15);
+    border: 1px solid rgba(0, 255, 136, 0.4);
+    border-radius: 4px;
+    padding: 4px 8px;
+    color: #00ffaa;
+}
+
+QPushButton#preset_button:hover {
+    background-color: rgba(0, 255, 136, 0.25);
+    border-color: #00ffcc;
+}
+
+/* Vertical Slider (Green) */
+QSlider::groove:vertical {
+    border: 1px solid rgba(0, 255, 136, 0.4);
+    width: 6px;
+    background: #1a1a1a;
+    border-radius: 3px;
+}
+
+QSlider::handle:vertical {
+    background: #00ffaa;
+    border: 1px solid #00ff88;
+    height: 12px;
+    width: 12px;
+    margin: 0 -3px;
+    border-radius: 6px;
+}
+
+QSlider::handle:vertical:hover {
+    background: #00ffcc;
+}
+
 QPushButton[class="primary"] {
     background-color: rgba(0, 255, 136, 0.3);
     border: 1px solid #00ffaa;
@@ -220,6 +299,45 @@ QLabel#panel_header {
     padding-bottom: 8px;
     border-bottom: 1px solid #cce0ff;
     margin-bottom: 8px;
+}
+
+QLabel#column_header {
+    font-size: 10pt;
+    font-weight: bold;
+    color: #0066cc;
+}
+
+QPushButton#preset_button {
+    background-color: #ffffff;
+    border: 1px solid #0078d7;
+    border-radius: 4px;
+    padding: 4px 8px;
+    color: #0066cc;
+}
+
+QPushButton#preset_button:hover {
+    background-color: #e6f2ff;
+}
+
+/* Vertical Slider (Light Blue) */
+QSlider::groove:vertical {
+    border: 1px solid #a0a0a0;
+    width: 6px;
+    background: #ffffff;
+    border-radius: 3px;
+}
+
+QSlider::handle:vertical {
+    background: #0078d7;
+    border: 1px solid #0066cc;
+    height: 12px;
+    width: 12px;
+    margin: 0 -3px;
+    border-radius: 6px;
+}
+
+QSlider::handle:vertical:hover {
+    background: #1084e3;
 }
 
 QPushButton[class="primary"] {
@@ -292,7 +410,7 @@ QLineEdit, QComboBox, QSlider {
     border: 1px solid #e0e0e0;
     border-radius: 8px;
     /* Material card shadow simulation via border/margin */
-    border-bottom: 2px solid #d0d0d0; 
+    border-bottom: 2px solid #d0d0d0;
 }
 
 QLabel#panel_header {
@@ -302,6 +420,45 @@ QLabel#panel_header {
     padding-bottom: 8px;
     border-bottom: 1px solid #e0e0e0;
     margin-bottom: 8px;
+}
+
+QLabel#column_header {
+    font-size: 10pt;
+    font-weight: bold;
+    color: #009688;
+}
+
+QPushButton#preset_button {
+    background-color: #ffffff;
+    border: 1px solid #009688;
+    border-radius: 4px;
+    padding: 4px 8px;
+    color: #009688;
+}
+
+QPushButton#preset_button:hover {
+    background-color: #e0f2f1;
+}
+
+/* Vertical Slider (Material) */
+QSlider::groove:vertical {
+    border: 1px solid #bdbdbd;
+    width: 6px;
+    background: #ffffff;
+    border-radius: 3px;
+}
+
+QSlider::handle:vertical {
+    background: #009688;
+    border: 1px solid #00796b;
+    height: 12px;
+    width: 12px;
+    margin: 0 -3px;
+    border-radius: 6px;
+}
+
+QSlider::handle:vertical:hover {
+    background: #26a69a;
 }
 
 QPushButton[class="primary"] {
@@ -570,6 +727,47 @@ QLabel#panel_header {
     padding-bottom: 8px;
     border-bottom: 1px solid #3e3e42;
     margin-bottom: 8px;
+}
+
+/* Column Headers in Step Details */
+QLabel#column_header {
+    font-size: 10pt;
+    font-weight: bold;
+    color: #e0e0e0;
+}
+
+/* Preset Buttons in Step Details */
+QPushButton#preset_button {
+    background-color: #333337;
+    border: 1px solid #3e3e42;
+    border-radius: 4px;
+    padding: 4px 8px;
+    color: #e0e0e0;
+}
+
+QPushButton#preset_button:hover {
+    border-color: #007acc;
+}
+
+/* Vertical Sliders in Step Details */
+QSlider::groove:vertical {
+    border: 1px solid #3e3e42;
+    width: 6px;
+    background: #252526;
+    border-radius: 3px;
+}
+
+QSlider::handle:vertical {
+    background: #007acc;
+    border: 1px solid #007acc;
+    height: 14px;
+    width: 14px;
+    margin: 0 -4px;
+    border-radius: 7px;
+}
+
+QSlider::handle:vertical:hover {
+    background: #1f8ad2;
 }
 
 /* Primary Action Buttons */

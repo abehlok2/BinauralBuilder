@@ -398,131 +398,246 @@ class SessionBuilderWindow(QMainWindow):
         self.editor_header.setObjectName("panel_header")
         editor_main_layout.addWidget(self.editor_header)
 
-        editor_form_layout = QFormLayout()
-        editor_form_layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
-        editor_form_layout.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        editor_form_layout.setFormAlignment(Qt.AlignLeft | Qt.AlignTop)
-        editor_form_layout.setSpacing(12)
+        # === Three-column layout for Binaural, Noise, Background ===
+        columns_widget = QWidget()
+        columns_layout = QHBoxLayout(columns_widget)
+        columns_layout.setContentsMargins(0, 0, 0, 0)
+        columns_layout.setSpacing(20)
+
+        # --- Binaural Column ---
+        binaural_col = QWidget()
+        binaural_col_layout = QVBoxLayout(binaural_col)
+        binaural_col_layout.setContentsMargins(0, 0, 0, 0)
+        binaural_col_layout.setSpacing(8)
+        binaural_col_layout.setAlignment(Qt.AlignHCenter)
+
+        binaural_label = QLabel("Binaural")
+        binaural_label.setObjectName("column_header")
+        binaural_label.setAlignment(Qt.AlignCenter)
+        binaural_col_layout.addWidget(binaural_label)
 
         self.preset_combo = QComboBox()
         self.preset_combo.setToolTip("Select the binaural preset used for this step.")
-        
-        self.noise_combo = QComboBox()
-        self.noise_combo.setToolTip("Optional noise preset blended with the step.")
+        self.preset_combo.setMinimumWidth(100)
+        self.preset_combo.setMaximumWidth(140)
+        binaural_col_layout.addWidget(self.preset_combo, alignment=Qt.AlignCenter)
 
-        # Binaural volume composite widget
-        binaural_vol_widget = QWidget()
-        binaural_vol_layout = QHBoxLayout(binaural_vol_widget)
-        binaural_vol_layout.setContentsMargins(0,0,0,0)
-        self.binaural_vol_slider = QSlider(Qt.Horizontal)
+        self.binaural_vol_slider = QSlider(Qt.Vertical)
         self.binaural_vol_slider.setRange(0, 100)
         self.binaural_vol_slider.setToolTip(f"Volume of the binaural preset (0-100%, max {MAX_INDIVIDUAL_GAIN:.2f}).")
+        self.binaural_vol_slider.setMinimumHeight(120)
+        self.binaural_vol_slider.setFixedWidth(30)
+        binaural_col_layout.addWidget(self.binaural_vol_slider, alignment=Qt.AlignCenter)
+
         self.binaural_vol_spin = QDoubleSpinBox()
         self.binaural_vol_spin.setDecimals(2)
         self.binaural_vol_spin.setRange(0.0, MAX_INDIVIDUAL_GAIN)
         self.binaural_vol_spin.setSingleStep(0.02)
         self.binaural_vol_spin.setToolTip(f"Precise binaural volume (0.0-{MAX_INDIVIDUAL_GAIN:.2f}).")
-        binaural_vol_layout.addWidget(self.binaural_vol_slider)
-        binaural_vol_layout.addWidget(self.binaural_vol_spin)
+        self.binaural_vol_spin.setFixedWidth(70)
+        self.binaural_vol_spin.setAlignment(Qt.AlignCenter)
+        self.binaural_vol_spin.setButtonSymbols(QDoubleSpinBox.NoButtons)
+        binaural_col_layout.addWidget(self.binaural_vol_spin, alignment=Qt.AlignCenter)
 
-        # Noise volume composite widget
-        noise_vol_widget = QWidget()
-        noise_vol_layout = QHBoxLayout(noise_vol_widget)
-        noise_vol_layout.setContentsMargins(0,0,0,0)
-        self.noise_vol_slider = QSlider(Qt.Horizontal)
+        columns_layout.addWidget(binaural_col)
+
+        # --- Noise Column ---
+        noise_col = QWidget()
+        noise_col_layout = QVBoxLayout(noise_col)
+        noise_col_layout.setContentsMargins(0, 0, 0, 0)
+        noise_col_layout.setSpacing(8)
+        noise_col_layout.setAlignment(Qt.AlignHCenter)
+
+        noise_label = QLabel("Noise")
+        noise_label.setObjectName("column_header")
+        noise_label.setAlignment(Qt.AlignCenter)
+        noise_col_layout.addWidget(noise_label)
+
+        self.noise_combo = QComboBox()
+        self.noise_combo.setToolTip("Optional noise preset blended with the step.")
+        self.noise_combo.setMinimumWidth(100)
+        self.noise_combo.setMaximumWidth(140)
+        noise_col_layout.addWidget(self.noise_combo, alignment=Qt.AlignCenter)
+
+        self.noise_vol_slider = QSlider(Qt.Vertical)
         self.noise_vol_slider.setRange(0, 100)
         self.noise_vol_slider.setToolTip(f"Volume of the noise preset (0-100%, max {MAX_INDIVIDUAL_GAIN:.2f}).")
+        self.noise_vol_slider.setMinimumHeight(120)
+        self.noise_vol_slider.setFixedWidth(30)
+        noise_col_layout.addWidget(self.noise_vol_slider, alignment=Qt.AlignCenter)
+
         self.noise_vol_spin = QDoubleSpinBox()
         self.noise_vol_spin.setDecimals(2)
         self.noise_vol_spin.setRange(0.0, MAX_INDIVIDUAL_GAIN)
         self.noise_vol_spin.setSingleStep(0.02)
         self.noise_vol_spin.setToolTip(f"Precise noise volume (0.0-{MAX_INDIVIDUAL_GAIN:.2f}).")
-        noise_vol_layout.addWidget(self.noise_vol_slider)
-        noise_vol_layout.addWidget(self.noise_vol_spin)
-        
-        self.duration_spin = QDoubleSpinBox()
-        self.duration_spin.setDecimals(2)
-        self.duration_spin.setRange(1.0, 7200.0)
-        self.duration_spin.setSuffix(" s")
-        self.duration_spin.setSingleStep(1.0)
-        self.duration_spin.setToolTip("Duration of the current step in seconds.")
-        
-        # Crossfade composite widget
-        cf_widget = QWidget()
-        cf_layout = QHBoxLayout(cf_widget)
-        cf_layout.setContentsMargins(0,0,0,0)
-        self.step_crossfade_slider = QSlider(Qt.Horizontal)
-        self.step_crossfade_slider.setRange(0, 300)
-        self.step_crossfade_slider.setToolTip("Crossfade duration for this step (seconds).")
-        self.step_crossfade_spin = QDoubleSpinBox()
-        self.step_crossfade_spin.setDecimals(2)
-        self.step_crossfade_spin.setRange(0.0, 30.0)
-        self.step_crossfade_spin.setSuffix(" s")
-        self.step_crossfade_spin.setSingleStep(0.1)
-        self.step_crossfade_spin.setToolTip("Precise crossfade override for this step.")
-        cf_layout.addWidget(self.step_crossfade_slider)
-        cf_layout.addWidget(self.step_crossfade_spin)
-        
-        self.step_crossfade_curve_combo = QComboBox()
-        self.step_crossfade_curve_combo.addItems(["Use Session", "linear", "equal_power"])
-        self.step_crossfade_curve_combo.setToolTip("Override the crossfade curve for this step.")
-        
-        # Background Audio composite widget (file selector)
-        bg_audio_file_widget = QWidget()
-        bg_audio_file_layout = QHBoxLayout(bg_audio_file_widget)
-        bg_audio_file_layout.setContentsMargins(0,0,0,0)
-        self.bg_audio_edit = QLineEdit()
-        self.bg_audio_edit.setToolTip("Optional background audio file to play alongside binaural and noise.")
-        self.bg_audio_btn = QPushButton(self.style().standardIcon(QStyle.SP_DialogOpenButton), "Browse")
-        self.bg_audio_btn.setToolTip("Choose a background audio file from disk.")
-        self.bg_audio_clear_btn = QPushButton(self.style().standardIcon(QStyle.SP_DialogCloseButton), "")
-        self.bg_audio_clear_btn.setToolTip("Clear background audio selection.")
-        self.bg_audio_clear_btn.setFixedWidth(30)
-        bg_audio_file_layout.addWidget(self.bg_audio_edit)
-        bg_audio_file_layout.addWidget(self.bg_audio_btn)
-        bg_audio_file_layout.addWidget(self.bg_audio_clear_btn)
+        self.noise_vol_spin.setFixedWidth(70)
+        self.noise_vol_spin.setAlignment(Qt.AlignCenter)
+        self.noise_vol_spin.setButtonSymbols(QDoubleSpinBox.NoButtons)
+        noise_col_layout.addWidget(self.noise_vol_spin, alignment=Qt.AlignCenter)
 
-        # Background Audio volume composite widget
-        bg_audio_vol_widget = QWidget()
-        bg_audio_vol_layout = QHBoxLayout(bg_audio_vol_widget)
-        bg_audio_vol_layout.setContentsMargins(0,0,0,0)
-        self.bg_audio_vol_slider = QSlider(Qt.Horizontal)
+        columns_layout.addWidget(noise_col)
+
+        # --- Background Column ---
+        bg_col = QWidget()
+        bg_col_layout = QVBoxLayout(bg_col)
+        bg_col_layout.setContentsMargins(0, 0, 0, 0)
+        bg_col_layout.setSpacing(8)
+        bg_col_layout.setAlignment(Qt.AlignHCenter)
+
+        bg_label = QLabel("Background")
+        bg_label.setObjectName("column_header")
+        bg_label.setAlignment(Qt.AlignCenter)
+        bg_col_layout.addWidget(bg_label)
+
+        self.bg_audio_btn = QPushButton("<none>")
+        self.bg_audio_btn.setObjectName("preset_button")
+        self.bg_audio_btn.setToolTip("Click to choose a background audio file from disk.")
+        self.bg_audio_btn.setMinimumWidth(100)
+        self.bg_audio_btn.setMaximumWidth(140)
+        bg_col_layout.addWidget(self.bg_audio_btn, alignment=Qt.AlignCenter)
+
+        # Hidden line edit to store the actual path
+        self.bg_audio_edit = QLineEdit()
+        self.bg_audio_edit.setVisible(False)
+
+        self.bg_audio_vol_slider = QSlider(Qt.Vertical)
         self.bg_audio_vol_slider.setRange(0, 100)
         self.bg_audio_vol_slider.setToolTip(f"Volume of the background audio (0-100%, max {MAX_INDIVIDUAL_GAIN:.2f}).")
+        self.bg_audio_vol_slider.setMinimumHeight(120)
+        self.bg_audio_vol_slider.setFixedWidth(30)
+        bg_col_layout.addWidget(self.bg_audio_vol_slider, alignment=Qt.AlignCenter)
+
         self.bg_audio_vol_spin = QDoubleSpinBox()
         self.bg_audio_vol_spin.setDecimals(2)
         self.bg_audio_vol_spin.setRange(0.0, MAX_INDIVIDUAL_GAIN)
         self.bg_audio_vol_spin.setSingleStep(0.02)
         self.bg_audio_vol_spin.setToolTip(f"Precise background audio volume (0.0-{MAX_INDIVIDUAL_GAIN:.2f}).")
-        bg_audio_vol_layout.addWidget(self.bg_audio_vol_slider)
-        bg_audio_vol_layout.addWidget(self.bg_audio_vol_spin)
+        self.bg_audio_vol_spin.setFixedWidth(70)
+        self.bg_audio_vol_spin.setAlignment(Qt.AlignCenter)
+        self.bg_audio_vol_spin.setButtonSymbols(QDoubleSpinBox.NoButtons)
+        bg_col_layout.addWidget(self.bg_audio_vol_spin, alignment=Qt.AlignCenter)
 
-        # Background Audio extend checkbox
-        self.bg_audio_extend_checkbox = QCheckBox("Extend across subsequent steps")
+        columns_layout.addWidget(bg_col)
+
+        editor_main_layout.addWidget(columns_widget)
+
+        # === Bottom controls row: Duration, Crossfade, Browse, Clear, Extend ===
+        bottom_row = QWidget()
+        bottom_layout = QHBoxLayout(bottom_row)
+        bottom_layout.setContentsMargins(0, 10, 0, 0)
+        bottom_layout.setSpacing(15)
+
+        # Duration
+        duration_widget = QWidget()
+        duration_layout = QVBoxLayout(duration_widget)
+        duration_layout.setContentsMargins(0, 0, 0, 0)
+        duration_layout.setSpacing(4)
+        duration_label = QLabel("Duration")
+        duration_label.setAlignment(Qt.AlignCenter)
+        duration_layout.addWidget(duration_label)
+        self.duration_spin = QDoubleSpinBox()
+        self.duration_spin.setDecimals(2)
+        self.duration_spin.setRange(1.0, 7200.0)
+        self.duration_spin.setSingleStep(1.0)
+        self.duration_spin.setToolTip("Duration of the current step in seconds.")
+        self.duration_spin.setFixedWidth(80)
+        duration_layout.addWidget(self.duration_spin, alignment=Qt.AlignCenter)
+        bottom_layout.addWidget(duration_widget)
+
+        # Crossfade
+        crossfade_widget = QWidget()
+        crossfade_layout = QVBoxLayout(crossfade_widget)
+        crossfade_layout.setContentsMargins(0, 0, 0, 0)
+        crossfade_layout.setSpacing(4)
+        crossfade_label = QLabel("Crossfade")
+        crossfade_label.setAlignment(Qt.AlignCenter)
+        crossfade_layout.addWidget(crossfade_label)
+        self.step_crossfade_spin = QDoubleSpinBox()
+        self.step_crossfade_spin.setDecimals(2)
+        self.step_crossfade_spin.setRange(0.0, 30.0)
+        self.step_crossfade_spin.setSingleStep(0.1)
+        self.step_crossfade_spin.setToolTip("Crossfade override for this step (seconds).")
+        self.step_crossfade_spin.setFixedWidth(80)
+        crossfade_layout.addWidget(self.step_crossfade_spin, alignment=Qt.AlignCenter)
+        # Hidden slider for compatibility (not displayed in new UI)
+        self.step_crossfade_slider = QSlider(Qt.Horizontal)
+        self.step_crossfade_slider.setRange(0, 300)
+        self.step_crossfade_slider.setVisible(False)
+        # Hidden curve combo for compatibility
+        self.step_crossfade_curve_combo = QComboBox()
+        self.step_crossfade_curve_combo.addItems(["Use Session", "linear", "equal_power"])
+        self.step_crossfade_curve_combo.setVisible(False)
+        bottom_layout.addWidget(crossfade_widget)
+
+        bottom_layout.addStretch()
+
+        # Browse button
+        browse_widget = QWidget()
+        browse_layout = QVBoxLayout(browse_widget)
+        browse_layout.setContentsMargins(0, 0, 0, 0)
+        browse_layout.setSpacing(4)
+        browse_label = QLabel("Browse")
+        browse_label.setAlignment(Qt.AlignCenter)
+        browse_layout.addWidget(browse_label)
+        self.browse_btn = QPushButton()
+        self.browse_btn.setIcon(self.style().standardIcon(QStyle.SP_DialogOpenButton))
+        self.browse_btn.setToolTip("Choose a background audio file.")
+        self.browse_btn.setFixedSize(40, 30)
+        browse_layout.addWidget(self.browse_btn, alignment=Qt.AlignCenter)
+        bottom_layout.addWidget(browse_widget)
+
+        # Clear button
+        clear_widget = QWidget()
+        clear_layout = QVBoxLayout(clear_widget)
+        clear_layout.setContentsMargins(0, 0, 0, 0)
+        clear_layout.setSpacing(4)
+        clear_label = QLabel("Clear")
+        clear_label.setAlignment(Qt.AlignCenter)
+        clear_layout.addWidget(clear_label)
+        self.bg_audio_clear_btn = QPushButton()
+        self.bg_audio_clear_btn.setIcon(self.style().standardIcon(QStyle.SP_DialogCloseButton))
+        self.bg_audio_clear_btn.setToolTip("Clear background audio selection.")
+        self.bg_audio_clear_btn.setFixedSize(40, 30)
+        clear_layout.addWidget(self.bg_audio_clear_btn, alignment=Qt.AlignCenter)
+        bottom_layout.addWidget(clear_widget)
+
+        # Extend checkbox
+        extend_widget = QWidget()
+        extend_layout = QVBoxLayout(extend_widget)
+        extend_layout.setContentsMargins(0, 0, 0, 0)
+        extend_layout.setSpacing(4)
+        extend_label = QLabel("Extend")
+        extend_label.setAlignment(Qt.AlignCenter)
+        extend_layout.addWidget(extend_label)
+        self.bg_audio_extend_checkbox = QCheckBox()
         self.bg_audio_extend_checkbox.setToolTip(
             "When checked, background audio continues playing into subsequent steps "
-            "if it is longer than this step's duration. When unchecked, audio fades "
-            "out at the end of this step."
+            "if it is longer than this step's duration."
         )
         self.bg_audio_extend_checkbox.setChecked(True)
+        extend_layout.addWidget(self.bg_audio_extend_checkbox, alignment=Qt.AlignCenter)
+        bottom_layout.addWidget(extend_widget)
+
+        editor_main_layout.addWidget(bottom_row)
+
+        # === Description section ===
+        desc_widget = QWidget()
+        desc_layout = QVBoxLayout(desc_widget)
+        desc_layout.setContentsMargins(0, 10, 0, 0)
+        desc_layout.setSpacing(4)
+
+        desc_label = QLabel("Description")
+        desc_layout.addWidget(desc_label)
 
         self.description_edit = QTextEdit()
         self.description_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.description_edit.setToolTip("Notes about the intention or feel of the step.")
+        self.description_edit.setMaximumHeight(80)
+        desc_layout.addWidget(self.description_edit)
 
-        editor_form_layout.addRow("Binaural Preset:", self.preset_combo)
-        editor_form_layout.addRow("Binaural Volume:", binaural_vol_widget)
-        editor_form_layout.addRow("Noise Preset:", self.noise_combo)
-        editor_form_layout.addRow("Noise Volume:", noise_vol_widget)
-        editor_form_layout.addRow("Duration:", self.duration_spin)
-        editor_form_layout.addRow("Step Crossfade:", cf_widget)
-        editor_form_layout.addRow("Step Curve:", self.step_crossfade_curve_combo)
-        editor_form_layout.addRow("Background Audio:", bg_audio_file_widget)
-        editor_form_layout.addRow("Background Volume:", bg_audio_vol_widget)
-        editor_form_layout.addRow("", self.bg_audio_extend_checkbox)
-        editor_form_layout.addRow("Description:", self.description_edit)
-
-        editor_main_layout.addLayout(editor_form_layout)
+        editor_main_layout.addWidget(desc_widget)
+        editor_main_layout.addStretch()
 
         splitter.addWidget(self.editor_panel)
         self.editor_panel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -665,6 +780,7 @@ class SessionBuilderWindow(QMainWindow):
         self.step_crossfade_spin.valueChanged.connect(self._sync_step_crossfade_slider_from_spin)
         self.step_crossfade_curve_combo.currentIndexChanged.connect(self._on_step_curve_changed)
         self.bg_audio_btn.clicked.connect(self._choose_background_audio_file)
+        self.browse_btn.clicked.connect(self._choose_background_audio_file)
         self.bg_audio_clear_btn.clicked.connect(self._clear_background_audio)
         self.bg_audio_vol_slider.valueChanged.connect(self._sync_bg_audio_vol_spin_from_slider)
         self.bg_audio_vol_spin.valueChanged.connect(self._sync_bg_audio_vol_slider_from_spin)
@@ -893,6 +1009,7 @@ class SessionBuilderWindow(QMainWindow):
         # Load background audio path (with fallback to legacy warmup_clip_path)
         bg_audio_path = step.background_audio_path or step.warmup_clip_path or ""
         self.bg_audio_edit.setText(bg_audio_path)
+        self._update_bg_audio_btn_text(bg_audio_path)
 
         # Load background audio volume
         bg_audio_vol = getattr(step, "background_audio_volume", MAX_INDIVIDUAL_GAIN)
@@ -953,6 +1070,7 @@ class SessionBuilderWindow(QMainWindow):
         self.step_crossfade_curve_combo.setCurrentIndex(0)
         # Clear background audio
         self.bg_audio_edit.clear()
+        self._update_bg_audio_btn_text("")
         self.bg_audio_vol_slider.setValue(100)
         self.bg_audio_vol_spin.setValue(MAX_INDIVIDUAL_GAIN)
         self.bg_audio_extend_checkbox.setChecked(True)
@@ -1078,6 +1196,7 @@ class SessionBuilderWindow(QMainWindow):
         if not path:
             return
         self.bg_audio_edit.setText(path)
+        self._update_bg_audio_btn_text(path)
         step = self._get_selected_step()
         if step is not None:
             step.background_audio_path = path
@@ -1085,10 +1204,22 @@ class SessionBuilderWindow(QMainWindow):
 
     def _clear_background_audio(self) -> None:
         self.bg_audio_edit.clear()
+        self._update_bg_audio_btn_text("")
         step = self._get_selected_step()
         if step is not None:
             step.background_audio_path = None
             self._invalidate_assembler()
+
+    def _update_bg_audio_btn_text(self, path: str) -> None:
+        """Update the background audio button text to show filename or <none>."""
+        if path:
+            filename = Path(path).name
+            # Truncate if too long
+            if len(filename) > 12:
+                filename = filename[:9] + "..."
+            self.bg_audio_btn.setText(f"<{filename}>")
+        else:
+            self.bg_audio_btn.setText("<none>")
 
     def _sync_bg_audio_vol_spin_from_slider(self, value: int) -> None:
         # Slider 0-100 maps to 0-MAX_INDIVIDUAL_GAIN
