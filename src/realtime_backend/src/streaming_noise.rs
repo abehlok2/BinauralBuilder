@@ -13,7 +13,9 @@ const BLOCK_SIZE: usize = 4096;
 const HOP_SIZE: usize = BLOCK_SIZE / 2; // 2048, 50% overlap
 
 // --- Crossfade length for FFT noise regeneration ---
-const CROSSFADE_SAMPLES: usize = 2048;
+// Increased from 2048 to 4096 to give bandpass filters more time to adapt
+// during buffer transitions, reducing transient clicking with narrow-band filtering.
+const CROSSFADE_SAMPLES: usize = 4096;
 
 // --- Renormalization window for post-filter RMS tracking ---
 // Increased from 4096 to reduce frequency of gain recalculations and improve
@@ -24,6 +26,12 @@ const RENORM_WINDOW: usize = 8192;
 // Only apply gain correction if the target differs by more than this ratio from current.
 // This prevents continuous micro-adjustments from RMS variations in steady-state noise.
 const RENORM_HYSTERESIS_RATIO: f32 = 0.05;
+
+// --- Per-sample gain smoothing coefficient ---
+// This coefficient determines how quickly gain changes are applied per-sample.
+// A value of 0.9995 creates a smooth transition over ~2000 samples (~45ms at 44.1kHz)
+// to prevent clicking from abrupt gain changes.
+const GAIN_SMOOTHING_COEFF: f32 = 0.9995;
 
 // --- Helper Functions ---
 
@@ -156,6 +164,7 @@ struct FftNoiseGenerator {
     rng: StdRng,
     normal: Normal<f32>,
     renorm_gain: f32,
+    smoothed_gain: f32,
     pre_rms_accum: f32,
     post_rms_accum: f32,
     rms_samples: usize,
@@ -271,6 +280,7 @@ impl FftNoiseGenerator {
             rng,
             normal,
             renorm_gain: 1.0,
+            smoothed_gain: 1.0,
             pre_rms_accum: 0.0,
             post_rms_accum: 0.0,
             rms_samples: 0,
@@ -436,7 +446,12 @@ impl FftNoiseGenerator {
             self.rms_samples = 0;
         }
 
-        post * self.renorm_gain
+        // Apply per-sample gain smoothing to prevent clicking from abrupt gain changes.
+        // This smoothly transitions the applied gain toward renorm_gain over time.
+        self.smoothed_gain =
+            GAIN_SMOOTHING_COEFF * self.smoothed_gain + (1.0 - GAIN_SMOOTHING_COEFF) * self.renorm_gain;
+
+        post * self.smoothed_gain
     }
 }
 
@@ -480,6 +495,10 @@ struct OlaState {
     // Scratch buffers for block processing
     block_l: Vec<f64>,
     block_r: Vec<f64>,
+
+    // Smoothed RMS compensation gains for each channel (prevents clicking)
+    smoothed_gain_l: f64,
+    smoothed_gain_r: f64,
 }
 
 impl OlaState {
@@ -501,6 +520,8 @@ impl OlaState {
             window,
             block_l: vec![0.0; BLOCK_SIZE],
             block_r: vec![0.0; BLOCK_SIZE],
+            smoothed_gain_l: 1.0,
+            smoothed_gain_r: 1.0,
         }
     }
 }
@@ -877,21 +898,36 @@ impl StreamingNoise {
             let rms_l = (sum_sq_l / BLOCK_SIZE as f64).sqrt();
             let rms_r = (sum_sq_r / BLOCK_SIZE as f64).sqrt();
 
-            // Apply gain to restore original RMS level.
+            // Compute target gains to restore original RMS level.
             // Clamp is critical: with deep/high-Q cascades, tiny rms_out values can
             // create enormous gains that produce spikes. Those spikes poison peak
             // calibration and make the stream end up extremely quiet.
-            if rms_l > 1e-8 {
-                let gain_l = (rms_in / rms_l).clamp(0.25, 16.0);
-                for sample in self.ola.block_l.iter_mut() {
-                    *sample *= gain_l;
-                }
+            let target_gain_l = if rms_l > 1e-8 {
+                (rms_in / rms_l).clamp(0.25, 16.0)
+            } else {
+                self.ola.smoothed_gain_l
+            };
+            let target_gain_r = if rms_r > 1e-8 {
+                (rms_in / rms_r).clamp(0.25, 16.0)
+            } else {
+                self.ola.smoothed_gain_r
+            };
+
+            // Apply per-sample gain smoothing to prevent clicking from abrupt gain changes.
+            // Use a smoothing coefficient that transitions over the block length.
+            // This is more aggressive than the post-filter renorm since blocks are larger.
+            let smooth_coeff = GAIN_SMOOTHING_COEFF as f64;
+            let one_minus_coeff = 1.0 - smooth_coeff;
+
+            for sample in self.ola.block_l.iter_mut() {
+                self.ola.smoothed_gain_l =
+                    smooth_coeff * self.ola.smoothed_gain_l + one_minus_coeff * target_gain_l;
+                *sample *= self.ola.smoothed_gain_l;
             }
-            if rms_r > 1e-8 {
-                let gain_r = (rms_in / rms_r).clamp(0.25, 16.0);
-                for sample in self.ola.block_r.iter_mut() {
-                    *sample *= gain_r;
-                }
+            for sample in self.ola.block_r.iter_mut() {
+                self.ola.smoothed_gain_r =
+                    smooth_coeff * self.ola.smoothed_gain_r + one_minus_coeff * target_gain_r;
+                *sample *= self.ola.smoothed_gain_r;
             }
         }
 
