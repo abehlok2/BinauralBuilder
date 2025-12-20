@@ -439,6 +439,8 @@ class SessionBuilderWindow(QMainWindow):
         self.preset_combo.setEditable(True)
         self.preset_combo.lineEdit().setReadOnly(True)
         self.preset_combo.lineEdit().setAlignment(Qt.AlignCenter)
+        # Add left padding to offset the dropdown arrow (20px) for true visual centering
+        self.preset_combo.lineEdit().setStyleSheet("padding-left: 20px;")
         self._preset_combo_filter = ComboBoxClickFilter(self.preset_combo)
         self.preset_combo.lineEdit().installEventFilter(self._preset_combo_filter)
         binaural_col_layout.addWidget(self.preset_combo, alignment=Qt.AlignCenter)
@@ -486,6 +488,8 @@ class SessionBuilderWindow(QMainWindow):
         self.noise_combo.setEditable(True)
         self.noise_combo.lineEdit().setReadOnly(True)
         self.noise_combo.lineEdit().setAlignment(Qt.AlignCenter)
+        # Add left padding to offset the dropdown arrow (20px) for true visual centering
+        self.noise_combo.lineEdit().setStyleSheet("padding-left: 20px;")
         self._noise_combo_filter = ComboBoxClickFilter(self.noise_combo)
         self.noise_combo.lineEdit().installEventFilter(self._noise_combo_filter)
         noise_col_layout.addWidget(self.noise_combo, alignment=Qt.AlignCenter)
