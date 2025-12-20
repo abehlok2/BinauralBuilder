@@ -10,30 +10,28 @@ from typing import Callable, Mapping, MutableSequence, Optional
 from PyQt5.QtCore import QModelIndex, Qt, QTimer
 from PyQt5.QtWidgets import (
     QAction,
+    QActionGroup,
     QCheckBox,
+    QComboBox,
+    QDoubleSpinBox,
     QFileDialog,
+    QFormLayout,
+    QFrame,
     QGridLayout,
-    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QSizePolicy,
     QSlider,
+    QSplitter,
+    QStyle,
     QTableView,
     QTextEdit,
     QVBoxLayout,
     QWidget,
-    QDoubleSpinBox,
-    QComboBox,
-    QSplitter,
-    QFormLayout,
-    QSplitter,
-    QFormLayout,
-    QStyle,
-    QFrame,
-    QActionGroup,
 )
 
 from src.audio.session_engine import SessionAssembler
@@ -242,11 +240,12 @@ class SessionBuilderWindow(QMainWindow):
         self.setCentralWidget(central)
         main_layout = QVBoxLayout(central)
         main_layout.setContentsMargins(20, 20, 20, 20)
-        main_layout.setSpacing(20)
+        main_layout.setSpacing(12)
 
         # --- Top Panel: Control & Playback (Card Style) ---
         control_panel = QFrame()
         control_panel.setObjectName("control_panel")
+        control_panel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         control_layout = QHBoxLayout(control_panel)
         control_layout.setContentsMargins(20, 20, 20, 20)
         control_layout.setSpacing(30)
@@ -330,12 +329,9 @@ class SessionBuilderWindow(QMainWindow):
         
         control_layout.addLayout(playback_layout, 0) # No stretch, fixed width
 
-        main_layout.addWidget(control_panel)
-
         # --- Main Content Splitter ---
         splitter = QSplitter(Qt.Horizontal)
         splitter.setHandleWidth(2) # Make handle visible but thin
-        main_layout.addWidget(splitter, 1)
 
         # Left: Steps List (Directly in splitter, styled by theme)
         step_container = QWidget()
@@ -511,7 +507,7 @@ class SessionBuilderWindow(QMainWindow):
         self.bg_audio_extend_checkbox.setChecked(True)
 
         self.description_edit = QTextEdit()
-        self.description_edit.setMaximumHeight(100)
+        self.description_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.description_edit.setToolTip("Notes about the intention or feel of the step.")
 
         editor_form_layout.addRow("Binaural Preset:", self.preset_combo)
@@ -527,9 +523,9 @@ class SessionBuilderWindow(QMainWindow):
         editor_form_layout.addRow("Description:", self.description_edit)
 
         editor_main_layout.addLayout(editor_form_layout)
-        editor_main_layout.addStretch() # Push form to top
 
         splitter.addWidget(self.editor_panel)
+        self.editor_panel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         
         # Set initial splitter sizes (approx 40% list, 60% details)
         splitter.setSizes([400, 600])
@@ -537,6 +533,7 @@ class SessionBuilderWindow(QMainWindow):
         # --- Bottom Panel: Playback Controls ---
         playback_panel = QFrame()
         playback_panel.setObjectName("playback_panel")
+        playback_panel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         playback_layout = QHBoxLayout(playback_panel)
         playback_layout.setContentsMargins(10, 10, 10, 10)
         playback_layout.setSpacing(15)
@@ -578,13 +575,38 @@ class SessionBuilderWindow(QMainWindow):
         playback_layout.addWidget(self.vol_icon)
         playback_layout.addWidget(self.vol_slider)
 
-        main_layout.addWidget(playback_panel)
-
         # Status label with backend indicator
         backend_type = "Rust" if self._using_rust_backend else "Python"
         self.status_label = QLabel(f"Ready (Streaming: {backend_type} backend)", central)
-        self.status_label.setStyleSheet("color: #888888; margin-top: 5px;")
-        main_layout.addWidget(self.status_label)
+        self.status_label.setStyleSheet("color: #888888;")
+        self.status_label.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+
+        # --- Vertical Splitter to improve vertical resize behavior ---
+        bottom_container = QWidget()
+        bottom_container_layout = QVBoxLayout(bottom_container)
+        bottom_container_layout.setContentsMargins(0, 0, 0, 0)
+        bottom_container_layout.setSpacing(6)
+        bottom_container_layout.addWidget(playback_panel)
+        bottom_container_layout.addWidget(self.status_label)
+
+        vertical_splitter = QSplitter(Qt.Vertical)
+        vertical_splitter.setHandleWidth(6)
+        vertical_splitter.addWidget(control_panel)
+        vertical_splitter.addWidget(splitter)
+        vertical_splitter.addWidget(bottom_container)
+        vertical_splitter.setStretchFactor(0, 0)
+        vertical_splitter.setStretchFactor(1, 1)
+        vertical_splitter.setStretchFactor(2, 0)
+        vertical_splitter.setSizes(
+            [
+                control_panel.sizeHint().height(),
+                max(600, splitter.sizeHint().height()),
+                playback_panel.sizeHint().height() + self.status_label.sizeHint().height(),
+            ]
+        )
+
+        # Add splitter to central layout
+        main_layout.addWidget(vertical_splitter, 1)
 
         self._populate_presets()
         self._apply_initial_defaults()
@@ -1380,4 +1402,3 @@ class SessionBuilderWindow(QMainWindow):
 
 
 __all__ = ["SessionBuilderWindow"]
-
