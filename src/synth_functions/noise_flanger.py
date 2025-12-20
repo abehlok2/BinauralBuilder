@@ -49,6 +49,70 @@ DEFAULT_SAMPLE_RATE = 44100  # Hz
 DEFAULT_LFO_FREQ = 1.0 / 12.0  # Hz, for 12-second period
 
 
+def _time_varying_notch_coefficients(freq_series, q_series, sample_rate):
+    """Compute per-sample normalized biquad coefficients for a swept notch."""
+    freq_series = np.clip(np.asarray(freq_series, dtype=np.float64), 1.0, sample_rate * 0.49 - 1e-6)
+    q_series = np.maximum(np.asarray(q_series, dtype=np.float64), 1e-6)
+    w0 = 2.0 * np.pi * freq_series / sample_rate
+    cos_w0 = np.cos(w0)
+    sin_w0 = np.sin(w0)
+    alpha = sin_w0 / (2.0 * q_series)
+
+    a0 = 1.0 + alpha
+    inv_a0 = 1.0 / a0
+    b0 = inv_a0
+    b1 = (-2.0 * cos_w0) * inv_a0
+    b2 = inv_a0
+    a1 = (-2.0 * cos_w0) * inv_a0
+    a2 = (1.0 - alpha) * inv_a0
+    return b0, b1, b2, a1, a2
+
+
+@numba.njit(cache=False)
+def _time_varying_biquad(block, b0, b1, b2, a1, a2, state, casc_counts):
+    """Apply time-varying notch coefficients with persistent state per cascade."""
+    n = block.shape[0]
+    max_stages = state.shape[0]
+    for i in range(n):
+        sample = block[i]
+        casc = casc_counts[i]
+        if casc < 1:
+            casc = 1
+        elif casc > max_stages:
+            casc = max_stages
+        for s in range(casc):
+            z1 = state[s, 0]
+            z2 = state[s, 1]
+            y = sample * b0[i] + z1
+            z1 = sample * b1[i] - y * a1[i] + z2
+            z2 = sample * b2[i] - y * a2[i]
+            state[s, 0] = z1
+            state[s, 1] = z2
+            sample = y
+        block[i] = sample
+    return block
+
+
+def _pad_series(series, start_idx, block_size, fallback_value=0.0):
+    """Slice `series` for a block and pad with the last available value."""
+    segment = series[start_idx : start_idx + block_size]
+    if segment.shape[0] < block_size:
+        if segment.shape[0] == 0:
+            pad_val = fallback_value
+        else:
+            pad_val = float(segment[-1])
+        segment = np.pad(segment, (0, block_size - segment.shape[0]), constant_values=pad_val)
+    return np.asarray(segment, dtype=np.float64)
+
+
+def _filter_block_with_swept_notch(block, freq_series, q_series, casc_counts, state, sample_rate):
+    """Filter a block in-place with per-sample notch coefficients and persistent state."""
+    b0, b1, b2, a1, a2 = _time_varying_notch_coefficients(freq_series, q_series, sample_rate)
+    casc_counts = np.asarray(casc_counts, dtype=np.int64)
+    casc_counts = np.clip(casc_counts, 1, state.shape[0])
+    return _time_varying_biquad(block, b0, b1, b2, a1, a2, state, casc_counts)
+
+
 # =========================================================
 # Loudness / limiting / dynamics helpers (POST PROCESSING)
 # =========================================================
@@ -842,6 +906,14 @@ def _apply_deep_swept_notches_varying(
     num_blocks = (n_samples + hop_size - 1) // hop_size
     num_sweeps = len(min_freq_arrays)
 
+    sweep_states = []
+    for casc_arr in cascade_count_arrays:
+        try:
+            max_casc = int(np.max(np.round(casc_arr)))
+        except Exception:
+            max_casc = 1
+        sweep_states.append(np.zeros((max(1, max_casc), 2), dtype=np.float64))
+
     for block_idx in range(num_blocks):
         start_idx = block_idx * hop_size
         end_idx = min(start_idx + block_size, n_samples)
@@ -849,33 +921,57 @@ def _apply_deep_swept_notches_varying(
         if actual_block_size < 100:
             continue
 
-        block = np.zeros(block_size)
+        block = np.zeros(block_size, dtype=np.float64)
         block[:actual_block_size] = output[start_idx:end_idx]
 
         windowed_block = block * window
         filtered_block = windowed_block.copy()
 
-        center_idx = start_idx + actual_block_size // 2
-
         for i in range(num_sweeps):
-            min_f = min_freq_arrays[i][center_idx]
-            max_f = max_freq_arrays[i][center_idx]
-            center_freq = (min_f + max_f) / 2.0
-            freq_range = (max_f - min_f) / 2.0
-            notch_freq = center_freq + freq_range * lfo_array[center_idx]
+            fallback_idx = min(start_idx, len(min_freq_arrays[i]) - 1)
+            min_series = _pad_series(
+                min_freq_arrays[i],
+                start_idx,
+                block_size,
+                fallback_value=float(min_freq_arrays[i][fallback_idx]),
+            )
+            max_series = _pad_series(
+                max_freq_arrays[i],
+                start_idx,
+                block_size,
+                fallback_value=float(max_freq_arrays[i][fallback_idx]),
+            )
+            lfo_series = _pad_series(
+                lfo_array,
+                start_idx,
+                block_size,
+                fallback_value=float(lfo_array[fallback_idx]),
+            )
+            center_series = 0.5 * (min_series + max_series)
+            freq_range = 0.5 * (max_series - min_series)
+            notch_freq_series = center_series + freq_range * lfo_series
 
-            if notch_freq >= sample_rate * 0.49:
-                continue
+            q_series = _pad_series(
+                notch_q_arrays[i],
+                start_idx,
+                block_size,
+                fallback_value=float(notch_q_arrays[i][fallback_idx]),
+            )
+            casc_series = _pad_series(
+                np.round(cascade_count_arrays[i]),
+                start_idx,
+                block_size,
+                fallback_value=float(cascade_count_arrays[i][fallback_idx]),
+            )
 
-            q_val = float(notch_q_arrays[i][center_idx])
-            casc = int(round(cascade_count_arrays[i][center_idx]))
-            casc = max(1, casc)
-            for _ in range(casc):
-                try:
-                    b, a = signal.iirnotch(notch_freq, q_val, sample_rate)
-                    filtered_block = signal.lfilter(b, a, filtered_block)
-                except ValueError:
-                    continue
+            filtered_block = _filter_block_with_swept_notch(
+                filtered_block,
+                notch_freq_series,
+                q_series,
+                casc_series,
+                sweep_states[i],
+                sample_rate,
+            )
 
         output_accumulator[start_idx : start_idx + block_size] += filtered_block
         window_accumulator[start_idx : start_idx + block_size] += window
@@ -974,6 +1070,7 @@ def _apply_deep_swept_notches_single_phase(
         window_accumulator = np.zeros(n_samples + block_size, dtype=np.float32)
 
     num_blocks = (n_samples + hop_size - 1) // hop_size
+    sweep_states = [np.zeros((max(1, c), 2), dtype=np.float64) for c in cascade_counts]
 
     for block_idx in range(num_blocks):
         start_idx = block_idx * hop_size
@@ -982,26 +1079,29 @@ def _apply_deep_swept_notches_single_phase(
         if actual_block_size < 100:
             continue
 
-        block = np.zeros(block_size)
+        block = np.zeros(block_size, dtype=np.float64)
         block[:actual_block_size] = output[start_idx:end_idx]
 
         windowed_block = block * window
         filtered_block = windowed_block.copy()
 
-        block_center_idx = start_idx + actual_block_size // 2
-
         for sweep_idx, sweep in enumerate(base_freq_sweeps):
-            notch_freq = sweep[block_center_idx]
-            if notch_freq >= sample_rate * 0.49:
-                continue
-            q_val = notch_qs[sweep_idx]
-            cascades = cascade_counts[sweep_idx]
-            for _ in range(cascades):
-                try:
-                    b, a = signal.iirnotch(notch_freq, q_val, sample_rate)
-                    filtered_block = signal.lfilter(b, a, filtered_block)
-                except ValueError:
-                    continue
+            fallback_idx = min(start_idx, len(sweep) - 1)
+            notch_freq_series = _pad_series(
+                sweep, start_idx, block_size, fallback_value=float(sweep[fallback_idx])
+            )
+            q_series = np.full(block_size, float(notch_qs[sweep_idx]), dtype=np.float64)
+            cascades = max(1, int(cascade_counts[sweep_idx]))
+            casc_series = np.full(block_size, cascades, dtype=np.int64)
+
+            filtered_block = _filter_block_with_swept_notch(
+                filtered_block,
+                notch_freq_series,
+                q_series,
+                casc_series,
+                sweep_states[sweep_idx],
+                sample_rate,
+            )
 
         output_accumulator[start_idx : start_idx + block_size] += filtered_block
         window_accumulator[start_idx : start_idx + block_size] += window
