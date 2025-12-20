@@ -10,6 +10,7 @@ from typing import Callable, Mapping, MutableSequence, Optional
 from PyQt5.QtCore import QModelIndex, Qt, QTimer
 from PyQt5.QtWidgets import (
     QAction,
+    QCheckBox,
     QFileDialog,
     QGridLayout,
     QGroupBox,
@@ -73,6 +74,8 @@ class SessionStepModel(StepModel):
             if index.column() == 0:
                 return f"{step.duration:.2f}"
             if index.column() == 1:
+                if not step.binaural_preset_id:
+                    return "None"
                 preset = self._preset_lookup.get(step.binaural_preset_id)
                 return preset.label if preset else step.binaural_preset_id
             if index.column() == 2:
@@ -497,6 +500,15 @@ class SessionBuilderWindow(QMainWindow):
         bg_audio_vol_layout.addWidget(self.bg_audio_vol_slider)
         bg_audio_vol_layout.addWidget(self.bg_audio_vol_spin)
 
+        # Background Audio extend checkbox
+        self.bg_audio_extend_checkbox = QCheckBox("Extend across subsequent steps")
+        self.bg_audio_extend_checkbox.setToolTip(
+            "When checked, background audio continues playing into subsequent steps "
+            "if it is longer than this step's duration. When unchecked, audio fades "
+            "out at the end of this step."
+        )
+        self.bg_audio_extend_checkbox.setChecked(True)
+
         self.description_edit = QTextEdit()
         self.description_edit.setMaximumHeight(100)
         self.description_edit.setToolTip("Notes about the intention or feel of the step.")
@@ -510,6 +522,7 @@ class SessionBuilderWindow(QMainWindow):
         editor_form_layout.addRow("Step Curve:", self.step_crossfade_curve_combo)
         editor_form_layout.addRow("Background Audio:", bg_audio_file_widget)
         editor_form_layout.addRow("Background Volume:", bg_audio_vol_widget)
+        editor_form_layout.addRow("", self.bg_audio_extend_checkbox)
         editor_form_layout.addRow("Description:", self.description_edit)
 
         editor_main_layout.addLayout(editor_form_layout)
@@ -598,6 +611,7 @@ class SessionBuilderWindow(QMainWindow):
 
     def _populate_presets(self) -> None:
         self.preset_combo.clear()
+        self.preset_combo.addItem("None", None)
         for preset_id, preset in sorted(self._binaural_catalog.items()):
             self.preset_combo.addItem(preset.label, preset_id)
         self.noise_combo.clear()
@@ -631,6 +645,7 @@ class SessionBuilderWindow(QMainWindow):
         self.bg_audio_clear_btn.clicked.connect(self._clear_background_audio)
         self.bg_audio_vol_slider.valueChanged.connect(self._sync_bg_audio_vol_spin_from_slider)
         self.bg_audio_vol_spin.valueChanged.connect(self._sync_bg_audio_vol_slider_from_spin)
+        self.bg_audio_extend_checkbox.stateChanged.connect(self._on_bg_audio_extend_changed)
         self.description_edit.textChanged.connect(self._on_description_changed)
 
         self.save_btn.clicked.connect(self._save_session)
@@ -820,10 +835,14 @@ class SessionBuilderWindow(QMainWindow):
         self.step_crossfade_curve_combo.blockSignals(True)
         self.bg_audio_vol_slider.blockSignals(True)
         self.bg_audio_vol_spin.blockSignals(True)
+        self.bg_audio_extend_checkbox.blockSignals(True)
 
         idx = self.preset_combo.findData(step.binaural_preset_id)
         if idx >= 0:
             self.preset_combo.setCurrentIndex(idx)
+        else:
+            # None or unknown preset - select "None" which is index 0
+            self.preset_combo.setCurrentIndex(0)
 
         binaural_vol = getattr(step, "binaural_volume", MAX_INDIVIDUAL_GAIN)
         # Slider 0-100 maps to 0-MAX_INDIVIDUAL_GAIN
@@ -857,6 +876,10 @@ class SessionBuilderWindow(QMainWindow):
         self.bg_audio_vol_slider.setValue(int(round((bg_audio_vol / MAX_INDIVIDUAL_GAIN) * 100)))
         self.bg_audio_vol_spin.setValue(bg_audio_vol)
 
+        # Load background audio extend flag (default True for backwards compatibility)
+        bg_audio_extend = getattr(step, "background_audio_extend", True)
+        self.bg_audio_extend_checkbox.setChecked(bg_audio_extend)
+
         self.description_edit.blockSignals(True)
         self.description_edit.setPlainText(step.description)
         self.description_edit.blockSignals(False)
@@ -873,6 +896,7 @@ class SessionBuilderWindow(QMainWindow):
         self.step_crossfade_curve_combo.blockSignals(False)
         self.bg_audio_vol_slider.blockSignals(False)
         self.bg_audio_vol_spin.blockSignals(False)
+        self.bg_audio_extend_checkbox.blockSignals(False)
 
     def _clear_step_editors(self) -> None:
         default_duration = float(self._defaults.get("step_duration", 1.0))
@@ -908,6 +932,7 @@ class SessionBuilderWindow(QMainWindow):
         self.bg_audio_edit.clear()
         self.bg_audio_vol_slider.setValue(100)
         self.bg_audio_vol_spin.setValue(MAX_INDIVIDUAL_GAIN)
+        self.bg_audio_extend_checkbox.setChecked(True)
         self.description_edit.blockSignals(True)
         self.description_edit.clear()
         self.description_edit.blockSignals(False)
@@ -941,10 +966,10 @@ class SessionBuilderWindow(QMainWindow):
         if step is None or index < 0:
             return
         preset_id = self.preset_combo.itemData(index)
-        if preset_id:
-            step.binaural_preset_id = preset_id
-            self._refresh_step_model()
-            self._invalidate_assembler()
+        # preset_id can be None for the "None" option
+        step.binaural_preset_id = preset_id
+        self._refresh_step_model()
+        self._invalidate_assembler()
 
     def _on_noise_changed(self, index: int) -> None:
         step = self._get_selected_step()
@@ -1060,6 +1085,13 @@ class SessionBuilderWindow(QMainWindow):
         step.background_audio_volume = float(value)
         self._invalidate_assembler()
 
+    def _on_bg_audio_extend_changed(self, state: int) -> None:
+        step = self._get_selected_step()
+        if step is None:
+            return
+        step.background_audio_extend = bool(state)
+        self._invalidate_assembler()
+
     def _on_description_changed(self) -> None:
         step = self._get_selected_step()
         if step is None:
@@ -1085,29 +1117,22 @@ class SessionBuilderWindow(QMainWindow):
         # However, if the user just opened the app, the UI should already reflect defaults.
         # Let's assume _add_step reads from UI.
         
+        # preset_id can be None if user explicitly selected "None"
         preset_id = ui_preset_id
-        if not preset_id and default_preset_id:
+        # Only fall back to default if combo is at initial state (not explicitly selected "None")
+        if preset_id is None and self.preset_combo.currentIndex() != 0 and default_preset_id:
              # Try to find default in combo
              idx = self.preset_combo.findData(default_preset_id)
              if idx >= 0:
                  self.preset_combo.setCurrentIndex(idx)
                  preset_id = default_preset_id
-        
-        if not preset_id and self.preset_combo.count():
-            preset_id = self.preset_combo.itemData(0)
-            
+
         # Noise
         ui_noise_id = self.noise_combo.itemData(self.noise_combo.currentIndex())
-        default_noise_id = self._defaults.get("default_noise_id")
-        
         noise_id = ui_noise_id
-        # If UI is "None" (index 0 usually), check if we should enforce default?
-        # If the user explicitly selected None, we should respect it.
-        # But if it's just the initial state...
-        # Let's rely on the UI being initialized with defaults.
-        
+
         step = SessionStep(
-            binaural_preset_id=str(preset_id or ""),
+            binaural_preset_id=preset_id,  # Can be None for no binaural
             duration=self.duration_spin.value(),
             noise_preset_id=noise_id,
             noise_volume=self.noise_vol_spin.value(),
@@ -1116,6 +1141,7 @@ class SessionBuilderWindow(QMainWindow):
             crossfade_curve=None,
             background_audio_path=self.bg_audio_edit.text() or None,
             background_audio_volume=self.bg_audio_vol_spin.value(),
+            background_audio_extend=self.bg_audio_extend_checkbox.isChecked(),
             description=self.description_edit.toPlainText(),
         )
         self._session.steps.append(step)
