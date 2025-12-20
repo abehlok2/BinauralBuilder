@@ -7,7 +7,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Callable, Mapping, MutableSequence, Optional
 
-from PyQt5.QtCore import QModelIndex, Qt, QTimer
+from PyQt5.QtCore import QEvent, QModelIndex, QObject, Qt, QTimer
 from PyQt5.QtWidgets import (
     QAction,
     QActionGroup,
@@ -51,6 +51,20 @@ from .defaults_dialog import DefaultsDialog, load_defaults
 
 
 MAX_NORMALIZATION_UI = 0.95
+
+
+class ComboBoxClickFilter(QObject):
+    """Event filter that makes clicking anywhere on a combo box open its dropdown."""
+
+    def __init__(self, combo: QComboBox) -> None:
+        super().__init__(combo)
+        self._combo = combo
+
+    def eventFilter(self, obj: QObject, event: QEvent) -> bool:
+        if event.type() == QEvent.MouseButtonPress:
+            self._combo.showPopup()
+            return True
+        return super().eventFilter(obj, event)
 
 
 class SessionStepModel(StepModel):
@@ -425,6 +439,8 @@ class SessionBuilderWindow(QMainWindow):
         self.preset_combo.setEditable(True)
         self.preset_combo.lineEdit().setReadOnly(True)
         self.preset_combo.lineEdit().setAlignment(Qt.AlignCenter)
+        self._preset_combo_filter = ComboBoxClickFilter(self.preset_combo)
+        self.preset_combo.lineEdit().installEventFilter(self._preset_combo_filter)
         binaural_col_layout.addWidget(self.preset_combo, alignment=Qt.AlignCenter)
 
         self.binaural_vol_slider = QSlider(Qt.Vertical)
@@ -470,6 +486,8 @@ class SessionBuilderWindow(QMainWindow):
         self.noise_combo.setEditable(True)
         self.noise_combo.lineEdit().setReadOnly(True)
         self.noise_combo.lineEdit().setAlignment(Qt.AlignCenter)
+        self._noise_combo_filter = ComboBoxClickFilter(self.noise_combo)
+        self.noise_combo.lineEdit().installEventFilter(self._noise_combo_filter)
         noise_col_layout.addWidget(self.noise_combo, alignment=Qt.AlignCenter)
 
         self.noise_vol_slider = QSlider(Qt.Vertical)
