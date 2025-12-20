@@ -933,7 +933,12 @@ def assemble_track_from_data(track_data, sample_rate, crossfade_duration, crossf
     bg_cfg = track_data.get("background_noise", {})
     bg_file = None
     if isinstance(bg_cfg, dict):
-        bg_file = bg_cfg.get("file") or bg_cfg.get("params_path") or bg_cfg.get("noise_file")
+        bg_file = (
+            bg_cfg.get("file_path")
+            or bg_cfg.get("file")
+            or bg_cfg.get("params_path")
+            or bg_cfg.get("noise_file")
+        )
     if bg_file:
         try:
             params = load_noise_params(bg_file)

@@ -456,7 +456,8 @@ def session_to_track_data(
                 f"Noise preset '{choice.id}' is missing an associated parameter file."
             )
         track_data["background_noise"] = {
-            "noise_file": params_path,
+            "file_path": params_path,
+            "params_path": params_path,
             "gain": session.background_noise_gain,
             "start_time": session.background_noise_start_time,
             "fade_in": session.background_noise_fade_in,

@@ -134,7 +134,7 @@ impl BackgroundNoise {
         params.sample_rate = device_rate;
         let start_sample = (params.start_time.max(0.0) * device_rate as f32) as usize;
         // Global startup fading is applied elsewhere; keep the per-noise envelope immediate.
-        let fade_in_samples = 0;
+        let fade_in_samples = (params.fade_in.max(0.0) * device_rate as f32) as usize;
         let fade_out_samples = (params.fade_out.max(0.0) * device_rate as f32) as usize;
         let duration_samples = if params.duration_seconds > 0.0 {
             Some((params.duration_seconds * device_rate as f32) as usize)
@@ -272,6 +272,29 @@ fn noise_configs_compatible(
             if old_data.file_path != new_data.file_path {
                 return false;
             }
+
+            if (old_data.start_time - new_data.start_time).abs() > f64::EPSILON {
+                return false;
+            }
+
+            if (old_data.fade_in - new_data.fade_in).abs() > f64::EPSILON {
+                return false;
+            }
+
+            if (old_data.fade_out - new_data.fade_out).abs() > f64::EPSILON {
+                return false;
+            }
+
+            if old_data.amp_envelope.len() != new_data.amp_envelope.len() {
+                return false;
+            }
+            for (old_point, new_point) in old_data.amp_envelope.iter().zip(&new_data.amp_envelope) {
+                if (old_point[0] - new_point[0]).abs() > f32::EPSILON
+                    || (old_point[1] - new_point[1]).abs() > f32::EPSILON
+                {
+                    return false;
+                }
+            }
             // Compare params - must be identical for the generator to be reusable
             // We compare the JSON serialization to handle nested structures
             match (&old_data.params, &new_data.params) {
@@ -289,6 +312,16 @@ fn noise_configs_compatible(
                 }
             }
         }
+    }
+}
+
+fn apply_background_noise_overrides(cfg: &BackgroundNoiseData, params: &mut NoiseParams) {
+    params.start_time = cfg.start_time as f32;
+    params.fade_in = cfg.fade_in as f32;
+    params.fade_out = cfg.fade_out as f32;
+
+    if !cfg.amp_envelope.is_empty() {
+        params.amp_envelope = cfg.amp_envelope.clone();
     }
 }
 
@@ -569,7 +602,9 @@ impl TrackScheduler {
 
         let background_noise = if let Some(noise_cfg) = &track.background_noise {
             if !noise_cfg.file_path.is_empty() && noise_cfg.file_path.ends_with(".noise") {
-                if let Ok(params) = crate::noise_params::load_noise_params(&noise_cfg.file_path) {
+                if let Ok(mut params) = crate::noise_params::load_noise_params(&noise_cfg.file_path)
+                {
+                    apply_background_noise_overrides(noise_cfg, &mut params);
                     Some(BackgroundNoise::from_params(
                         params,
                         noise_cfg.amp * cfg.noise_gain,
@@ -579,8 +614,10 @@ impl TrackScheduler {
                     None
                 }
             } else if let Some(params) = &noise_cfg.params {
+                let mut params = params.clone();
+                apply_background_noise_overrides(noise_cfg, &mut params);
                 Some(BackgroundNoise::from_params(
-                    params.clone(),
+                    params,
                     noise_cfg.amp * cfg.noise_gain,
                     device_rate,
                 ))
@@ -1223,7 +1260,23 @@ impl TrackScheduler {
 
 #[cfg(test)]
 mod tests {
-    use super::CrossfadeCurve;
+    use super::{
+        BackgroundNoiseData, CrossfadeCurve, GlobalSettings, StepData, TrackData,
+        MAX_INDIVIDUAL_GAIN,
+    };
+    use crate::noise_params::NoiseParams;
+
+    fn make_silent_step(duration: f64) -> StepData {
+        StepData {
+            duration,
+            description: String::new(),
+            start: Some(0.0),
+            voices: Vec::new(),
+            binaural_volume: MAX_INDIVIDUAL_GAIN,
+            noise_volume: MAX_INDIVIDUAL_GAIN,
+            normalization_level: 0.95,
+        }
+    }
 
     #[test]
     fn test_fade_curves_match_python() {
@@ -1246,5 +1299,55 @@ mod tests {
                 assert!((g_in - exp_in).abs() < 1e-6);
             }
         }
+    }
+
+    #[test]
+    fn background_noise_respects_start_and_envelope() {
+        let sample_rate = 10u32;
+        let mut params = NoiseParams {
+            duration_seconds: 3.0,
+            ..Default::default()
+        };
+        params.sweeps = Vec::new();
+
+        let track = TrackData {
+            global_settings: GlobalSettings {
+                sample_rate,
+                crossfade_duration: 0.0,
+                crossfade_curve: "linear".to_string(),
+                output_filename: None,
+                normalization_level: 0.95,
+            },
+            steps: vec![make_silent_step(3.0)],
+            clips: Vec::new(),
+            background_noise: Some(BackgroundNoiseData {
+                file_path: "inline".to_string(),
+                amp: 1.0,
+                params: Some(params),
+                start_time: 0.5,
+                fade_in: 0.2,
+                fade_out: 0.0,
+                amp_envelope: vec![[0.0, 1.0], [0.6, 0.0]],
+            }),
+        };
+
+        let mut scheduler = super::TrackScheduler::new(track, sample_rate);
+
+        let mut pre_start = vec![0.0f32; 4 * 2];
+        scheduler.process_block(&mut pre_start);
+        assert!(pre_start.iter().all(|v| v.abs() < 1e-6));
+
+        let mut onset = vec![0.0f32; 4 * 2];
+        scheduler.process_block(&mut onset);
+        assert!(onset[..2].iter().all(|v| v.abs() < 1e-6));
+        let onset_energy: f32 = onset.iter().map(|v| v.abs()).sum();
+        assert!(onset_energy > 0.0);
+
+        let mut tail = vec![0.0f32; 6 * 2];
+        scheduler.process_block(&mut tail);
+        let head_energy: f32 = tail[..8].iter().map(|v| v.abs()).sum();
+        let tail_energy: f32 = tail[8..].iter().map(|v| v.abs()).sum();
+        assert!(head_energy > 0.0);
+        assert!(tail_energy < 1e-5);
     }
 }

@@ -95,7 +95,8 @@ def test_session_to_track_data_conversion(sample_presets, tmp_path):
     assert globals_cfg["crossfade_curve"] == "equal_power"
     assert globals_cfg["output_filename"] == "focus_session.flac"
 
-    assert track_data["background_noise"]["noise_file"] == str(noise_path)
+    assert track_data["background_noise"]["file_path"] == str(noise_path)
+    assert track_data["background_noise"]["params_path"] == str(noise_path)
     assert track_data["background_noise"]["gain"] == pytest.approx(0.4)
     assert track_data["background_noise"]["start_time"] == pytest.approx(15.0)
 
