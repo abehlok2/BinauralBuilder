@@ -3014,6 +3014,39 @@ class TrackEditorApp(QMainWindow):
             QApplication.processEvents()
 
     # --- Test Step Preview Logic ---
+    def _prepare_step_test_continuity_context(self, step_index, global_settings):
+        """Build continuity context for step preview so tester matches full-track gain behavior."""
+        continuity_enabled = bool(global_settings.get("preserve_relative_step_loudness", False))
+        continuity_context = {
+            "enabled": continuity_enabled,
+            "prev_step_reference": None,
+        }
+        if not continuity_enabled or step_index <= 0:
+            return continuity_context
+
+        for prior_index in range(step_index):
+            try:
+                prior_step = self.track_data["steps"][prior_index]
+            except (IndexError, KeyError, TypeError):
+                break
+
+            try:
+                prior_duration = float(prior_step.get("duration", 0.0))
+            except (TypeError, ValueError):
+                continue
+
+            if prior_duration <= 0.0:
+                continue
+
+            generate_single_step_audio_segment(
+                prior_step,
+                global_settings,
+                prior_duration,
+                continuity_context=continuity_context,
+            )
+
+        return continuity_context
+
     def _generate_test_step_audio(self, step_index):
         if not AUDIO_GENERATION_AVAILABLE or generate_single_step_audio_segment is None:
             QMessageBox.warning(self, "Audio Engine Error", "Audio generation function (generate_single_step_audio_segment) not available. Cannot generate test audio.")
@@ -3035,12 +3068,18 @@ class TrackEditorApp(QMainWindow):
             else:
                 test_duration = self.test_step_duration
 
+            continuity_context = self._prepare_step_test_continuity_context(
+                step_index,
+                global_settings,
+            )
+
             # Generate audio (float32, stereo)
             audio_data_np_float32 = generate_single_step_audio_segment(
                 step_data,
                 global_settings,
                 test_duration,
                 test_duration,
+                continuity_context=continuity_context,
             )
             
             if audio_data_np_float32 is None or audio_data_np_float32.size == 0:
