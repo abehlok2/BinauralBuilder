@@ -309,6 +309,9 @@ class TrackEditorApp(QMainWindow):
                 "crossfade_duration": DEFAULT_CROSSFADE,
                 "crossfade_curve": getattr(self.prefs, "crossfade_curve", "linear"),
                 "output_filename": "my_track.flac",
+                "preserve_relative_step_loudness": False,
+                "continuity_max_db_step": 2.0,
+                "continuity_window_ms": 125.0,
                 "parallel_voices": False,
                 "parallel_voices_max_workers": 4,
                 "parallel_max_memory_gb": sound_creator.DEFAULT_MAX_CONCURRENT_MEMORY_GB,
@@ -604,6 +607,33 @@ class TrackEditorApp(QMainWindow):
         self.noise_amp_entry.setToolTip("Amplitude adjustment for background noise")
         globals_layout.addWidget(self.noise_amp_entry, 4, 1)
 
+        self.preserve_relative_loudness_checkbox = QCheckBox("Preserve relative loudness between steps")
+        self.preserve_relative_loudness_checkbox.setToolTip(
+            "Prevents perceived loudness jumps when some voices drop out between adjacent steps."
+        )
+        self.preserve_relative_loudness_checkbox.toggled.connect(self._update_continuity_controls_enabled)
+        globals_layout.addWidget(self.preserve_relative_loudness_checkbox, 5, 0, 1, 3)
+
+        globals_layout.addWidget(QLabel("Max adjustment per step (dB):"), 6, 0)
+        self.continuity_max_db_step_spin = QDoubleSpinBox()
+        self.continuity_max_db_step_spin.setRange(0.1, 24.0)
+        self.continuity_max_db_step_spin.setDecimals(2)
+        self.continuity_max_db_step_spin.setSingleStep(0.1)
+        self.continuity_max_db_step_spin.setValue(2.0)
+        self.continuity_max_db_step_spin.setToolTip("Limits loudness correction between adjacent steps.")
+        globals_layout.addWidget(self.continuity_max_db_step_spin, 6, 1)
+
+        globals_layout.addWidget(QLabel("Analysis window (ms):"), 7, 0)
+        self.continuity_window_ms_spin = QDoubleSpinBox()
+        self.continuity_window_ms_spin.setRange(10.0, 2000.0)
+        self.continuity_window_ms_spin.setDecimals(1)
+        self.continuity_window_ms_spin.setSingleStep(5.0)
+        self.continuity_window_ms_spin.setValue(125.0)
+        self.continuity_window_ms_spin.setToolTip(
+            "Window size used to analyze adjacent step loudness for continuity."
+        )
+        globals_layout.addWidget(self.continuity_window_ms_spin, 7, 1)
+
         parallel_layout = QGridLayout()
         self.parallel_checkbox = QCheckBox("Enable parallel voice rendering")
         self.parallel_checkbox.setToolTip(
@@ -652,7 +682,8 @@ class TrackEditorApp(QMainWindow):
         # Add a spacer to the right to prevent text fields from stretching too far
         globals_layout.setColumnStretch(1, 1)
         globals_layout.setColumnStretch(3, 1)
-        globals_layout.addLayout(parallel_layout, 0, 3, 5, 1)
+        globals_layout.addLayout(parallel_layout, 0, 3, 8, 1)
+        self._update_continuity_controls_enabled()
         control_layout.addWidget(globals_groupbox, 2)
 
         # Generate Button
@@ -1085,6 +1116,11 @@ class TrackEditorApp(QMainWindow):
         self.parallel_max_memory_spin.setEnabled(enabled)
         self.parallel_backend_combo.setEnabled(enabled)
 
+    def _update_continuity_controls_enabled(self):
+        enabled = self.preserve_relative_loudness_checkbox.isChecked()
+        self.continuity_max_db_step_spin.setEnabled(enabled)
+        self.continuity_window_ms_spin.setEnabled(enabled)
+
     @pyqtSlot()
     def on_clip_select(self):
         self._update_clip_actions_state()
@@ -1149,6 +1185,16 @@ class TrackEditorApp(QMainWindow):
             if backend_value not in {"thread", "process"}:
                 raise ValueError("Parallel backend must be 'thread' or 'process'.")
             self.track_data["global_settings"]["parallel_backend"] = backend_value
+
+            self.track_data["global_settings"]["preserve_relative_step_loudness"] = (
+                self.preserve_relative_loudness_checkbox.isChecked()
+            )
+            self.track_data["global_settings"]["continuity_max_db_step"] = float(
+                self.continuity_max_db_step_spin.value()
+            )
+            self.track_data["global_settings"]["continuity_window_ms"] = float(
+                self.continuity_window_ms_spin.value()
+            )
         except ValueError as e:
             QMessageBox.critical(self, "Input Error", f"Invalid global settings:\n{e}")
             return False
@@ -1190,6 +1236,24 @@ class TrackEditorApp(QMainWindow):
             backend_index = 0
         self.parallel_backend_combo.setCurrentIndex(backend_index)
         self._update_parallel_controls_enabled()
+
+        self.preserve_relative_loudness_checkbox.setChecked(
+            bool(settings.get("preserve_relative_step_loudness", False))
+        )
+
+        continuity_max_step = settings.get("continuity_max_db_step", 2.0)
+        if isinstance(continuity_max_step, (int, float)) and continuity_max_step > 0:
+            self.continuity_max_db_step_spin.setValue(float(continuity_max_step))
+        else:
+            self.continuity_max_db_step_spin.setValue(2.0)
+
+        continuity_window_ms = settings.get("continuity_window_ms", 125.0)
+        if isinstance(continuity_window_ms, (int, float)) and continuity_window_ms > 0:
+            self.continuity_window_ms_spin.setValue(float(continuity_window_ms))
+        else:
+            self.continuity_window_ms_spin.setValue(125.0)
+
+        self._update_continuity_controls_enabled()
 
     def _recalculate_step_start_times(self):
         crossfade = float(self.track_data.get("global_settings", {}).get("crossfade_duration", 0.0))
@@ -1463,6 +1527,16 @@ class TrackEditorApp(QMainWindow):
             if backend_value not in {"thread", "process"}:
                 raise ValueError("Parallel backend must be 'thread' or 'process'.")
             self.track_data["global_settings"]["parallel_backend"] = backend_value
+
+            self.track_data["global_settings"]["preserve_relative_step_loudness"] = (
+                self.preserve_relative_loudness_checkbox.isChecked()
+            )
+            self.track_data["global_settings"]["continuity_max_db_step"] = float(
+                self.continuity_max_db_step_spin.value()
+            )
+            self.track_data["global_settings"]["continuity_window_ms"] = float(
+                self.continuity_window_ms_spin.value()
+            )
         except ValueError as e:
             QMessageBox.critical(self, "Input Error", f"Invalid global settings:\n{e}")
             return False
@@ -1504,6 +1578,24 @@ class TrackEditorApp(QMainWindow):
             backend_index = 0
         self.parallel_backend_combo.setCurrentIndex(backend_index)
         self._update_parallel_controls_enabled()
+
+        self.preserve_relative_loudness_checkbox.setChecked(
+            bool(settings.get("preserve_relative_step_loudness", False))
+        )
+
+        continuity_max_step = settings.get("continuity_max_db_step", 2.0)
+        if isinstance(continuity_max_step, (int, float)) and continuity_max_step > 0:
+            self.continuity_max_db_step_spin.setValue(float(continuity_max_step))
+        else:
+            self.continuity_max_db_step_spin.setValue(2.0)
+
+        continuity_window_ms = settings.get("continuity_window_ms", 125.0)
+        if isinstance(continuity_window_ms, (int, float)) and continuity_window_ms > 0:
+            self.continuity_window_ms_spin.setValue(float(continuity_window_ms))
+        else:
+            self.continuity_window_ms_spin.setValue(125.0)
+
+        self._update_continuity_controls_enabled()
 
     def _recalculate_step_start_times(self):
         crossfade = float(self.track_data.get("global_settings", {}).get("crossfade_duration", 0.0))
