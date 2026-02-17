@@ -214,6 +214,23 @@ def create_linear_fade_envelope(duration, sample_rate, start_amp=1.0, end_amp=1.
     return env
 
 
+def _compute_step_loudness_proxy(stereo_audio, sample_rate, silence_threshold=1e-5):
+    """Estimate step loudness using windowed RMS over non-silent regions."""
+    if stereo_audio is None or stereo_audio.size == 0:
+        return 0.0
+
+    mono = np.mean(np.square(stereo_audio.astype(np.float32)), axis=1)
+    window_samples = max(1, int(0.05 * float(sample_rate)))
+    kernel = np.ones(window_samples, dtype=np.float32) / float(window_samples)
+    windowed_power = np.convolve(mono, kernel, mode="same")
+    windowed_rms = np.sqrt(np.maximum(windowed_power, 0.0))
+
+    non_silent = windowed_rms > float(silence_threshold)
+    if np.any(non_silent):
+        return float(np.mean(windowed_rms[non_silent]))
+    return 0.0
+
+
 def _flanger_effect_stereo_continuous(
     audio: np.ndarray,
     sample_rate: float,
@@ -813,6 +830,8 @@ def assemble_track_from_data(track_data, sample_rate, crossfade_duration, crossf
             print(f"Progress callback error: {e}")
 
     global_settings = track_data.get("global_settings", {})
+    preserve_relative_step_loudness = bool(global_settings.get("preserve_relative_step_loudness", False))
+    prev_step_reference = None
     prev_crossfade_samples = 0
     prev_crossfade_curve = crossfade_curve
 
@@ -859,15 +878,22 @@ def assemble_track_from_data(track_data, sample_rate, crossfade_duration, crossf
                 chunk_start_time_local = chunk_offset_samples / sample_rate
 
                 # Generate this chunk with proper timing offset for voice continuity
+                continuity_context = {
+                    "enabled": preserve_relative_step_loudness,
+                    "prev_step_reference": prev_step_reference,
+                }
                 chunk_audio = generate_single_step_audio_segment(
                     step_data,
                     global_settings,
                     this_chunk_duration,
                     duration_override=this_chunk_duration,
                     chunk_start_time=chunk_start_time_local,
+                    continuity_context=continuity_context,
                     voice_states=None,  # No state tracking needed for offline assembly
                     return_state=False
                 )
+                if preserve_relative_step_loudness:
+                    prev_step_reference = continuity_context.get("prev_step_reference")
 
                 # Handle potential size mismatches
                 actual_chunk_len = min(chunk_audio.shape[0], this_chunk_samples)
@@ -887,11 +913,18 @@ def assemble_track_from_data(track_data, sample_rate, crossfade_duration, crossf
                         print(f"Progress callback error: {e}")
         else:
             # Short step - generate all at once (original behavior)
+            continuity_context = {
+                "enabled": preserve_relative_step_loudness,
+                "prev_step_reference": prev_step_reference,
+            }
             step_audio_mix = generate_single_step_audio_segment(
                 step_data,
                 global_settings,
                 step_duration,
+                continuity_context=continuity_context,
             )
+            if preserve_relative_step_loudness:
+                prev_step_reference = continuity_context.get("prev_step_reference")
         # --- Placement and Crossfading ---
         # Clip placement indices to the allocated track buffer boundaries
         safe_place_start = max(0, step_start_sample_abs)
@@ -1525,7 +1558,7 @@ def _synthesize_voice_task(args):
 
     return (i, voice_type, func_name_short, voice_audio, new_state)
 
-def generate_single_step_audio_segment(step_data, global_settings, target_duration_seconds, duration_override=None, chunk_start_time=0.0, voice_states=None, return_state=False):
+def generate_single_step_audio_segment(step_data, global_settings, target_duration_seconds, duration_override=None, chunk_start_time=0.0, continuity_context=None, voice_states=None, return_state=False):
     """
     Generates a raw audio segment for a single step, looping or truncating 
     it to fill a target duration.
@@ -1536,6 +1569,7 @@ def generate_single_step_audio_segment(step_data, global_settings, target_durati
         target_duration_seconds: Target duration for the output segment
         duration_override: Optional override for the step's natural duration when generating audio
         chunk_start_time: Start time of this chunk relative to the step start (for LFO continuity)
+        continuity_context: Optional dict with continuity settings/state for step loudness matching
         voice_states: List of state dictionaries for each voice from previous chunk
         return_state: If True, returns (audio, new_voice_states)
     """
@@ -1748,7 +1782,41 @@ def generate_single_step_audio_segment(step_data, global_settings, target_durati
     # 3. Combine
     single_iteration_audio_mix = binaural_mix + noise_mix
 
-    # 4. Post-mix normalization to prevent clipping
+    # 4. Optional continuity gain to preserve perceived loudness across steps.
+    continuity_enabled = bool(global_settings.get("preserve_relative_step_loudness", False))
+    continuity_gain = 1.0
+    current_loudness_proxy = _compute_step_loudness_proxy(single_iteration_audio_mix, sample_rate)
+
+    if isinstance(continuity_context, dict):
+        continuity_enabled = bool(continuity_context.get("enabled", continuity_enabled))
+        prev_step_reference = continuity_context.get("prev_step_reference")
+    else:
+        prev_step_reference = None
+
+    if (
+        continuity_enabled
+        and isinstance(prev_step_reference, dict)
+        and current_loudness_proxy > 1e-9
+    ):
+        prev_loudness_proxy = float(prev_step_reference.get("loudness_proxy", 0.0))
+        if prev_loudness_proxy > 1e-9:
+            target_gain = prev_loudness_proxy / current_loudness_proxy
+            max_transition_db = 3.0
+            min_gain = 10 ** (-max_transition_db / 20.0)
+            max_gain = 10 ** (max_transition_db / 20.0)
+            continuity_gain = float(np.clip(target_gain, min_gain, max_gain))
+
+    if continuity_enabled and continuity_gain != 1.0:
+        single_iteration_audio_mix *= continuity_gain
+
+    post_gain_loudness_proxy = _compute_step_loudness_proxy(single_iteration_audio_mix, sample_rate)
+    if isinstance(continuity_context, dict):
+        continuity_context["prev_step_reference"] = {
+            "loudness_proxy": post_gain_loudness_proxy,
+            "applied_gain": continuity_gain,
+        }
+
+    # 5. Post-mix normalization to prevent clipping
     # When both binaural and noise are at high volumes, their sum can exceed 1.0.
     # Apply a safety ceiling to ensure the final mix never clips.
     SAFETY_CEILING = 0.99  # Leave minimal headroom for float->PCM conversion
