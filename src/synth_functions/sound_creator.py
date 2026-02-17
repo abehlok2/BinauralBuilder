@@ -497,7 +497,36 @@ def steps_have_continuous_voices(prev_step, next_step):
     return True
 
 
-def generate_voice_audio(voice_data, duration, sample_rate, global_start_time, chunk_start_time=0.0, previous_state=None, return_state=False):
+def _adapt_transition_timing_for_chunk(core_params, chunk_start_time, chunk_duration, full_step_duration):
+    """Project step-level transition timing into a chunk-local window."""
+    params = dict(core_params)
+
+    transition_start = max(0.0, float(params.get("initial_offset", 0.0)))
+    transition_span = params.get("transition_duration")
+
+    if transition_span is None:
+        transition_end = max(transition_start, float(full_step_duration))
+    else:
+        transition_end = transition_start + max(0.0, float(transition_span))
+
+    chunk_start = max(0.0, float(chunk_start_time))
+    chunk_end = chunk_start + max(0.0, float(chunk_duration))
+
+    if chunk_start >= transition_end:
+        params["initial_offset"] = 0.0
+        params["transition_duration"] = 0.0
+        return params
+
+    local_start = max(0.0, transition_start - chunk_start)
+    local_end = max(0.0, min(chunk_end, transition_end) - chunk_start)
+    local_duration = max(0.0, local_end - local_start)
+
+    params["initial_offset"] = local_start
+    params["transition_duration"] = local_duration
+    return params
+
+
+def generate_voice_audio(voice_data, duration, sample_rate, global_start_time, chunk_start_time=0.0, previous_state=None, return_state=False, full_step_duration=None):
     """Generates audio for a single voice based on its definition."""
     func_name = voice_data.get("synth_function_name")
     params = dict(voice_data.get("params", {}))
@@ -560,6 +589,17 @@ def generate_voice_audio(voice_data, duration, sample_rate, global_start_time, c
     cleaned_params.pop("duration", None)
     cleaned_params.pop("sample_rate", None)
 
+    if full_step_duration is None:
+        full_step_duration = duration
+
+    if is_transition:
+        cleaned_params = _adapt_transition_timing_for_chunk(
+            cleaned_params,
+            chunk_start_time,
+            duration,
+            full_step_duration,
+        )
+
     # --- Generate base audio ---
     try:
         # Prepare params for stateful generation
@@ -573,7 +613,8 @@ def generate_voice_audio(voice_data, duration, sample_rate, global_start_time, c
         # but some might not use it.
         # However, binaural_beat definitely uses it now.
         
-        call_params['initial_offset'] = float(chunk_start_time)
+        if not is_transition:
+            call_params['initial_offset'] = float(chunk_start_time)
         
         if previous_state:
             call_params.update(previous_state)
@@ -1549,7 +1590,8 @@ def _synthesize_voice_task(args):
                 0.0,
                 chunk_start_time=chunk_start_time,
                 previous_state=prev_state,
-                return_state=True
+                return_state=True,
+                full_step_duration=full_step_duration,
             )
             new_state = v_state
     except Exception as exc:

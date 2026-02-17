@@ -305,6 +305,87 @@ def test_noise_normalization_consistent_across_chunks():
         assert peak_ratio < 10.0, f"Peak variation too large: {peaks}"
 
 
+
+
+def test_transition_chunk_timing_respects_initial_offset_and_duration():
+    """Transition chunks should keep step-level offsets/duration semantics."""
+    sample_rate = 100
+    step_duration = 10.0
+    chunk_duration = 1.0
+
+    step_data = {
+        "duration": step_duration,
+        "voices": [
+            {
+                "synth_function_name": "binaural_beat",
+                "is_transition": True,
+                "params": {
+                    "baseFreq": 100.0,
+                    "endBaseFreq": 200.0,
+                    "beatFreq": 4.0,
+                    "endBeatFreq": 8.0,
+                    "ampL": 0.2,
+                    "endAmpL": 0.2,
+                    "ampR": 0.2,
+                    "endAmpR": 0.2,
+                    "initial_offset": 2.0,
+                    "transition_duration": 3.0,
+                },
+            }
+        ],
+    }
+
+    global_settings = {"sample_rate": sample_rate}
+
+    # Before transition start => unchanged (start state)
+    audio_pre, state = generate_single_step_audio_segment(
+        step_data,
+        global_settings,
+        chunk_duration,
+        duration_override=chunk_duration,
+        chunk_start_time=0.0,
+        return_state=True,
+    )
+
+    # During transition => should differ from both pre and post chunks
+    audio_mid, state = generate_single_step_audio_segment(
+        step_data,
+        global_settings,
+        chunk_duration,
+        duration_override=chunk_duration,
+        chunk_start_time=3.0,
+        voice_states=state,
+        return_state=True,
+    )
+
+    # After transition end => end state should be stable
+    audio_post_a, state = generate_single_step_audio_segment(
+        step_data,
+        global_settings,
+        chunk_duration,
+        duration_override=chunk_duration,
+        chunk_start_time=6.0,
+        voice_states=state,
+        return_state=True,
+    )
+    audio_post_b, _ = generate_single_step_audio_segment(
+        step_data,
+        global_settings,
+        chunk_duration,
+        duration_override=chunk_duration,
+        chunk_start_time=7.0,
+        voice_states=state,
+        return_state=True,
+    )
+
+    # Transition must be inactive before initial_offset and active during its window
+    assert np.mean(np.abs(audio_mid - audio_pre)) > 1e-4
+
+    # Once transition duration has elapsed, later chunks should represent the
+    # same end state (no further transition progression).
+    post_diff = np.mean(np.abs(audio_post_a - audio_post_b))
+    assert post_diff < 5e-3
+
 def test_no_clipping_at_maximum_settings():
     """Test that audio never clips even with max normalization and volumes.
 
