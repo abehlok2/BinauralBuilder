@@ -175,6 +175,15 @@ def crossfade_signals(signal_a, signal_b, sample_rate, transition_duration,
     return blended_segment
 
 
+def _resolve_crossfade_overlap_factor(overlap_value):
+    """Normalize user-provided overlap factor to ``[0.0, 1.0]``."""
+    try:
+        overlap = float(overlap_value)
+    except (TypeError, ValueError):
+        return 1.0
+    return float(np.clip(overlap, 0.0, 1.0))
+
+
 def phase_align_signal(prev_tail, next_audio, max_search_samples=2048):
     """Estimate integer lag needed to phase-align ``next_audio`` to ``prev_tail``.
 
@@ -914,12 +923,13 @@ def generate_voice_audio(voice_data, duration, sample_rate, global_start_time, c
     return audio.astype(np.float32) # Ensure float32 output
 
 
-def assemble_track_from_data(track_data, sample_rate, crossfade_duration, crossfade_curve="linear", progress_callback=None):
+def assemble_track_from_data(track_data, sample_rate, crossfade_duration, crossfade_curve="linear", crossfade_overlap=1.0, progress_callback=None):
     """
     Assembles a track from a track_data dictionary.
     Uses crossfading between steps by overlapping their placement. The
     ``crossfade_curve`` parameter controls the shape of the fade between steps
-    and is forwarded to :func:`crossfade_signals`.
+    and is forwarded to :func:`crossfade_signals`. ``crossfade_overlap`` controls
+    how much of each crossfade duration is actually overlapped (0.0-1.0).
     Includes per-step normalization to prevent excessive peaks before final mix.
     """
     steps_data = track_data.get("steps", [])
@@ -955,10 +965,11 @@ def assemble_track_from_data(track_data, sample_rate, crossfade_duration, crossf
 
     crossfade_samples = int(crossfade_duration * sample_rate)
     if crossfade_samples < 0: crossfade_samples = 0
+    default_overlap_factor = _resolve_crossfade_overlap_factor(crossfade_overlap)
 
     print(
         f"Assembling track: {len(steps_data)} steps, Est. Max Duration: {estimated_total_duration:.2f}s, "
-        f"Crossfade: {crossfade_duration:.2f}s ({crossfade_samples} samples), Curve: {crossfade_curve}"
+        f"Crossfade: {crossfade_duration:.2f}s ({crossfade_samples} samples), Curve: {crossfade_curve}, Overlap: {default_overlap_factor:.2f}"
     )
 
     total_steps = len(steps_data)
@@ -1115,12 +1126,11 @@ def assemble_track_from_data(track_data, sample_rate, crossfade_duration, crossf
         step_crossfade_curve = str(
             step_data.get("crossfade_curve", crossfade_curve)
         )
+        step_crossfade_overlap_factor = _resolve_crossfade_overlap_factor(
+            step_data.get("crossfade_overlap", default_overlap_factor)
+        )
         incoming_crossfade_samples = prev_crossfade_samples
-        if incoming_crossfade_samples > 0:
-            min_cf_samples = int(0.005 * sample_rate)
-            max_cf_samples = int(0.020 * sample_rate)
-            incoming_crossfade_samples = int(np.clip(incoming_crossfade_samples, min_cf_samples, max_cf_samples))
-        incoming_crossfade_curve = "equal_power"
+        incoming_crossfade_curve = prev_crossfade_curve
 
         # --- Always use crossfade when overlap exists ---
         overlap_start_sample_in_track = safe_place_start
@@ -1180,57 +1190,8 @@ def assemble_track_from_data(track_data, sample_rate, crossfade_duration, crossf
                     ] += remaining_audio_from_step
 
         else:
-            if i > 0 and incoming_crossfade_samples > 0:
-                # Force crossfade even when no natural overlap exists
-                actual_crossfade_samples = min(
-                    incoming_crossfade_samples,
-                    audio_to_use.shape[0],
-                    last_step_end_sample_in_track,
-                )
-                if actual_crossfade_samples > 0:
-                    print(
-                        f"        Force crossfading Step {i+1} (no overlap). "
-                        f"Actual CF: {actual_crossfade_samples / sample_rate:.3f}s, Curve: {incoming_crossfade_curve}"
-                    )
-                    prev_segment = track[
-                        last_step_end_sample_in_track - actual_crossfade_samples : last_step_end_sample_in_track
-                    ]
-                    alignment_lag = phase_align_signal(
-                        prev_segment,
-                        audio_to_use[:actual_crossfade_samples],
-                        actual_crossfade_samples,
-                    )
-                    aligned_audio_to_use = apply_signal_lag_non_circular(
-                        audio_to_use,
-                        alignment_lag,
-                        preserve_length=True,
-                    )
-                    new_segment = aligned_audio_to_use[:actual_crossfade_samples]
-
-                    blended_segment = crossfade_signals(
-                        prev_segment,
-                        new_segment,
-                        sample_rate,
-                        actual_crossfade_samples / sample_rate,
-                        curve=incoming_crossfade_curve,
-                    )
-
-                    track[
-                        last_step_end_sample_in_track - actual_crossfade_samples : last_step_end_sample_in_track
-                    ] = blended_segment
-
-                    remaining_audio = aligned_audio_to_use[actual_crossfade_samples:]
-                    end_idx = last_step_end_sample_in_track + remaining_audio.shape[0]
-                    safe_end_idx = min(end_idx, estimated_total_samples)
-                    if safe_end_idx > last_step_end_sample_in_track:
-                        add_len = safe_end_idx - last_step_end_sample_in_track
-                        track[last_step_end_sample_in_track:safe_end_idx] += remaining_audio[:add_len]
-                    safe_place_end = safe_end_idx
-                else:
-                    track[safe_place_start:safe_place_end] += audio_to_use
-            else:
-                print(f"        Placing Step {i+1} without crossfade. Adding.")
-                track[safe_place_start:safe_place_end] += audio_to_use
+            print(f"        Placing Step {i+1} without crossfade. Adding.")
+            track[safe_place_start:safe_place_end] += audio_to_use
 
         # --- Update Markers for Next Loop ---
         last_step_end_sample_in_track = max(last_step_end_sample_in_track, safe_place_end)
@@ -1238,13 +1199,13 @@ def assemble_track_from_data(track_data, sample_rate, crossfade_duration, crossf
             current_time = step_start_time + step_duration
         else:
             effective_advance_duration = (
-                max(0.0, step_duration - max(0.0, step_crossfade_duration))
+                max(0.0, step_duration - max(0.0, step_crossfade_duration) * step_crossfade_overlap_factor)
                 if incoming_crossfade_samples > 0 or step_crossfade_duration > 0
                 else step_duration
             )
             current_time += effective_advance_duration
 
-        prev_crossfade_samples = int(max(0.0, step_crossfade_duration) * sample_rate)
+        prev_crossfade_samples = int(max(0.0, step_crossfade_duration) * step_crossfade_overlap_factor * sample_rate)
         prev_crossfade_curve = step_crossfade_curve
 
         if progress_callback:
@@ -1461,13 +1422,14 @@ def load_track_from_json(filepath):
 
         # Fill in missing start times so the GUI knows when each step begins
         crossfade = float(raw["global_settings"].get("crossfade_duration", 0.0))
+        crossfade_overlap = _resolve_crossfade_overlap_factor(raw["global_settings"].get("crossfade_overlap", 1.0))
         current_time = 0.0
         for step in raw["steps"]:
             if "start" not in step and "start_time" not in step:
                 step["start"] = current_time
                 advance = float(step.get("duration", 0))
                 if crossfade > 0:
-                    advance = max(0.0, advance - crossfade)
+                    advance = max(0.0, advance - (crossfade * crossfade_overlap))
                 current_time += advance
             else:
                 step["start"] = float(step.get("start", step.get("start_time", 0)))
@@ -1505,6 +1467,7 @@ def save_track_to_json(track_data, filepath):
         }
 
         crossfade = float(track_data.get("global_settings", {}).get("crossfade_duration", 0.0))
+        crossfade_overlap = _resolve_crossfade_overlap_factor(track_data.get("global_settings", {}).get("crossfade_overlap", 1.0))
         current_time = 0.0
         for step in track_data.get("steps", []):
             step_copy = copy.deepcopy(step)
@@ -1512,7 +1475,7 @@ def save_track_to_json(track_data, filepath):
                 step_copy["start"] = current_time
                 advance = float(step_copy.get("duration", 0))
                 if crossfade > 0:
-                    advance = max(0.0, advance - crossfade)
+                    advance = max(0.0, advance - (crossfade * crossfade_overlap))
                 current_time += advance
             else:
                 step_copy["start"] = float(step_copy.get("start", step_copy.get("start_time", 0)))
@@ -1579,6 +1542,7 @@ def generate_audio(track_data, output_filename=None, target_level=0.25, progress
         sample_rate = int(global_settings.get("sample_rate", 44100))
         crossfade_duration = float(global_settings.get("crossfade_duration", 1.0))
         crossfade_curve = global_settings.get("crossfade_curve", "linear")
+        crossfade_overlap = _resolve_crossfade_overlap_factor(global_settings.get("crossfade_overlap", 1.0))
     except (ValueError, TypeError) as e:
          print(f"Error: Invalid global settings (sample_rate or crossfade_duration): {e}")
          return False
@@ -1603,11 +1567,11 @@ def generate_audio(track_data, output_filename=None, target_level=0.25, progress
 
     print(f"\n--- Starting WAV Generation ---")
     print(f"Sample Rate: {sample_rate} Hz")
-    print(f"Crossfade Duration: {crossfade_duration} s (curve: {crossfade_curve})")
+    print(f"Crossfade Duration: {crossfade_duration} s (curve: {crossfade_curve}, overlap: {crossfade_overlap})")
     print(f"Output File: {output_filename}")
 
     # Assemble the track (includes per-step normalization now)
-    track_audio = assemble_track_from_data(track_data, sample_rate, crossfade_duration, crossfade_curve, progress_callback)
+    track_audio = assemble_track_from_data(track_data, sample_rate, crossfade_duration, crossfade_curve, crossfade_overlap, progress_callback)
 
     if track_audio is not None and track_audio.size > 0 and not np.isfinite(track_audio).all():
         bad_count = np.count_nonzero(~np.isfinite(track_audio))
