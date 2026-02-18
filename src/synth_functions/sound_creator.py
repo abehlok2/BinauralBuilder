@@ -96,7 +96,8 @@ except Exception:
 # -----------------------------------------------------------------------------
 
 def crossfade_signals(signal_a, signal_b, sample_rate, transition_duration,
-                      curve="linear", *, phase_align=False):
+                      curve="linear", *, phase_align=False,
+                      return_alignment_lag=False):
     """
     Crossfades two stereo signals. ``signal_a`` fades out and ``signal_b`` fades
     in over ``transition_duration``.  The ``curve`` argument selects the fade
@@ -112,7 +113,9 @@ def crossfade_signals(signal_a, signal_b, sample_rate, transition_duration,
     ``signal_a`` using :func:`phase_align_signal` before the crossfade is
     applied.
 
-    Returns the blended stereo segment.
+    Returns the blended stereo segment. If ``return_alignment_lag`` is True,
+    returns ``(blended_segment, lag)`` where ``lag`` is the integer sample lag
+    applied to ``signal_b``.
     """
     n_samples = int(transition_duration * sample_rate)
     if n_samples <= 0:
@@ -147,9 +150,14 @@ def crossfade_signals(signal_a, signal_b, sample_rate, transition_duration,
     signal_a_seg = signal_a[:actual_crossfade_samples]
     signal_b_seg = signal_b[:actual_crossfade_samples]
 
+    alignment_lag = 0
     if phase_align:
-        signal_b_seg = phase_align_signal(signal_a_seg, signal_b_seg,
-                                          actual_crossfade_samples)
+        alignment_lag = phase_align_signal(
+            signal_a_seg, signal_b_seg, actual_crossfade_samples
+        )
+        signal_b_seg = apply_signal_lag_non_circular(
+            signal_b_seg, alignment_lag, preserve_length=True
+        )
 
     if curve == "equal_power":
         theta = np.linspace(0.0, np.pi / 2, actual_crossfade_samples)[:, None]
@@ -161,22 +169,24 @@ def crossfade_signals(signal_a, signal_b, sample_rate, transition_duration,
 
     # Apply fades and sum
     blended_segment = signal_a_seg * fade_out + signal_b_seg * fade_in
+    if return_alignment_lag:
+        return blended_segment, alignment_lag
     return blended_segment
 
 
 def phase_align_signal(prev_tail, next_audio, max_search_samples=2048):
-    """Shift ``next_audio`` so its start aligns in phase with ``prev_tail``.
+    """Estimate integer lag needed to phase-align ``next_audio`` to ``prev_tail``.
 
     The function uses cross-correlation on a small window from the end of
     ``prev_tail`` and the beginning of ``next_audio`` to estimate the best
-    alignment.  ``next_audio`` is circularly shifted by the detected offset and
-    returned.  If the overlap is too short for analysis the audio is returned
-    unchanged.
+    alignment.  Returns an integer lag where positive values delay
+    ``next_audio`` and negative values advance it. If the overlap is too short,
+    returns ``0``.
     """
 
     n = min(len(prev_tail), len(next_audio), max_search_samples)
     if n <= 1:
-        return next_audio
+        return 0
 
     tail = prev_tail[-n:]
     head = next_audio[:n]
@@ -187,11 +197,34 @@ def phase_align_signal(prev_tail, next_audio, max_search_samples=2048):
     corr = corr_l + corr_r
 
     offset = int(np.argmax(corr) - (n - 1))
-    if offset == 0:
-        return next_audio
+    return offset
 
-    # Circular shift the entire segment so the first sample continues the phase
-    return np.roll(next_audio, offset, axis=0)
+
+def apply_signal_lag_non_circular(signal, lag, preserve_length=True):
+    """Apply an integer sample lag without circular wrapping.
+
+    Positive ``lag`` delays by pre-padding zeros. Negative ``lag`` advances by
+    trimming from the front. If ``preserve_length`` is True, output length is
+    kept equal to the input by trimming/padding the tail as required.
+    """
+    if lag == 0 or signal.shape[0] == 0:
+        return signal.copy()
+
+    if lag > 0:
+        shifted = np.pad(signal, ((lag, 0), (0, 0)), mode="constant")
+    else:
+        advance = min(-lag, signal.shape[0])
+        shifted = signal[advance:]
+
+    if preserve_length:
+        target_len = signal.shape[0]
+        if shifted.shape[0] < target_len:
+            pad_len = target_len - shifted.shape[0]
+            shifted = np.pad(shifted, ((0, pad_len), (0, 0)), mode="constant")
+        elif shifted.shape[0] > target_len:
+            shifted = shifted[:target_len]
+
+    return shifted
 
 
 def create_linear_fade_envelope(duration, sample_rate, start_amp=1.0, end_amp=1.0, fade_duration=0.05):
@@ -1022,7 +1055,17 @@ def assemble_track_from_data(track_data, sample_rate, crossfade_duration, crossf
             prev_segment = track[
                 overlap_start_sample_in_track : overlap_start_sample_in_track + actual_crossfade_samples
             ]
-            new_segment = audio_to_use[:actual_crossfade_samples]
+            alignment_lag = phase_align_signal(
+                prev_segment,
+                audio_to_use[:actual_crossfade_samples],
+                actual_crossfade_samples,
+            )
+            aligned_audio_to_use = apply_signal_lag_non_circular(
+                audio_to_use,
+                alignment_lag,
+                preserve_length=True,
+            )
+            new_segment = aligned_audio_to_use[:actual_crossfade_samples]
 
             blended_segment = crossfade_signals(
                 prev_segment,
@@ -1030,7 +1073,6 @@ def assemble_track_from_data(track_data, sample_rate, crossfade_duration, crossf
                 sample_rate,
                 actual_crossfade_samples / sample_rate,
                 curve=incoming_crossfade_curve,
-                phase_align=True,
             )
 
             track[
@@ -1046,7 +1088,7 @@ def assemble_track_from_data(track_data, sample_rate, crossfade_duration, crossf
                     remaining_end_index_in_track - remaining_start_index_in_track
                 )
                 if remaining_start_index_in_step_audio < audio_to_use.shape[0]:
-                    remaining_audio_from_step = audio_to_use[
+                    remaining_audio_from_step = aligned_audio_to_use[
                         remaining_start_index_in_step_audio : remaining_start_index_in_step_audio
                         + num_remaining_samples_to_add
                     ]
@@ -1071,7 +1113,17 @@ def assemble_track_from_data(track_data, sample_rate, crossfade_duration, crossf
                     prev_segment = track[
                         last_step_end_sample_in_track - actual_crossfade_samples : last_step_end_sample_in_track
                     ]
-                    new_segment = audio_to_use[:actual_crossfade_samples]
+                    alignment_lag = phase_align_signal(
+                        prev_segment,
+                        audio_to_use[:actual_crossfade_samples],
+                        actual_crossfade_samples,
+                    )
+                    aligned_audio_to_use = apply_signal_lag_non_circular(
+                        audio_to_use,
+                        alignment_lag,
+                        preserve_length=True,
+                    )
+                    new_segment = aligned_audio_to_use[:actual_crossfade_samples]
 
                     blended_segment = crossfade_signals(
                         prev_segment,
@@ -1079,17 +1131,19 @@ def assemble_track_from_data(track_data, sample_rate, crossfade_duration, crossf
                         sample_rate,
                         actual_crossfade_samples / sample_rate,
                         curve=incoming_crossfade_curve,
-                        phase_align=True,
                     )
 
                     track[
                         last_step_end_sample_in_track - actual_crossfade_samples : last_step_end_sample_in_track
                     ] = blended_segment
 
-                    remaining_audio = audio_to_use[actual_crossfade_samples:]
+                    remaining_audio = aligned_audio_to_use[actual_crossfade_samples:]
                     end_idx = last_step_end_sample_in_track + remaining_audio.shape[0]
-                    track[last_step_end_sample_in_track:end_idx] += remaining_audio
-                    safe_place_end = end_idx
+                    safe_end_idx = min(end_idx, estimated_total_samples)
+                    if safe_end_idx > last_step_end_sample_in_track:
+                        add_len = safe_end_idx - last_step_end_sample_in_track
+                        track[last_step_end_sample_in_track:safe_end_idx] += remaining_audio[:add_len]
+                    safe_place_end = safe_end_idx
                 else:
                     track[safe_place_start:safe_place_end] += audio_to_use
             else:
