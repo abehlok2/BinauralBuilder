@@ -157,8 +157,9 @@ def isochronic_tone(duration, sample_rate=44100, initial_offset=0.0, **params):
     baseFreq = float(params.get('baseFreq', 200.0))
     beatFreq = float(params.get('beatFreq', 4.0))  # Pulse rate
     force_mono = bool(params.get('forceMono', False))
-    startPhaseL = float(params.get('startPhaseL', 0.0))
-    startPhaseR = float(params.get('startPhaseR', 0.0))
+    phase_state = params.get('oscillator_phases', {}) if isinstance(params.get('oscillator_phases'), dict) else {}
+    startPhaseL = float(phase_state.get('left', params.get('startPhaseL', 0.0)))
+    startPhaseR = float(phase_state.get('right', params.get('startPhaseR', 0.0)))
     ampOscDepthL = float(params.get('ampOscDepthL', 0.0))
     ampOscFreqL = float(params.get('ampOscFreqL', 0.0))
     ampOscDepthR = float(params.get('ampOscDepthR', 0.0))
@@ -245,7 +246,11 @@ def isochronic_tone(duration, sample_rate=44100, initial_offset=0.0, **params):
 
     state = {
         'startPhaseL': finalL,
-        'startPhaseR': finalR
+        'startPhaseR': finalR,
+        'oscillator_phases': {
+            'left': finalL,
+            'right': finalR,
+        },
     }
     return audio.astype(np.float32), state
 
@@ -268,9 +273,10 @@ def isochronic_tone_transition(
 
     startForceMono = float(params.get('startForceMono', params.get('forceMono', 0.0)))
     endForceMono = float(params.get('endForceMono', startForceMono))
-    startStartPhaseL = float(params.get('startStartPhaseL', params.get('startPhaseL', 0.0)))
+    phase_state = params.get('oscillator_phases', {}) if isinstance(params.get('oscillator_phases'), dict) else {}
+    startStartPhaseL = float(params.get('startStartPhaseL', phase_state.get('left', params.get('startPhaseL', 0.0))))
     endStartPhaseL = float(params.get('endStartPhaseL', startStartPhaseL))
-    startStartPhaseR = float(params.get('startStartPhaseR', params.get('startPhaseR', 0.0)))
+    startStartPhaseR = float(params.get('startStartPhaseR', phase_state.get('right', params.get('startPhaseR', 0.0))))
     endStartPhaseR = float(params.get('endStartPhaseR', startStartPhaseR))
 
     startAODL = float(params.get('startAmpOscDepthL', params.get('ampOscDepthL', 0.0)))
@@ -511,4 +517,14 @@ def isochronic_tone_transition(
 
     # Note: Volume envelope (like ADSR/Linen) is applied *within* generate_voice_audio if specified there.
 
-    return audio.astype(np.float32)
+    finalL = float(phase_L[-1]) if phase_L.size else float(startStartPhaseL)
+    finalR = float(phase_R[-1]) if phase_R.size else float(startStartPhaseR)
+    state = {
+        'startPhaseL': finalL,
+        'startPhaseR': finalR,
+        'oscillator_phases': {
+            'left': finalL,
+            'right': finalR,
+        },
+    }
+    return audio.astype(np.float32), state

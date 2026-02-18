@@ -530,6 +530,33 @@ def steps_have_continuous_voices(prev_step, next_step):
     return True
 
 
+def _voice_logical_key(voice_data, fallback_index=None):
+    """Build a stable key used to map a logical voice across steps."""
+    if not isinstance(voice_data, dict):
+        return ("index", fallback_index)
+
+    for key_name in ("voice_id", "voiceId", "id", "uuid", "guid"):
+        key_value = voice_data.get(key_name)
+        if key_value not in (None, ""):
+            return ("id", str(key_value))
+
+    label = voice_data.get("description") or voice_data.get("name")
+    if label not in (None, ""):
+        return (
+            "label",
+            str(voice_data.get("voice_type", "binaural")),
+            str(voice_data.get("synth_function_name", "")),
+            str(label),
+        )
+
+    return (
+        "index",
+        str(voice_data.get("voice_type", "binaural")),
+        str(voice_data.get("synth_function_name", "")),
+        int(fallback_index) if fallback_index is not None else -1,
+    )
+
+
 def _adapt_transition_timing_for_chunk(core_params, chunk_start_time, chunk_duration, full_step_duration):
     """Project step-level transition timing into a chunk-local window.
 
@@ -656,8 +683,16 @@ def generate_voice_audio(voice_data, duration, sample_rate, global_start_time, c
         if not is_transition:
             call_params['initial_offset'] = float(chunk_start_time)
         
-        if previous_state:
-            call_params.update(previous_state)
+        synth_state_input = None
+        if isinstance(previous_state, dict):
+            synth_state_input = previous_state.get("synth_state")
+            if synth_state_input is None:
+                synth_state_input = {
+                    k: v for k, v in previous_state.items()
+                    if k not in ("full_audio", "noise_peak")
+                }
+        if isinstance(synth_state_input, dict) and synth_state_input:
+            call_params.update(synth_state_input)
 
         # print(f"  Calling: {actual_func_name}(duration={duration}, sample_rate={sample_rate}, initial_offset={chunk_start_time}, ...)")
         result = synth_func(duration=duration, sample_rate=sample_rate, **call_params)
@@ -667,6 +702,23 @@ def generate_voice_audio(voice_data, duration, sample_rate, global_start_time, c
             audio, voice_state = result
         else:
             audio = result
+
+        if not isinstance(voice_state, dict):
+            voice_state = {}
+
+        if "oscillator_phases" not in voice_state:
+            phase_l = voice_state.get("startPhaseL")
+            phase_r = voice_state.get("startPhaseR")
+            if phase_l is not None or phase_r is not None:
+                voice_state["oscillator_phases"] = {
+                    "left": float(phase_l if phase_l is not None else 0.0),
+                    "right": float(phase_r if phase_r is not None else 0.0),
+                }
+
+        voice_state = {
+            **voice_state,
+            "synth_state": dict(voice_state),
+        }
             
     except Exception as e:
         print(f"Error calling synth function '{actual_func_name}' with params {cleaned_params}:")
@@ -915,6 +967,7 @@ def assemble_track_from_data(track_data, sample_rate, crossfade_duration, crossf
     prev_step_reference = None
     prev_crossfade_samples = 0
     prev_crossfade_curve = crossfade_curve
+    prev_step_voice_phase_map = {}
 
     for i, step_data in enumerate(steps_data):
         step_duration = float(step_data.get("duration", 0))
@@ -936,6 +989,11 @@ def assemble_track_from_data(track_data, sample_rate, crossfade_duration, crossf
             f"Duration: {step_duration:.2f}s, Samples: {N_step}"
         )
 
+        incoming_voice_states = []
+        for voice_idx, voice_data in enumerate(step_data.get("voices", [])):
+            key = _voice_logical_key(voice_data, voice_idx)
+            incoming_voice_states.append(copy.deepcopy(prev_step_voice_phase_map.get(key)))
+
         # --- Memory-efficient chunked generation for long steps ---
         # For steps longer than the threshold, process in chunks to reduce peak RAM.
         # This prevents multi-GB allocations when generating hour-long steps.
@@ -954,7 +1012,8 @@ def assemble_track_from_data(track_data, sample_rate, crossfade_duration, crossf
             # Without carrying voice state, each chunk reinitializes synth
             # internals and can audibly re-synchronize phase every chunk.
             chunk_offset_samples = 0
-            chunk_voice_states = None
+            chunk_voice_states = incoming_voice_states
+            step_voice_states = incoming_voice_states
             for chunk_idx in range(num_chunks):
                 # Calculate this chunk's parameters
                 remaining_samples = N_step - chunk_offset_samples
@@ -979,6 +1038,7 @@ def assemble_track_from_data(track_data, sample_rate, crossfade_duration, crossf
                 )
                 if preserve_relative_step_loudness:
                     prev_step_reference = continuity_context.get("prev_step_reference")
+                step_voice_states = chunk_voice_states
 
                 # Handle potential size mismatches
                 actual_chunk_len = min(chunk_audio.shape[0], this_chunk_samples)
@@ -1002,14 +1062,26 @@ def assemble_track_from_data(track_data, sample_rate, crossfade_duration, crossf
                 "enabled": preserve_relative_step_loudness,
                 "prev_step_reference": prev_step_reference,
             }
-            step_audio_mix = generate_single_step_audio_segment(
+            step_audio_mix, step_voice_states = generate_single_step_audio_segment(
                 step_data,
                 global_settings,
                 step_duration,
                 continuity_context=continuity_context,
+                voice_states=incoming_voice_states,
+                return_state=True,
             )
             if preserve_relative_step_loudness:
                 prev_step_reference = continuity_context.get("prev_step_reference")
+
+        prev_step_voice_phase_map = {}
+        for voice_idx, voice_data in enumerate(step_data.get("voices", [])):
+            if voice_idx >= len(step_voice_states):
+                continue
+            state = step_voice_states[voice_idx]
+            if not isinstance(state, dict):
+                continue
+            key = _voice_logical_key(voice_data, voice_idx)
+            prev_step_voice_phase_map[key] = copy.deepcopy(state)
         # --- Placement and Crossfading ---
         # Clip placement indices to the allocated track buffer boundaries
         safe_place_start = max(0, step_start_sample_abs)
@@ -1038,7 +1110,11 @@ def assemble_track_from_data(track_data, sample_rate, crossfade_duration, crossf
             step_data.get("crossfade_curve", crossfade_curve)
         )
         incoming_crossfade_samples = prev_crossfade_samples
-        incoming_crossfade_curve = prev_crossfade_curve or crossfade_curve
+        if incoming_crossfade_samples > 0:
+            min_cf_samples = int(0.005 * sample_rate)
+            max_cf_samples = int(0.020 * sample_rate)
+            incoming_crossfade_samples = int(np.clip(incoming_crossfade_samples, min_cf_samples, max_cf_samples))
+        incoming_crossfade_curve = "equal_power"
 
         # --- Always use crossfade when overlap exists ---
         overlap_start_sample_in_track = safe_place_start

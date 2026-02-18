@@ -19,8 +19,9 @@ def binaural_beat(duration, sample_rate=44100, initial_offset=0.0, **params):
     baseF = float(params.get('baseFreq', 200.0))
     beatF = float(params.get('beatFreq', 4.0))
     leftHigh = bool(params.get('leftHigh', False))
-    startL = float(params.get('startPhaseL', 0.0)) # in radians
-    startR = float(params.get('startPhaseR', 0.0)) # in radians
+    phase_state = params.get('oscillator_phases', {}) if isinstance(params.get('oscillator_phases'), dict) else {}
+    startL = float(phase_state.get('left', params.get('startPhaseL', 0.0))) # in radians
+    startR = float(phase_state.get('right', params.get('startPhaseR', 0.0))) # in radians
     aODL = float(params.get('ampOscDepthL', 0.0))
     aOFL = float(params.get('ampOscFreqL', 0.0))
     aODR = float(params.get('ampOscDepthR', 0.0))
@@ -197,7 +198,11 @@ def binaural_beat(duration, sample_rate=44100, initial_offset=0.0, **params):
 
     state = {
         'startPhaseL': finalL,
-        'startPhaseR': finalR
+        'startPhaseR': finalR,
+        'oscillator_phases': {
+            'left': finalL,
+            'right': finalR,
+        },
     }
     return audio, state
 
@@ -325,9 +330,10 @@ def binaural_beat_transition(
     endBeatF = float(params.get('endBeatFreq', startBeatF))
     leftHigh = bool(params.get('leftHigh', False))
 
-    startStartPhaseL = float(params.get('startStartPhaseL', params.get('startPhaseL', 0.0)))
+    phase_state = params.get('oscillator_phases', {}) if isinstance(params.get('oscillator_phases'), dict) else {}
+    startStartPhaseL = float(params.get('startStartPhaseL', phase_state.get('left', params.get('startPhaseL', 0.0))))
     endStartPhaseL = float(params.get('endStartPhaseL', startStartPhaseL))
-    startStartPhaseR = float(params.get('startStartPhaseR', params.get('startPhaseR', 0.0)))
+    startStartPhaseR = float(params.get('startStartPhaseR', phase_state.get('right', params.get('startPhaseR', 0.0))))
     endStartPhaseR = float(params.get('endStartPhaseR', startStartPhaseR))
     
     startPOF = float(params.get('startPhaseOscFreq', params.get('phaseOscFreq', 0.0)))
@@ -492,7 +498,7 @@ def binaural_beat_transition(
         duration, sample_rate, initial_offset, transition_duration, curve
     )
 
-    audio = _binaural_beat_transition_core(
+    audio, finalL, finalR = _binaural_beat_transition_core(
         N, float(duration), float(sample_rate),
         startAmpL, endAmpL, startAmpR, endAmpR,
         startBaseF, endBaseF, startBeatF, endBeatF, leftHigh,
@@ -574,7 +580,15 @@ def binaural_beat_transition(
             interp_mode=int(params.get("spatialInterp", 1)),
         )
 
-    return audio
+    state = {
+        'startPhaseL': finalL,
+        'startPhaseR': finalR,
+        'oscillator_phases': {
+            'left': finalL,
+            'right': finalR,
+        },
+    }
+    return audio, state
 
 
 @numba.njit(parallel=True, fastmath=True)
@@ -601,7 +615,7 @@ def _binaural_beat_transition_core(
     alpha_arr
 ):
     if N <= 0:
-        return np.zeros((0, 2), dtype=np.float32)
+        return np.zeros((0, 2), dtype=np.float32), startStartPhaseL, startStartPhaseR
 
     dt = duration / N
     
@@ -754,4 +768,4 @@ def _binaural_beat_transition_core(
                             out[p,0] += current_burst_segment[j]
                             out[p,1] += current_burst_segment[j]
                     idx += L_glitch
-    return out
+    return out, curL, curR
