@@ -1950,8 +1950,21 @@ class TrackEditorApp(QMainWindow):
             traceback.print_exc()
         # No explicit call to _update_step/voice_actions_state here, refresh_steps_tree handles it.
 
+    def _normalize_voice_descriptions_for_phase_locking(self):
+        """Trim voice description labels used for cross-step voice matching."""
+        steps = self.track_data.get("steps", []) if isinstance(self.track_data, dict) else []
+        for step in steps:
+            if not isinstance(step, dict):
+                continue
+            for voice in step.get("voices", []):
+                if not isinstance(voice, dict):
+                    continue
+                if "description" in voice and voice.get("description") is not None:
+                    voice["description"] = str(voice.get("description", "")).strip()
+
     @pyqtSlot()
     def save_json(self):
+        self._normalize_voice_descriptions_for_phase_locking()
         if not self.current_json_path:
             self.save_json_as()
         else:
@@ -1966,6 +1979,7 @@ class TrackEditorApp(QMainWindow):
 
     @pyqtSlot()
     def save_json_as(self):
+        self._normalize_voice_descriptions_for_phase_locking()
         if not self._update_global_settings_from_ui(): return
         initial_filename = "track_definition.json"
         initial_dir = os.path.dirname(self.current_json_path) if self.current_json_path else "."
@@ -2859,6 +2873,7 @@ class TrackEditorApp(QMainWindow):
     # --- generate_audio_action ---
     @pyqtSlot()
     def generate_audio_action(self):
+        self._normalize_voice_descriptions_for_phase_locking()
         if not self._update_global_settings_from_ui(): return
         current_track_data = self.track_data
         output_filepath = current_track_data["global_settings"].get("output_filename")
@@ -2913,6 +2928,7 @@ class TrackEditorApp(QMainWindow):
 
     @pyqtSlot()
     def generate_selected_audio_action(self):
+        self._normalize_voice_descriptions_for_phase_locking()
         if not self._update_global_settings_from_ui():
             return
 
@@ -3023,6 +3039,7 @@ class TrackEditorApp(QMainWindow):
         }
 
     def _generate_test_step_audio(self, step_index):
+        self._normalize_voice_descriptions_for_phase_locking()
         if not AUDIO_GENERATION_AVAILABLE or generate_single_step_audio_segment is None:
             QMessageBox.warning(self, "Audio Engine Error", "Audio generation function (generate_single_step_audio_segment) not available. Cannot generate test audio.")
             return False
