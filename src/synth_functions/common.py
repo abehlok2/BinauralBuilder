@@ -790,8 +790,7 @@ def calculate_transition_alpha(
     """
     total_duration = float(total_duration)
     sample_rate = float(sample_rate)
-    initial_offset = max(0.0, float(initial_offset))
-    initial_offset = min(initial_offset, total_duration)
+    initial_offset = min(float(initial_offset), total_duration)
 
     if duration is None:
         duration = total_duration - initial_offset
