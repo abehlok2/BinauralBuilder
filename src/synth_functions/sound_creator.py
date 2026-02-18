@@ -917,7 +917,11 @@ def assemble_track_from_data(track_data, sample_rate, crossfade_duration, crossf
             step_audio_mix = np.zeros((N_step, 2), dtype=np.float32)
 
             # Generate each chunk and write directly to the output buffer
+            # while preserving per-voice state across chunk boundaries.
+            # Without carrying voice state, each chunk reinitializes synth
+            # internals and can audibly re-synchronize phase every chunk.
             chunk_offset_samples = 0
+            chunk_voice_states = None
             for chunk_idx in range(num_chunks):
                 # Calculate this chunk's parameters
                 remaining_samples = N_step - chunk_offset_samples
@@ -930,15 +934,15 @@ def assemble_track_from_data(track_data, sample_rate, crossfade_duration, crossf
                     "enabled": preserve_relative_step_loudness,
                     "prev_step_reference": prev_step_reference,
                 }
-                chunk_audio = generate_single_step_audio_segment(
+                chunk_audio, chunk_voice_states = generate_single_step_audio_segment(
                     step_data,
                     global_settings,
                     this_chunk_duration,
                     duration_override=this_chunk_duration,
                     chunk_start_time=chunk_start_time_local,
                     continuity_context=continuity_context,
-                    voice_states=None,  # No state tracking needed for offline assembly
-                    return_state=False
+                    voice_states=chunk_voice_states,
+                    return_state=True,
                 )
                 if preserve_relative_step_loudness:
                     prev_step_reference = continuity_context.get("prev_step_reference")
