@@ -581,6 +581,13 @@ def generate_voice_audio(voice_data, duration, sample_rate, global_start_time, c
     # Clean params: remove None values before passing to function, as functions use .get() with defaults
     cleaned_params = {k: v for k, v in core_params.items() if v is not None}
 
+    # Transition voices historically stored the transition span under
+    # ``duration`` in voice params. Preserve that value by mapping it to the
+    # runtime-facing ``transition_duration`` argument before dropping
+    # ``duration`` from kwargs to avoid duplicate function arguments.
+    if is_transition and "transition_duration" not in cleaned_params and "duration" in cleaned_params:
+        cleaned_params["transition_duration"] = cleaned_params["duration"]
+
     # duration (and sometimes sample_rate) are supplied explicitly below. If they
     # are still present in the cleaned params dictionary we will pass them twice
     # which results in a "multiple values for keyword argument" TypeError for
