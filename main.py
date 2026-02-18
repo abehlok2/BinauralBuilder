@@ -618,7 +618,11 @@ class TrackEditorApp(QMainWindow):
         self.parallel_checkbox.toggled.connect(self._update_parallel_controls_enabled)
         parallel_layout.addWidget(self.parallel_checkbox, 0, 0, 1, 2)
 
-        parallel_layout.addWidget(QLabel("Parallel workers:"), 1, 0)
+        self.parallel_options_widget = QWidget()
+        parallel_options_layout = QGridLayout(self.parallel_options_widget)
+        parallel_options_layout.setContentsMargins(0, 0, 0, 0)
+
+        parallel_options_layout.addWidget(QLabel("Parallel workers:"), 0, 0)
         self.parallel_workers_spin = QSpinBox()
         self.parallel_workers_spin.setRange(0, 256)
         self.parallel_workers_spin.setValue(4)
@@ -628,9 +632,9 @@ class TrackEditorApp(QMainWindow):
             "Default is 4 workers. Memory-aware batching ensures RAM\n"
             "usage stays under control for long audio generation."
         )
-        parallel_layout.addWidget(self.parallel_workers_spin, 1, 1)
+        parallel_options_layout.addWidget(self.parallel_workers_spin, 0, 1)
 
-        parallel_layout.addWidget(QLabel("Max RAM (GB):"), 2, 0)
+        parallel_options_layout.addWidget(QLabel("Max RAM (GB):"), 1, 0)
         self.parallel_max_memory_spin = QDoubleSpinBox()
         self.parallel_max_memory_spin.setRange(0.1, 128.0)
         self.parallel_max_memory_spin.setDecimals(2)
@@ -642,15 +646,17 @@ class TrackEditorApp(QMainWindow):
             "voice generation. Voices are processed in batches to stay\n"
             "within this limit. Default: 0.5GB (512MB)."
         )
-        parallel_layout.addWidget(self.parallel_max_memory_spin, 2, 1)
+        parallel_options_layout.addWidget(self.parallel_max_memory_spin, 1, 1)
 
-        parallel_layout.addWidget(QLabel("Parallel backend:"), 3, 0)
+        parallel_options_layout.addWidget(QLabel("Parallel backend:"), 2, 0)
         self.parallel_backend_combo = QComboBox()
         self.parallel_backend_combo.addItems(["thread", "process"])
         self.parallel_backend_combo.setToolTip(
             "Use threads for lighter tasks or processes for heavy CPU work."
         )
-        parallel_layout.addWidget(self.parallel_backend_combo, 3, 1)
+        parallel_options_layout.addWidget(self.parallel_backend_combo, 2, 1)
+
+        parallel_layout.addWidget(self.parallel_options_widget, 1, 0, 3, 2)
 
         self._update_parallel_controls_enabled()
 
@@ -1115,6 +1121,7 @@ class TrackEditorApp(QMainWindow):
 
     def _update_parallel_controls_enabled(self):
         enabled = self.parallel_checkbox.isChecked()
+        self.parallel_options_widget.setVisible(enabled)
         self.parallel_workers_spin.setEnabled(enabled)
         self.parallel_max_memory_spin.setEnabled(enabled)
         self.parallel_backend_combo.setEnabled(enabled)
