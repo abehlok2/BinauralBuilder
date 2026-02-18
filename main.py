@@ -220,6 +220,7 @@ QLineEdit, QComboBox, QSlider {
 # --- Constants ---
 DEFAULT_SAMPLE_RATE = 44100
 DEFAULT_CROSSFADE = 1.0 # Ensure float for consistency
+DEFAULT_CROSSFADE_OVERLAP = 1.0
 DEFAULT_CONTINUITY_MAX_DB_STEP = 1.0
 DEFAULT_CONTINUITY_WINDOW_MS = 75
 MAX_VOICES_PER_STEP = 100 # From previous version
@@ -309,6 +310,7 @@ class TrackEditorApp(QMainWindow):
             "global_settings": {
                 "sample_rate": self.prefs.sample_rate if hasattr(self, "prefs") else DEFAULT_SAMPLE_RATE,
                 "crossfade_duration": DEFAULT_CROSSFADE,
+                "crossfade_overlap": DEFAULT_CROSSFADE_OVERLAP,
                 "crossfade_curve": getattr(self.prefs, "crossfade_curve", "linear"),
                 "output_filename": "my_track.flac",
                 "parallel_voices": False,
@@ -586,6 +588,14 @@ class TrackEditorApp(QMainWindow):
         self.cf_entry.setValidator(self.double_validator_non_negative)
         self.cf_entry.setToolTip("Default crossfade duration between steps")
         globals_layout.addWidget(self.cf_entry, 1, 1)
+
+        globals_layout.addWidget(QLabel("Crossfade Overlap (0-1):"), 1, 2)
+        self.cf_overlap_entry = QLineEdit(str(DEFAULT_CROSSFADE_OVERLAP))
+        self.cf_overlap_entry.setValidator(self.double_validator_non_negative)
+        self.cf_overlap_entry.setToolTip(
+            "Fraction of crossfade duration that overlaps adjacent steps. 1.0 = full overlap, 0.0 = no overlap."
+        )
+        globals_layout.addWidget(self.cf_overlap_entry, 1, 3)
         
         globals_layout.addWidget(QLabel("Output File:"), 2, 0)
         self.outfile_entry = QLineEdit("my_track.wav")
@@ -1140,6 +1150,7 @@ class TrackEditorApp(QMainWindow):
         try:
             sr_str = self.sr_entry.text()
             cf_str = self.cf_entry.text()
+            cf_overlap_str = self.cf_overlap_entry.text()
             outfile = self.outfile_entry.text().strip()
             noise_file = self.noise_file_entry.text().strip()
             noise_amp_str = self.noise_amp_entry.text()
@@ -1152,7 +1163,12 @@ class TrackEditorApp(QMainWindow):
             cf = float(cf_str_safe)
             if cf < 0: raise ValueError("Crossfade duration cannot be negative.")
             self.track_data["global_settings"]["crossfade_duration"] = cf
-            # Ensure step start times reflect any change in crossfade duration
+            if not cf_overlap_str: raise ValueError("Crossfade overlap cannot be empty.")
+            cf_overlap = float(cf_overlap_str.replace(",", "."))
+            if cf_overlap < 0 or cf_overlap > 1:
+                raise ValueError("Crossfade overlap must be between 0.0 and 1.0.")
+            self.track_data["global_settings"]["crossfade_overlap"] = cf_overlap
+            # Ensure step start times reflect any change in crossfade parameters
             self._recalculate_step_start_times()
             if not outfile: raise ValueError("Output filename cannot be empty.")
             if any(c in outfile for c in '<>:"/\\|?*'):
@@ -1218,6 +1234,7 @@ class TrackEditorApp(QMainWindow):
         settings = self.track_data.get("global_settings", {})
         self.sr_entry.setText(str(settings.get("sample_rate", DEFAULT_SAMPLE_RATE)))
         self.cf_entry.setText(str(settings.get("crossfade_duration", DEFAULT_CROSSFADE)))
+        self.cf_overlap_entry.setText(str(settings.get("crossfade_overlap", DEFAULT_CROSSFADE_OVERLAP)))
         self.outfile_entry.setText(settings.get("output_filename", "my_track.wav"))
         noise = self.track_data.get("background_noise", {})
         self.noise_file_entry.setText(noise.get("file_path", ""))
@@ -1269,13 +1286,16 @@ class TrackEditorApp(QMainWindow):
         self._update_continuity_controls_enabled()
 
     def _recalculate_step_start_times(self):
-        crossfade = float(self.track_data.get("global_settings", {}).get("crossfade_duration", 0.0))
+        settings = self.track_data.get("global_settings", {})
+        crossfade = float(settings.get("crossfade_duration", 0.0))
+        crossfade_overlap = float(settings.get("crossfade_overlap", DEFAULT_CROSSFADE_OVERLAP))
+        crossfade_overlap = min(1.0, max(0.0, crossfade_overlap))
         current_time = 0.0
         for step in self.track_data.get("steps", []):
             step["start"] = current_time
             advance = float(step.get("duration", 0.0))
             if crossfade > 0.0:
-                advance = max(0.0, advance - crossfade)
+                advance = max(0.0, advance - (crossfade * crossfade_overlap))
             current_time += advance
 
     def _update_total_duration_label(self):
@@ -1485,6 +1505,7 @@ class TrackEditorApp(QMainWindow):
         try:
             sr_str = self.sr_entry.text()
             cf_str = self.cf_entry.text()
+            cf_overlap_str = self.cf_overlap_entry.text()
             outfile = self.outfile_entry.text().strip()
             noise_file = self.noise_file_entry.text().strip()
             noise_amp_str = self.noise_amp_entry.text()
@@ -1497,7 +1518,12 @@ class TrackEditorApp(QMainWindow):
             cf = float(cf_str_safe)
             if cf < 0: raise ValueError("Crossfade duration cannot be negative.")
             self.track_data["global_settings"]["crossfade_duration"] = cf
-            # Ensure step start times reflect any change in crossfade duration
+            if not cf_overlap_str: raise ValueError("Crossfade overlap cannot be empty.")
+            cf_overlap = float(cf_overlap_str.replace(",", "."))
+            if cf_overlap < 0 or cf_overlap > 1:
+                raise ValueError("Crossfade overlap must be between 0.0 and 1.0.")
+            self.track_data["global_settings"]["crossfade_overlap"] = cf_overlap
+            # Ensure step start times reflect any change in crossfade parameters
             self._recalculate_step_start_times()
             if not outfile: raise ValueError("Output filename cannot be empty.")
             if any(c in outfile for c in '<>:"/\\|?*'):
@@ -1562,6 +1588,7 @@ class TrackEditorApp(QMainWindow):
         settings = self.track_data.get("global_settings", {})
         self.sr_entry.setText(str(settings.get("sample_rate", DEFAULT_SAMPLE_RATE)))
         self.cf_entry.setText(str(settings.get("crossfade_duration", DEFAULT_CROSSFADE)))
+        self.cf_overlap_entry.setText(str(settings.get("crossfade_overlap", DEFAULT_CROSSFADE_OVERLAP)))
         self.outfile_entry.setText(settings.get("output_filename", "my_track.wav"))
         noise = self.track_data.get("background_noise", {})
         self.noise_file_entry.setText(noise.get("file_path", ""))
@@ -1613,13 +1640,16 @@ class TrackEditorApp(QMainWindow):
         self._update_continuity_controls_enabled()
 
     def _recalculate_step_start_times(self):
-        crossfade = float(self.track_data.get("global_settings", {}).get("crossfade_duration", 0.0))
+        settings = self.track_data.get("global_settings", {})
+        crossfade = float(settings.get("crossfade_duration", 0.0))
+        crossfade_overlap = float(settings.get("crossfade_overlap", DEFAULT_CROSSFADE_OVERLAP))
+        crossfade_overlap = min(1.0, max(0.0, crossfade_overlap))
         current_time = 0.0
         for step in self.track_data.get("steps", []):
             step["start"] = current_time
             advance = float(step.get("duration", 0.0))
             if crossfade > 0.0:
-                advance = max(0.0, advance - crossfade)
+                advance = max(0.0, advance - (crossfade * crossfade_overlap))
             current_time += advance
 
     def _update_total_duration_label(self):
