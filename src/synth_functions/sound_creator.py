@@ -498,7 +498,15 @@ def steps_have_continuous_voices(prev_step, next_step):
 
 
 def _adapt_transition_timing_for_chunk(core_params, chunk_start_time, chunk_duration, full_step_duration):
-    """Project step-level transition timing into a chunk-local window."""
+    """Project step-level transition timing into a chunk-local window.
+
+    Transition synths expect ``initial_offset``/``transition_duration`` to be
+    expressed against the *full step timeline*. For chunked streaming we keep
+    that absolute timeline by allowing a negative local ``initial_offset`` once
+    playback is already inside the transition window. This prevents the ramp
+    from restarting in every chunk and instead holds the end state after the
+    first transition completes.
+    """
     params = dict(core_params)
 
     transition_start = max(0.0, float(params.get("initial_offset", 0.0)))
@@ -510,19 +518,11 @@ def _adapt_transition_timing_for_chunk(core_params, chunk_start_time, chunk_dura
         transition_end = transition_start + max(0.0, float(transition_span))
 
     chunk_start = max(0.0, float(chunk_start_time))
-    chunk_end = chunk_start + max(0.0, float(chunk_duration))
 
-    if chunk_start >= transition_end:
-        params["initial_offset"] = 0.0
-        params["transition_duration"] = 0.0
-        return params
-
-    local_start = max(0.0, transition_start - chunk_start)
-    local_end = max(0.0, min(chunk_end, transition_end) - chunk_start)
-    local_duration = max(0.0, local_end - local_start)
-
-    params["initial_offset"] = local_start
-    params["transition_duration"] = local_duration
+    # Keep transition progress anchored to absolute step time. A negative local
+    # start means the transition began in an earlier chunk.
+    params["initial_offset"] = transition_start - chunk_start
+    params["transition_duration"] = max(0.0, transition_end - transition_start)
     return params
 
 
