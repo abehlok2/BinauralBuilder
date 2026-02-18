@@ -56,3 +56,18 @@ def test_generate_audio_preserves_voice_state_across_long_step_chunks(monkeypatc
     assert calls[1]["voice_states"] == [{"chunk_index": 1}]
     assert calls[2]["voice_states"] == [{"chunk_index": 2}]
     assert all(call["return_state"] for call in calls)
+
+
+def test_voice_logical_key_uses_trimmed_description_for_cross_step_matching():
+    voice_with_spaces = {
+        "description": "  7  ",
+        "synth_function_name": "binaural_beat",
+        "voice_type": "binaural",
+    }
+    voice_trimmed = {
+        "description": "7",
+        "synth_function_name": "binaural_beat",
+        "voice_type": "binaural",
+    }
+
+    assert sound_creator._voice_logical_key(voice_with_spaces, 0) == sound_creator._voice_logical_key(voice_trimmed, 1)

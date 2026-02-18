@@ -541,13 +541,18 @@ def _voice_logical_key(voice_data, fallback_index=None):
         if key_value not in (None, ""):
             return ("id", str(key_value))
 
-    label = voice_data.get("description") or voice_data.get("name")
-    if label not in (None, ""):
+    label = voice_data.get("description")
+    normalized_label = str(label).strip() if label is not None else ""
+    if normalized_label == "":
+        fallback_name = voice_data.get("name")
+        normalized_label = str(fallback_name).strip() if fallback_name is not None else ""
+
+    if normalized_label != "":
         return (
             "label",
             str(voice_data.get("voice_type", "binaural")),
             str(voice_data.get("synth_function_name", "")),
-            str(label),
+            normalized_label,
         )
 
     return (
