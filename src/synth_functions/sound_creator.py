@@ -34,12 +34,13 @@ MIN_BATCH_SIZE = 1
 # Maximum batch size even if memory allows more.
 MAX_BATCH_SIZE = 8
 
-# Memory management constants for sequential (offline) generation chunking.
-# When generating long steps in sequential mode, process in chunks to reduce
-# peak RAM usage. This prevents multi-GB allocations for hour-long steps.
-SEQUENTIAL_CHUNK_DURATION_SECONDS = 30.0  # Generate 30 seconds at a time
-# Minimum step duration before chunking is applied (avoid overhead for short steps)
-SEQUENTIAL_CHUNK_THRESHOLD_SECONDS = 60.0  # Only chunk steps longer than 1 minute
+# Sequential offline chunking can introduce non-step boundary phase resets
+# depending on synth internals. Keep it disabled by default so each step is
+# rendered as one uninterrupted segment.
+ENABLE_SEQUENTIAL_CHUNKING = False
+# Kept for compatibility if chunking is re-enabled in the future.
+SEQUENTIAL_CHUNK_DURATION_SECONDS = 30.0
+SEQUENTIAL_CHUNK_THRESHOLD_SECONDS = 60.0
 from src.synth_functions.noise_flanger import (
     _generate_swept_notch_arrays,
     _generate_swept_notch_arrays_transition,
@@ -997,7 +998,7 @@ def assemble_track_from_data(track_data, sample_rate, crossfade_duration, crossf
         # --- Memory-efficient chunked generation for long steps ---
         # For steps longer than the threshold, process in chunks to reduce peak RAM.
         # This prevents multi-GB allocations when generating hour-long steps.
-        if step_duration > SEQUENTIAL_CHUNK_THRESHOLD_SECONDS:
+        if ENABLE_SEQUENTIAL_CHUNKING and step_duration > SEQUENTIAL_CHUNK_THRESHOLD_SECONDS:
             chunk_duration = SEQUENTIAL_CHUNK_DURATION_SECONDS
             chunk_samples = int(chunk_duration * sample_rate)
             num_chunks = int(np.ceil(step_duration / chunk_duration))
