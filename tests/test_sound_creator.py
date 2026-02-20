@@ -172,3 +172,66 @@ def test_crossfade_overlap_factor_controls_step_overlap(monkeypatch):
     # With full overlap, total length is reduced by 20 samples. Without overlap, full 200 samples.
     assert full.shape[0] == 180
     assert zero.shape[0] == 200
+
+
+def test_spatial_angle_modulation_generates_stereo_with_expected_shape():
+    from src.synth_functions.spatial_angle_modulation import spatial_angle_modulation_sam2
+
+    audio = spatial_angle_modulation_sam2(
+        duration=1.0,
+        sample_rate=1000,
+        amp=0.5,
+        carrierFreq=220.0,
+        modFreq=8.0,
+        peakPhaseDev=0.7,
+        phaseOffsetL=0.0,
+        phaseOffsetR=np.pi / 2.0,
+        pathType='open',
+    )
+
+    assert audio.shape == (1000, 2)
+    assert np.max(np.abs(audio)) <= 0.501
+    assert not np.allclose(audio[:, 0], audio[:, 1])
+
+
+def test_spatial_angle_modulation_transition_interpolates_parameters():
+    from src.synth_functions.spatial_angle_modulation import spatial_angle_modulation_sam2_transition
+
+    audio = spatial_angle_modulation_sam2_transition(
+        duration=1.0,
+        sample_rate=1000,
+        amp=0.6,
+        startCarrierFreq=220.0,
+        endCarrierFreq=440.0,
+        startModFreq=4.0,
+        endModFreq=12.0,
+        startPeakPhaseDev=0.3,
+        endPeakPhaseDev=1.0,
+        startPhaseOffsetL=0.0,
+        endPhaseOffsetL=np.pi / 4.0,
+        startPhaseOffsetR=np.pi / 2.0,
+        endPhaseOffsetR=np.pi / 3.0,
+        pathType='closed',
+    )
+
+    assert audio.shape == (1000, 2)
+    assert np.max(np.abs(audio)) <= 0.6 + 1e-3
+    assert np.std(audio[:, 0]) > 0.05
+
+
+def test_spatial_angle_modulation_original_engine_signature_still_available():
+    from src.synth_functions.spatial_angle_modulation import spatial_angle_modulation
+
+    audio = spatial_angle_modulation(
+        duration=0.25,
+        sample_rate=800,
+        amp=0.6,
+        carrierFreq=300.0,
+        beatFreq=6.0,
+        pathShape='circle',
+        pathRadius=1.0,
+        arcStartDeg=0.0,
+        arcEndDeg=180.0,
+    )
+
+    assert audio.shape == (200, 2)

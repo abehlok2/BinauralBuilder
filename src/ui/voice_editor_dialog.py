@@ -70,6 +70,7 @@ UI_EXCLUDED_FUNCTION_NAMES = [
     'qam_beat_transition',
     'hybrid_qam_monaural_beat_transition',
     'spatial_angle_modulation_transition',
+    'spatial_angle_modulation_sam2_transition',
     'spatial_angle_modulation_monaural_beat_transition',
     'dual_pulse_binaural_transition',
 ]
@@ -104,6 +105,16 @@ PARAM_TOOLTIPS = {
         'freqOscShape': 'Waveform shape for frequency modulation ("sine" or "triangle").',
         'phaseOscFreq': 'Frequency of phase modulation applied to both channels.',
         'phaseOscRange': 'Range of phase modulation in radians.',
+    },
+    'spatial_angle_modulation_sam2': {
+        'amp': 'Overall signal amplitude.',
+        'carrierFreq': 'Carrier tone frequency (f_s) in Hz.',
+        'modFreq': 'Spatial modulation frequency (f_m) in Hz.',
+        'peakPhaseDev': 'Peak phase deviation (φ_p) in radians; controls spatial width.',
+        'phaseOffsetL': 'Absolute left-channel phase offset (φ_L) in radians.',
+        'phaseOffsetR': 'Absolute right-channel phase offset (φ_R) in radians.',
+        'pathType': 'Spatial path mode: open (sine), closed (ramp), discontinuous (step).',
+        'discontinuousSteps': 'Number of discrete positions used by discontinuous path type.',
     }
 }
 
@@ -1436,6 +1447,13 @@ class VoiceEditorDialog(QDialog): # Standard class name
             val_to_set = value if value in sound_creator.VALID_SAM_PATHS else sound_creator.VALID_SAM_PATHS[0]
             widget.setCurrentText(str(val_to_set))
             widget.setMinimumWidth(width)
+        elif base_name == 'pathType' and type_hint == 'str':
+            widget = QComboBox()
+            path_types = ['open', 'closed', 'discontinuous']
+            widget.addItems(path_types)
+            val_to_set = value if value in path_types else 'open'
+            widget.setCurrentText(str(val_to_set))
+            widget.setMinimumWidth(width)
         elif base_name == 'spatialDecoder' and type_hint == 'str':
             widget = QComboBox()
             widget.addItem('ITD Head (time-delay)', 'itd_head')
@@ -2095,6 +2113,7 @@ class VoiceEditorDialog(QDialog): # Standard class name
         if 'pan' in name_lower: return '-1 L to 1 R'
         if 'noiseType' in name_lower: return '1:W,2:P,3:B'
         if 'shape' in name_lower and 'path' not in name_lower : return 'e.g. 0-10'
+        if 'pathtype' in name_lower: return 'open, closed, discontinuous'
         if 'pathShape' in name_lower: return 'e.g. circle, line'
 
 
@@ -2409,6 +2428,8 @@ def get_default_params_for_function(func_name_from_combo: str, is_transition_mod
         "Wave Shape Stereo AM Transition": "wave_shape_stereo_am_transition",
         "Spatial Angle Modulation (SAM Engine)": "spatial_angle_modulation", # Uses Node/SAMVoice directly
         "Spatial Angle Modulation (SAM Engine Transition)": "spatial_angle_modulation_transition",
+        "Spatial Angle Modulation (SAM2)": "spatial_angle_modulation_sam2",
+        "Spatial Angle Modulation (SAM2 Transition)": "spatial_angle_modulation_sam2_transition",
         "Binaural Beat": "binaural_beat",
         "Binaural Beat Transition": "binaural_beat_transition",
         "Monaural Beat Stereo Amps": "monaural_beat_stereo_amps",
@@ -2428,6 +2449,7 @@ def get_default_params_for_function(func_name_from_combo: str, is_transition_mod
         "stereo_am_independent": "stereo_am_independent",
         "wave_shape_stereo_am": "wave_shape_stereo_am",
         "spatial_angle_modulation": "spatial_angle_modulation",
+        "spatial_angle_modulation_sam2": "spatial_angle_modulation_sam2",
         "binaural_beat": "binaural_beat",
         "monaural_beat_stereo_amps": "monaural_beat_stereo_amps",
         "spatial_angle_modulation_monaural_beat": "spatial_angle_modulation_monaural_beat",
@@ -2516,6 +2538,24 @@ def get_default_params_for_function(func_name_from_combo: str, is_transition_mod
                 ('startArcStartDeg', 0.0), ('endArcStartDeg', 0.0),
                 ('startArcEndDeg', 360.0), ('endArcEndDeg', 360.0),
                 ('frame_dur_ms', 46.4), ('overlap_factor', 8),
+                ('initial_offset', 0.0), ('duration', 0.0), ('transition_curve', 'linear')
+            ]
+        },
+        "spatial_angle_modulation_sam2": {
+            "standard": [
+                ('amp', 0.7), ('carrierFreq', 440.0), ('modFreq', 4.0),
+                ('peakPhaseDev', 0.55),
+                ('phaseOffsetL', 0.0), ('phaseOffsetR', math.pi / 2),
+                ('pathType', 'open'), ('discontinuousSteps', 8)
+            ],
+            "transition": [
+                ('amp', 0.7),
+                ('startCarrierFreq', 440.0), ('endCarrierFreq', 440.0),
+                ('startModFreq', 4.0), ('endModFreq', 4.0),
+                ('startPeakPhaseDev', 0.55), ('endPeakPhaseDev', 0.55),
+                ('startPhaseOffsetL', 0.0), ('endPhaseOffsetL', 0.0),
+                ('startPhaseOffsetR', math.pi / 2), ('endPhaseOffsetR', math.pi / 2),
+                ('pathType', 'open'), ('discontinuousSteps', 8),
                 ('initial_offset', 0.0), ('duration', 0.0), ('transition_curve', 'linear')
             ]
         },
@@ -2793,6 +2833,24 @@ def get_default_params_for_function(func_name_from_combo: str, is_transition_mod
                 ('startArcStartDeg', 0.0), ('endArcStartDeg', 0.0),
                 ('startArcEndDeg', 360.0), ('endArcEndDeg', 360.0),
                 ('frame_dur_ms', 46.4), ('overlap_factor', 8),
+                ('initial_offset', 0.0), ('duration', 0.0), ('transition_curve', 'linear')
+            ]
+        },
+        "spatial_angle_modulation_sam2": {
+            "standard": [
+                ('amp', 0.7), ('carrierFreq', 440.0), ('modFreq', 4.0),
+                ('peakPhaseDev', 0.55),
+                ('phaseOffsetL', 0.0), ('phaseOffsetR', math.pi / 2),
+                ('pathType', 'open'), ('discontinuousSteps', 8)
+            ],
+            "transition": [
+                ('amp', 0.7),
+                ('startCarrierFreq', 440.0), ('endCarrierFreq', 440.0),
+                ('startModFreq', 4.0), ('endModFreq', 4.0),
+                ('startPeakPhaseDev', 0.55), ('endPeakPhaseDev', 0.55),
+                ('startPhaseOffsetL', 0.0), ('endPhaseOffsetL', 0.0),
+                ('startPhaseOffsetR', math.pi / 2), ('endPhaseOffsetR', math.pi / 2),
+                ('pathType', 'open'), ('discontinuousSteps', 8),
                 ('initial_offset', 0.0), ('duration', 0.0), ('transition_curve', 'linear')
             ]
         },
