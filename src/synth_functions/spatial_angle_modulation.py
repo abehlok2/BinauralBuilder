@@ -14,7 +14,7 @@ try:
     from .audio_engine import Node, SAMVoice, VALID_SAM_PATHS
     AUDIO_ENGINE_AVAILABLE = True
     print("INFO: audio_engine module loaded successfully in spatial_angle_modulation.")
-except ImportError:
+except Exception:
     AUDIO_ENGINE_AVAILABLE = False
     print("WARNING: audio_engine module not found in spatial_angle_modulation. SAM functions will not be available.")
     # Define dummy classes/variables if audio_engine is missing
@@ -205,7 +205,7 @@ def spatial_angle_modulation(duration, sample_rate=44100, **params):
         pathShape = 'circle'
 
     try:
-        node = Node(duration, carrierFreq, beatFreq, 1.0, 1.0) # Using real Node now
+        node = Node(duration, carrierFreq, beatFreq, 1.0, 1.0)
     except Exception as e:
         print(f"Error creating Node for SAM: {e}")
         N = int(sample_rate * duration)
@@ -219,15 +219,14 @@ def spatial_angle_modulation(duration, sample_rate=44100, **params):
     }
 
     try:
-        voice = SAMVoice( # Using real SAMVoice now
+        voice = SAMVoice(
             nodes=[node],
             sample_rate=sample_rate,
             frame_dur_ms=frame_dur_ms,
             overlap_factor=overlap_factor,
-            source_amp=amp, # Apply amp within SAMVoice
+            source_amp=amp,
             sam_node_params=[sam_params_dict]
         )
-        # Note: Envelope is applied *within* generate_voice_audio if specified there.
         return voice.generate_samples()
     except Exception as e:
         print(f"Error during SAMVoice generation: {e}")
@@ -269,22 +268,21 @@ def spatial_angle_modulation_transition(
         endPathShape = 'circle'
 
     try:
-        # Define start and end nodes for transition
         node_start = Node(duration, startCarrierFreq, startBeatFreq, 1.0, 1.0)
-        node_end = Node(0.0, endCarrierFreq, endBeatFreq, 1.0, 1.0) # End node has 0 duration
+        node_end = Node(0.0, endCarrierFreq, endBeatFreq, 1.0, 1.0)
     except Exception as e:
         print(f"Error creating Nodes for SAM transition: {e}")
         N = int(sample_rate * duration)
         return np.zeros((N, 2))
 
     sam_params_list = [
-        { # Parameters for the start node
+        {
             'path_shape': startPathShape,
             'path_radius': startPathRadius,
             'arc_start_deg': startArcStartDeg,
             'arc_end_deg': startArcEndDeg
         },
-        { # Parameters for the (conceptual) end node
+        {
             'path_shape': endPathShape,
             'path_radius': endPathRadius,
             'arc_start_deg': endArcStartDeg,
@@ -293,21 +291,106 @@ def spatial_angle_modulation_transition(
     ]
 
     try:
-        voice = SAMVoice( # Using real SAMVoice
-            nodes=[node_start, node_end], # Pass both nodes for transition
+        voice = SAMVoice(
+            nodes=[node_start, node_end],
             sample_rate=sample_rate,
             frame_dur_ms=frame_dur_ms,
             overlap_factor=overlap_factor,
-            source_amp=amp, # Apply amp within SAMVoice
-            sam_node_params=sam_params_list # Pass list of params
+            source_amp=amp,
+            sam_node_params=sam_params_list
         )
-        # Note: Envelope is applied *within* generate_voice_audio if specified there.
         return voice.generate_samples()
     except Exception as e:
         print(f"Error during SAMVoice transition generation: {e}")
         traceback.print_exc()
         N = int(sample_rate * duration)
         return np.zeros((N, 2))
+
+
+def spatial_angle_modulation_sam2(duration, sample_rate=44100, **params):
+    """SAM2: phase-modulation SAM implementation independent of audio_engine."""
+    n_samples = int(duration * sample_rate)
+    if n_samples <= 0:
+        return np.zeros((0, 2), dtype=np.float32)
+
+    amp = float(params.get('amp', 0.7))
+    carrier_freq = float(params.get('carrierFreq', 440.0))
+    mod_freq = float(params.get('modFreq', params.get('beatFreq', 4.0)))
+    peak_phase_dev = float(params.get('peakPhaseDev', 0.55))
+    phase_offset_l = float(params.get('phaseOffsetL', 0.0))
+    phase_offset_r = float(params.get('phaseOffsetR', math.pi / 2.0))
+    path_type = str(params.get('pathType', 'open')).lower()
+    discontinuous_steps = int(params.get('discontinuousSteps', 8))
+
+    t = np.arange(n_samples, dtype=np.float64) / float(sample_rate)
+    mod_phase = 2.0 * math.pi * mod_freq * t
+
+    if path_type == 'closed':
+        wrapped = (mod_phase / (2.0 * math.pi)) % 1.0
+        shape = (2.0 * wrapped) - 1.0
+    elif path_type == 'discontinuous':
+        wrapped = (mod_phase / (2.0 * math.pi)) % 1.0
+        steps = max(1, discontinuous_steps)
+        shape = (np.floor(wrapped * steps) / max(1, steps - 1)) * 2.0 - 1.0
+    else:
+        shape = np.sin(mod_phase)
+
+    mod_term = peak_phase_dev * shape
+    carrier_phase = 2.0 * math.pi * carrier_freq * t
+
+    left = amp * np.sin(carrier_phase + mod_term + phase_offset_l)
+    right = amp * np.sin(carrier_phase + mod_term + phase_offset_r)
+
+    return np.column_stack((left, right)).astype(np.float32)
+
+
+def spatial_angle_modulation_sam2_transition(
+    duration, sample_rate=44100, initial_offset=0.0, transition_duration=None, **params
+):
+    """SAM2 transition with linear parameter interpolation."""
+    n_samples = int(duration * sample_rate)
+    if n_samples <= 0:
+        return np.zeros((0, 2), dtype=np.float32)
+
+    amp = float(params.get('amp', 0.7))
+    start_carrier = float(params.get('startCarrierFreq', 440.0))
+    end_carrier = float(params.get('endCarrierFreq', 440.0))
+    start_mod = float(params.get('startModFreq', params.get('startBeatFreq', 4.0)))
+    end_mod = float(params.get('endModFreq', params.get('endBeatFreq', 4.0)))
+    start_peak = float(params.get('startPeakPhaseDev', 0.55))
+    end_peak = float(params.get('endPeakPhaseDev', 0.55))
+    start_l = float(params.get('startPhaseOffsetL', 0.0))
+    end_l = float(params.get('endPhaseOffsetL', 0.0))
+    start_r = float(params.get('startPhaseOffsetR', math.pi / 2.0))
+    end_r = float(params.get('endPhaseOffsetR', math.pi / 2.0))
+    path_type = str(params.get('pathType', 'open')).lower()
+    discontinuous_steps = int(params.get('discontinuousSteps', 8))
+
+    alpha = np.linspace(0.0, 1.0, n_samples, dtype=np.float64)
+    carrier_freq = start_carrier + (end_carrier - start_carrier) * alpha
+    mod_freq = start_mod + (end_mod - start_mod) * alpha
+    peak_phase_dev = start_peak + (end_peak - start_peak) * alpha
+    phase_l = start_l + (end_l - start_l) * alpha
+    phase_r = start_r + (end_r - start_r) * alpha
+
+    mod_phase = np.cumsum((2.0 * math.pi * mod_freq) / float(sample_rate))
+    carrier_phase = np.cumsum((2.0 * math.pi * carrier_freq) / float(sample_rate))
+
+    if path_type == 'closed':
+        wrapped = (mod_phase / (2.0 * math.pi)) % 1.0
+        shape = (2.0 * wrapped) - 1.0
+    elif path_type == 'discontinuous':
+        wrapped = (mod_phase / (2.0 * math.pi)) % 1.0
+        steps = max(1, discontinuous_steps)
+        shape = (np.floor(wrapped * steps) / max(1, steps - 1)) * 2.0 - 1.0
+    else:
+        shape = np.sin(mod_phase)
+
+    mod_term = peak_phase_dev * shape
+    left = amp * np.sin(carrier_phase + mod_term + phase_l + initial_offset)
+    right = amp * np.sin(carrier_phase + mod_term + phase_r + initial_offset)
+
+    return np.column_stack((left, right)).astype(np.float32)
 
 
 def spatial_angle_modulation_monaural_beat(duration, sample_rate=44100, **params):
