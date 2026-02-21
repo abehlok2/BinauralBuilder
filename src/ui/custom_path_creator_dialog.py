@@ -43,6 +43,7 @@ class _PathView(QGraphicsView):
         self._path_kind = "linear"
         self._closed_loop = False
         self._close_snap_px = 12.0
+        self._pending_connection_index = None
         self._path_item = QGraphicsPathItem()
         self._path_item.setPen(QPen(Qt.blue, 2.0))
         self.scene().addItem(self._path_item)
@@ -102,9 +103,18 @@ class _PathView(QGraphicsView):
         super().mouseDoubleClickEvent(event)
 
     def mouseReleaseEvent(self, event):
-        self._snap_endpoints_if_needed()
+        self._snap_endpoints_if_needed(event.modifiers() & Qt.ControlModifier)
         self._redraw_path()
         super().mouseReleaseEvent(event)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton and (event.modifiers() & Qt.ControlModifier):
+            endpoint_index = self._endpoint_index_near(self.mapToScene(event.pos()))
+            if endpoint_index is not None:
+                self._handle_endpoint_connection_click(endpoint_index)
+                event.accept()
+                return
+        super().mousePressEvent(event)
 
     def keyPressEvent(self, event):
         if event.key() in (Qt.Key_Delete, Qt.Key_Backspace):
@@ -119,9 +129,52 @@ class _PathView(QGraphicsView):
                 return
         super().keyPressEvent(event)
 
-    def _snap_endpoints_if_needed(self) -> None:
+    def _handle_endpoint_connection_click(self, endpoint_index: int) -> None:
+        if len(self._points) < 3:
+            self._pending_connection_index = None
+            self._closed_loop = False
+            return
+        if self._pending_connection_index is None:
+            self._pending_connection_index = endpoint_index
+            return
+        if self._pending_connection_index == endpoint_index:
+            self._pending_connection_index = None
+            return
+        source = self._points[self._pending_connection_index]
+        target = self._points[endpoint_index]
+        target.setPos(source.scenePos())
+        self._closed_loop = True
+        self._pending_connection_index = None
+        self._redraw_path()
+
+    def _endpoint_index_near(self, scene_pos: QPointF):
+        if len(self._points) < 2:
+            return None
+        endpoint_candidates = [0, len(self._points) - 1]
+        for idx in endpoint_candidates:
+            endpoint = self._points[idx]
+            if math.hypot(
+                endpoint.scenePos().x() - scene_pos.x(),
+                endpoint.scenePos().y() - scene_pos.y(),
+            ) <= self._close_snap_px:
+                return idx
+        return None
+
+    def _snap_endpoints_if_needed(self, connect_mode_active: bool) -> None:
+        if not connect_mode_active:
+            self._pending_connection_index = None
+            if self._closed_loop and len(self._points) >= 3:
+                first = self._points[0]
+                last = self._points[-1]
+                if math.hypot(
+                    first.scenePos().x() - last.scenePos().x(),
+                    first.scenePos().y() - last.scenePos().y(),
+                ) > self._close_snap_px:
+                    self._closed_loop = False
+            return
         if len(self._points) < 3:
             self._closed_loop = False
+            self._pending_connection_index = None
             return
         first = self._points[0]
         last = self._points[-1]
@@ -130,6 +183,7 @@ class _PathView(QGraphicsView):
             self._closed_loop = True
         else:
             self._closed_loop = False
+        self._pending_connection_index = None
 
     def _redraw_path(self) -> None:
         if not self._points:
@@ -189,7 +243,10 @@ class CustomPathCreatorDialog(QDialog):
         self.path_kind_combo.currentTextChanged.connect(self.view.set_path_kind)
         main_layout.addWidget(self.view)
 
-        help_label = QLabel("Double-click to add points. Drag points to refine. Press Delete to remove selected points. Drag one endpoint onto the other to close a loop.")
+        help_label = QLabel(
+            "Double-click to add points. Drag points to refine. Press Delete to remove selected points. "
+            "Hold Ctrl to enter endpoint connect mode, then click both endpoints or drag one endpoint onto the other to close a loop."
+        )
         help_label.setWordWrap(True)
         main_layout.addWidget(help_label)
 
