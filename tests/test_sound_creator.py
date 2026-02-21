@@ -254,6 +254,32 @@ def test_custom_spline_path_returns_dynamic_scale_for_perceptual_distance():
     assert np.max(dynamic_scale) - np.min(dynamic_scale) > 0.1
 
 
+
+
+def test_custom_path_smoothing_reduces_corner_discontinuities():
+    from src.synth_functions.spatial_angle_modulation import _resolve_sam2_shape
+
+    phase = np.linspace(0.0, 10.0 * np.pi, 4000, dtype=np.float64)
+    sharp_profile = {
+        "kind": "polyline",
+        "closedLoop": True,
+        "smoothingPasses": 0,
+        "subNodesPerSegment": 8,
+        "points": [[-1.0, -1.0], [1.0, -1.0], [1.0, 1.0], [-1.0, 1.0]],
+    }
+    smooth_profile = {
+        **sharp_profile,
+        "smoothingPasses": 3,
+        "subNodesPerSegment": 32,
+    }
+
+    sharp_shape, _ = _resolve_sam2_shape("custom", phase, sharp_profile)
+    smooth_shape, _ = _resolve_sam2_shape("custom", phase, smooth_profile)
+
+    sharp_turn_rate = np.percentile(np.abs(np.diff(sharp_shape)), 99.5)
+    smooth_turn_rate = np.percentile(np.abs(np.diff(smooth_shape)), 99.5)
+
+    assert smooth_turn_rate < sharp_turn_rate
 def test_custom_path_spatial_scale_modulates_output_when_distance_changes():
     from src.synth_functions.spatial_angle_modulation import spatial_angle_modulation_sam2
 

@@ -92,6 +92,40 @@ def _catmull_rom_eval(p0, p1, p2, p3, t: np.ndarray):
     return x, y
 
 
+def _chaikin_smooth_points(points, is_closed: bool, passes: int, ratio: float):
+    if passes <= 0 or len(points) < 3:
+        return points
+
+    ratio = float(np.clip(ratio, 1e-3, 0.499))
+    smoothed = list(points)
+    for _ in range(passes):
+        if len(smoothed) < 3:
+            break
+
+        if is_closed:
+            refined = []
+            count = len(smoothed)
+            for i in range(count):
+                p0 = smoothed[i]
+                p1 = smoothed[(i + 1) % count]
+                q = ((1.0 - ratio) * p0[0] + ratio * p1[0], (1.0 - ratio) * p0[1] + ratio * p1[1])
+                r = (ratio * p0[0] + (1.0 - ratio) * p1[0], ratio * p0[1] + (1.0 - ratio) * p1[1])
+                refined.extend((q, r))
+            smoothed = refined
+        else:
+            refined = [smoothed[0]]
+            for i in range(len(smoothed) - 1):
+                p0 = smoothed[i]
+                p1 = smoothed[i + 1]
+                q = ((1.0 - ratio) * p0[0] + ratio * p1[0], (1.0 - ratio) * p0[1] + ratio * p1[1])
+                r = (ratio * p0[0] + (1.0 - ratio) * p1[0], ratio * p0[1] + (1.0 - ratio) * p1[1])
+                refined.extend((q, r))
+            refined.append(smoothed[-1])
+            smoothed = refined
+
+    return smoothed
+
+
 def _resolve_custom_path_xy(phase: np.ndarray, custom_profile):
     if isinstance(custom_profile, str):
         try:
@@ -116,9 +150,17 @@ def _resolve_custom_path_xy(phase: np.ndarray, custom_profile):
 
     is_closed = bool(custom_profile.get('closedLoop', False)) if isinstance(custom_profile, dict) else False
     kind = str(custom_profile.get('kind', '')).lower() if isinstance(custom_profile, dict) else ''
+    subnodes_per_segment = int(custom_profile.get('subNodesPerSegment', 24)) if isinstance(custom_profile, dict) else 24
+    subnodes_per_segment = max(4, min(subnodes_per_segment, 256))
+    smoothing_passes = int(custom_profile.get('smoothingPasses', 1)) if isinstance(custom_profile, dict) else 1
+    smoothing_passes = max(0, min(smoothing_passes, 6))
+    smoothing_ratio = float(custom_profile.get('smoothingRatio', 0.25)) if isinstance(custom_profile, dict) else 0.25
 
     if is_closed and clean_points[0] != clean_points[-1]:
         clean_points.append(clean_points[0])
+
+    if kind != 'spline':
+        clean_points = _chaikin_smooth_points(clean_points, is_closed=is_closed, passes=smoothing_passes, ratio=smoothing_ratio)
 
     sample_x = []
     sample_y = []
@@ -131,15 +173,22 @@ def _resolve_custom_path_xy(phase: np.ndarray, custom_profile):
             p2 = clean_points[(i + 1) % len(clean_points)] if is_closed else clean_points[i + 1]
             p0 = clean_points[i - 1] if i > 0 else (clean_points[-2] if is_closed else clean_points[0])
             p3 = clean_points[(i + 2) % len(clean_points)] if (is_closed or i + 2 < len(clean_points)) else clean_points[-1]
-            t = np.linspace(0.0, 1.0, 24, endpoint=False)
+            t = np.linspace(0.0, 1.0, subnodes_per_segment, endpoint=False)
             x, y = _catmull_rom_eval(p0, p1, p2, p3, t)
             sample_x.extend(x.tolist())
             sample_y.extend(y.tolist())
         sample_x.append(clean_points[-1][0])
         sample_y.append(clean_points[-1][1])
     else:
-        sample_x = [p[0] for p in clean_points]
-        sample_y = [p[1] for p in clean_points]
+        for i in range(len(clean_points) - 1):
+            p0 = clean_points[i]
+            p1 = clean_points[i + 1]
+            t = np.linspace(0.0, 1.0, subnodes_per_segment, endpoint=False)
+            for ti in t:
+                sample_x.append((1.0 - ti) * p0[0] + ti * p1[0])
+                sample_y.append((1.0 - ti) * p0[1] + ti * p1[1])
+        sample_x.append(clean_points[-1][0])
+        sample_y.append(clean_points[-1][1])
 
     for i in range(1, len(sample_x)):
         sample_d.append(sample_d[-1] + math.hypot(sample_x[i] - sample_x[i - 1], sample_y[i] - sample_y[i - 1]))
