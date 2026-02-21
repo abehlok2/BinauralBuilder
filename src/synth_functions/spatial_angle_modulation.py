@@ -49,29 +49,43 @@ except Exception:
 # Spatial Angle Modulation - Helper Functions
 # -----------------------------------------------------------------------------
 
-def _sam2_path_open_sinusoidal(phase: np.ndarray) -> np.ndarray:
-    return np.sin(phase)
+def _progress_open(phase: np.ndarray) -> np.ndarray:
+    """Back-and-forth path traversal (0 → 1 → 0)."""
+    wrapped = (phase / (2.0 * math.pi)) % 1.0
+    return 1.0 - (2.0 * np.abs(wrapped - 0.5))
 
 
-def _sam2_path_closed_circular(phase: np.ndarray) -> np.ndarray:
-    return ((phase / (2.0 * math.pi)) % 1.0) * 2.0 - 1.0
+def _progress_closed(phase: np.ndarray, direction: str = 'cw') -> np.ndarray:
+    """Looping path traversal (clockwise/counterclockwise)."""
+    wrapped = (phase / (2.0 * math.pi)) % 1.0
+    return wrapped if direction != 'ccw' else (1.0 - wrapped)
 
 
-def _sam2_path_discontinuous(phase: np.ndarray) -> np.ndarray:
-    return np.where(np.sin(phase) >= 0.0, 1.0, -1.0)
+def _progress_discontinuous(phase: np.ndarray, steps: int = 8, direction: str = 'cw') -> np.ndarray:
+    """Stepped looping traversal for staccato position jumps."""
+    smooth = _progress_closed(phase, direction=direction)
+    n_steps = max(2, int(steps))
+    return np.floor(smooth * n_steps) / float(n_steps - 1)
 
 
-SAM2_PATH_GENERATORS = {
-    'open': _sam2_path_open_sinusoidal,
-    'sinusoidal': _sam2_path_open_sinusoidal,
-    'closed': _sam2_path_closed_circular,
-    'circular': _sam2_path_closed_circular,
-    'discontinuous': _sam2_path_discontinuous,
+def _shape_from_progress(path_shape: str, progress: np.ndarray) -> np.ndarray:
+    """Map normalized path progress [0,1] to SAM modulation shape [-1,1]."""
+    shape = str(path_shape or '').lower()
+    if shape in ('triangle', 'tri'):
+        return (4.0 * np.abs(progress - 0.5)) - 1.0
+    if shape in ('saw', 'sawtooth', 'ramp', 'linear'):
+        return (2.0 * progress) - 1.0
+    if shape in ('square', 'step'):
+        return np.where(np.sin(2.0 * math.pi * progress) >= 0.0, 1.0, -1.0)
+    # Default smooth sinusoid around center
+    return np.sin(2.0 * math.pi * progress)
+
+
+SAM2_DEFAULT_SHAPES_BY_TYPE = {
+    'open': 'sinusoidal',
+    'closed': 'ramp',
+    'discontinuous': 'square',
 }
-
-
-def _resolve_sam2_path_generator(path_type: str):
-    return SAM2_PATH_GENERATORS.get(path_type.lower(), _sam2_path_open_sinusoidal)
 
 
 def _catmull_rom_eval(p0, p1, p2, p3, t: np.ndarray):
@@ -206,7 +220,7 @@ def _resolve_custom_path_xy(phase: np.ndarray, custom_profile):
 def _sam2_custom_path_shape_and_scale(phase: np.ndarray, custom_profile):
     x_interp, y_interp = _resolve_custom_path_xy(phase, custom_profile)
     if x_interp is None or y_interp is None:
-        base = _sam2_path_open_sinusoidal(phase)
+        base = _shape_from_progress('sinusoidal', _progress_open(phase))
         return base, np.ones_like(base)
 
     angle_deg = np.degrees(np.arctan2(x_interp, y_interp))
@@ -224,11 +238,20 @@ def _sam2_custom_path_shape_and_scale(phase: np.ndarray, custom_profile):
     return norm_angle, np.clip(dynamic_scale, 0.75, 1.25)
 
 
-def _resolve_sam2_shape(path_type: str, phase: np.ndarray, custom_profile=None):
+def _resolve_sam2_shape(path_type: str, phase: np.ndarray, custom_profile=None, path_shape=None, discontinuous_steps=8, rotation_direction='cw'):
     if path_type.lower() == 'custom':
         return _sam2_custom_path_shape_and_scale(phase, custom_profile)
-    generator = _resolve_sam2_path_generator(path_type)
-    shape = generator(phase)
+
+    path_type_norm = path_type.lower()
+    if path_type_norm == 'closed':
+        progress = _progress_closed(phase, direction=rotation_direction)
+    elif path_type_norm == 'discontinuous':
+        progress = _progress_discontinuous(phase, steps=discontinuous_steps, direction=rotation_direction)
+    else:
+        progress = _progress_open(phase)
+
+    selected_shape = path_shape or SAM2_DEFAULT_SHAPES_BY_TYPE.get(path_type_norm, 'sinusoidal')
+    shape = _shape_from_progress(selected_shape, progress)
     return shape, np.ones_like(shape)
 
 @numba.njit(parallel=True, fastmath=True)
@@ -506,12 +529,22 @@ def spatial_angle_modulation_sam2(duration, sample_rate=44100, **params):
     direction_offset_deg = float(params.get('directionOffsetDeg', params.get('directionOffset', 0.0)))
     spatial_scale = float(params.get('spatialScale', 1.0))
     path_type = str(params.get('pathType', 'open')).lower()
+    path_shape = str(params.get('pathShape', SAM2_DEFAULT_SHAPES_BY_TYPE.get(path_type, 'sinusoidal'))).lower()
+    rotation_direction = str(params.get('rotationDirection', 'cw')).lower()
+    discontinuous_steps = int(params.get('discontinuousSteps', 8))
     custom_path_profile = params.get('customPathProfile', {})
 
     t = np.arange(n_samples, dtype=np.float64) / float(sample_rate)
     mod_phase = 2.0 * math.pi * mod_freq * t
 
-    shape, dynamic_scale = _resolve_sam2_shape(path_type, mod_phase, custom_path_profile)
+    shape, dynamic_scale = _resolve_sam2_shape(
+        path_type,
+        mod_phase,
+        custom_path_profile,
+        path_shape=path_shape,
+        discontinuous_steps=discontinuous_steps,
+        rotation_direction=rotation_direction,
+    )
     spatial_angle_deg = direction_offset_deg + 0.5 * arc_width_deg * shape
     interaural_phase = (spatial_scale * dynamic_scale) * np.sin(np.radians(spatial_angle_deg))
     carrier_phase = 2.0 * math.pi * carrier_freq * t
@@ -542,6 +575,9 @@ def spatial_angle_modulation_sam2_transition(
     start_spatial_scale = float(params.get('startSpatialScale', params.get('spatialScale', 1.0)))
     end_spatial_scale = float(params.get('endSpatialScale', params.get('spatialScale', start_spatial_scale)))
     path_type = str(params.get('pathType', 'open')).lower()
+    path_shape = str(params.get('pathShape', SAM2_DEFAULT_SHAPES_BY_TYPE.get(path_type, 'sinusoidal'))).lower()
+    rotation_direction = str(params.get('rotationDirection', 'cw')).lower()
+    discontinuous_steps = int(params.get('discontinuousSteps', 8))
     custom_path_profile = params.get('customPathProfile', {})
 
     alpha = np.linspace(0.0, 1.0, n_samples, dtype=np.float64)
@@ -554,7 +590,14 @@ def spatial_angle_modulation_sam2_transition(
     mod_phase = np.cumsum((2.0 * math.pi * mod_freq) / float(sample_rate))
     carrier_phase = np.cumsum((2.0 * math.pi * carrier_freq) / float(sample_rate))
 
-    shape, dynamic_scale = _resolve_sam2_shape(path_type, mod_phase, custom_path_profile)
+    shape, dynamic_scale = _resolve_sam2_shape(
+        path_type,
+        mod_phase,
+        custom_path_profile,
+        path_shape=path_shape,
+        discontinuous_steps=discontinuous_steps,
+        rotation_direction=rotation_direction,
+    )
     spatial_angle_deg = direction_offset_deg + 0.5 * arc_width_deg * shape
     interaural_phase = (spatial_scale * dynamic_scale) * np.sin(np.radians(spatial_angle_deg))
 
