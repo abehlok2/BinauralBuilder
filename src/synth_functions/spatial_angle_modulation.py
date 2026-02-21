@@ -74,7 +74,25 @@ def _resolve_sam2_path_generator(path_type: str):
     return SAM2_PATH_GENERATORS.get(path_type.lower(), _sam2_path_open_sinusoidal)
 
 
-def _sam2_custom_path_shape(phase: np.ndarray, custom_profile) -> np.ndarray:
+def _catmull_rom_eval(p0, p1, p2, p3, t: np.ndarray):
+    t2 = t * t
+    t3 = t2 * t
+    x = 0.5 * (
+        (2.0 * p1[0])
+        + (-p0[0] + p2[0]) * t
+        + (2.0 * p0[0] - 5.0 * p1[0] + 4.0 * p2[0] - p3[0]) * t2
+        + (-p0[0] + 3.0 * p1[0] - 3.0 * p2[0] + p3[0]) * t3
+    )
+    y = 0.5 * (
+        (2.0 * p1[1])
+        + (-p0[1] + p2[1]) * t
+        + (2.0 * p0[1] - 5.0 * p1[1] + 4.0 * p2[1] - p3[1]) * t2
+        + (-p0[1] + 3.0 * p1[1] - 3.0 * p2[1] + p3[1]) * t3
+    )
+    return x, y
+
+
+def _resolve_custom_path_xy(phase: np.ndarray, custom_profile):
     if isinstance(custom_profile, str):
         try:
             custom_profile = json.loads(custom_profile)
@@ -83,7 +101,7 @@ def _sam2_custom_path_shape(phase: np.ndarray, custom_profile) -> np.ndarray:
 
     points = custom_profile.get('points') if isinstance(custom_profile, dict) else None
     if not isinstance(points, list) or len(points) < 2:
-        return _sam2_path_open_sinusoidal(phase)
+        return None, None
 
     clean_points = []
     for point in points:
@@ -92,35 +110,77 @@ def _sam2_custom_path_shape(phase: np.ndarray, custom_profile) -> np.ndarray:
                 clean_points.append((float(point[0]), float(point[1])))
             except (TypeError, ValueError):
                 pass
+
     if len(clean_points) < 2:
-        return _sam2_path_open_sinusoidal(phase)
+        return None, None
 
-    distances = [0.0]
-    for i in range(1, len(clean_points)):
-        x0, y0 = clean_points[i - 1]
-        x1, y1 = clean_points[i]
-        distances.append(distances[-1] + math.hypot(x1 - x0, y1 - y0))
+    is_closed = bool(custom_profile.get('closedLoop', False)) if isinstance(custom_profile, dict) else False
+    kind = str(custom_profile.get('kind', '')).lower() if isinstance(custom_profile, dict) else ''
 
-    total = distances[-1]
+    if is_closed and clean_points[0] != clean_points[-1]:
+        clean_points.append(clean_points[0])
+
+    sample_x = []
+    sample_y = []
+    sample_d = [0.0]
+
+    if kind == 'spline' and len(clean_points) >= 3:
+        segment_count = len(clean_points) if is_closed else len(clean_points) - 1
+        for i in range(segment_count):
+            p1 = clean_points[i]
+            p2 = clean_points[(i + 1) % len(clean_points)] if is_closed else clean_points[i + 1]
+            p0 = clean_points[i - 1] if i > 0 else (clean_points[-2] if is_closed else clean_points[0])
+            p3 = clean_points[(i + 2) % len(clean_points)] if (is_closed or i + 2 < len(clean_points)) else clean_points[-1]
+            t = np.linspace(0.0, 1.0, 24, endpoint=False)
+            x, y = _catmull_rom_eval(p0, p1, p2, p3, t)
+            sample_x.extend(x.tolist())
+            sample_y.extend(y.tolist())
+        sample_x.append(clean_points[-1][0])
+        sample_y.append(clean_points[-1][1])
+    else:
+        sample_x = [p[0] for p in clean_points]
+        sample_y = [p[1] for p in clean_points]
+
+    for i in range(1, len(sample_x)):
+        sample_d.append(sample_d[-1] + math.hypot(sample_x[i] - sample_x[i - 1], sample_y[i] - sample_y[i - 1]))
+
+    total = sample_d[-1]
     if total <= 1e-6:
-        return _sam2_path_open_sinusoidal(phase)
+        return None, None
 
     pos = ((phase / (2.0 * math.pi)) % 1.0) * total
-    xs = np.array([pt[0] for pt in clean_points], dtype=np.float64)
-    ys = np.array([pt[1] for pt in clean_points], dtype=np.float64)
-    d = np.array(distances, dtype=np.float64)
+    x_interp = np.interp(pos, np.array(sample_d, dtype=np.float64), np.array(sample_x, dtype=np.float64))
+    y_interp = np.interp(pos, np.array(sample_d, dtype=np.float64), np.array(sample_y, dtype=np.float64))
+    return x_interp, y_interp
 
-    x_interp = np.interp(pos, d, xs)
-    y_interp = np.interp(pos, d, ys)
+
+def _sam2_custom_path_shape_and_scale(phase: np.ndarray, custom_profile):
+    x_interp, y_interp = _resolve_custom_path_xy(phase, custom_profile)
+    if x_interp is None or y_interp is None:
+        base = _sam2_path_open_sinusoidal(phase)
+        return base, np.ones_like(base)
+
     angle_deg = np.degrees(np.arctan2(x_interp, y_interp))
-    return np.clip(angle_deg / 180.0, -1.0, 1.0)
+    norm_angle = np.clip(angle_deg / 180.0, -1.0, 1.0)
+
+    radial_dist = np.hypot(x_interp, y_interp)
+    d_min = float(np.min(radial_dist))
+    d_max = float(np.max(radial_dist))
+    if d_max - d_min <= 1e-6:
+        return norm_angle, np.ones_like(norm_angle)
+
+    dist_norm = (radial_dist - d_min) / (d_max - d_min)
+    # closer (smaller distance) => stronger spatial scale
+    dynamic_scale = 1.25 - 0.5 * dist_norm
+    return norm_angle, np.clip(dynamic_scale, 0.75, 1.25)
 
 
-def _resolve_sam2_shape(path_type: str, phase: np.ndarray, custom_profile=None) -> np.ndarray:
+def _resolve_sam2_shape(path_type: str, phase: np.ndarray, custom_profile=None):
     if path_type.lower() == 'custom':
-        return _sam2_custom_path_shape(phase, custom_profile)
+        return _sam2_custom_path_shape_and_scale(phase, custom_profile)
     generator = _resolve_sam2_path_generator(path_type)
-    return generator(phase)
+    shape = generator(phase)
+    return shape, np.ones_like(shape)
 
 @numba.njit(parallel=True, fastmath=True)
 def _prepare_beats_and_angles(
@@ -402,9 +462,9 @@ def spatial_angle_modulation_sam2(duration, sample_rate=44100, **params):
     t = np.arange(n_samples, dtype=np.float64) / float(sample_rate)
     mod_phase = 2.0 * math.pi * mod_freq * t
 
-    shape = _resolve_sam2_shape(path_type, mod_phase, custom_path_profile)
+    shape, dynamic_scale = _resolve_sam2_shape(path_type, mod_phase, custom_path_profile)
     spatial_angle_deg = direction_offset_deg + 0.5 * arc_width_deg * shape
-    interaural_phase = spatial_scale * np.sin(np.radians(spatial_angle_deg))
+    interaural_phase = (spatial_scale * dynamic_scale) * np.sin(np.radians(spatial_angle_deg))
     carrier_phase = 2.0 * math.pi * carrier_freq * t
 
     left = amp * np.sin(carrier_phase - interaural_phase)
@@ -445,9 +505,9 @@ def spatial_angle_modulation_sam2_transition(
     mod_phase = np.cumsum((2.0 * math.pi * mod_freq) / float(sample_rate))
     carrier_phase = np.cumsum((2.0 * math.pi * carrier_freq) / float(sample_rate))
 
-    shape = _resolve_sam2_shape(path_type, mod_phase, custom_path_profile)
+    shape, dynamic_scale = _resolve_sam2_shape(path_type, mod_phase, custom_path_profile)
     spatial_angle_deg = direction_offset_deg + 0.5 * arc_width_deg * shape
-    interaural_phase = spatial_scale * np.sin(np.radians(spatial_angle_deg))
+    interaural_phase = (spatial_scale * dynamic_scale) * np.sin(np.radians(spatial_angle_deg))
 
     left = amp * np.sin(carrier_phase - interaural_phase + initial_offset)
     right = amp * np.sin(carrier_phase + interaural_phase + initial_offset)

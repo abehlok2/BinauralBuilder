@@ -235,3 +235,52 @@ def test_spatial_angle_modulation_original_engine_signature_still_available():
     )
 
     assert audio.shape == (200, 2)
+
+
+def test_custom_spline_path_returns_dynamic_scale_for_perceptual_distance():
+    from src.synth_functions.spatial_angle_modulation import _resolve_sam2_shape
+
+    phase = np.linspace(0.0, 8.0 * np.pi, 1000, dtype=np.float64)
+    profile = {
+        "kind": "spline",
+        "closedLoop": True,
+        "points": [[-120.0, 30.0], [-40.0, -90.0], [60.0, -20.0], [20.0, 130.0]],
+    }
+
+    shape, dynamic_scale = _resolve_sam2_shape("custom", phase, profile)
+
+    assert shape.shape == phase.shape
+    assert dynamic_scale.shape == phase.shape
+    assert np.max(dynamic_scale) - np.min(dynamic_scale) > 0.1
+
+
+def test_custom_path_spatial_scale_modulates_output_when_distance_changes():
+    from src.synth_functions.spatial_angle_modulation import spatial_angle_modulation_sam2
+
+    linear_audio = spatial_angle_modulation_sam2(
+        duration=1.0,
+        sample_rate=1200,
+        amp=0.6,
+        carrierFreq=220.0,
+        modFreq=4.0,
+        spatialScale=1.0,
+        pathType='open',
+    )
+
+    custom_audio = spatial_angle_modulation_sam2(
+        duration=1.0,
+        sample_rate=1200,
+        amp=0.6,
+        carrierFreq=220.0,
+        modFreq=4.0,
+        spatialScale=1.0,
+        pathType='custom',
+        customPathProfile={
+            "kind": "spline",
+            "closedLoop": True,
+            "points": [[-120.0, 20.0], [-20.0, -110.0], [90.0, -15.0], [20.0, 120.0]],
+        },
+    )
+
+    assert custom_audio.shape == linear_audio.shape
+    assert np.std(custom_audio[:, 0] - custom_audio[:, 1]) != pytest.approx(np.std(linear_audio[:, 0] - linear_audio[:, 1]), abs=1e-3)
