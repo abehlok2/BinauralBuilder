@@ -39,6 +39,7 @@ from src.utils.voice_file import (
 )
 from src.utils.amp_utils import amplitude_to_db, db_to_amplitude, is_amp_key
 from .spatial_trajectory_dialog import SpatialTrajectoryDialog
+from .custom_path_creator_dialog import CustomPathCreatorDialog
 
 # Constants from your original dialog structure for envelopes
 ENVELOPE_TYPE_NONE = "None"
@@ -113,7 +114,8 @@ PARAM_TOOLTIPS = {
         'directionOffsetDeg': 'Midpoint direction of the sound path in degrees.',
         'spatialScale': 'Multiplier for interaural phase (spatial depth/intensity).',
         'amp': 'Signal amplitude.',
-        'pathType': 'Path type: open/sinusoidal (back-and-forth) or closed/circular (looping).',
+        'pathType': 'Path type: open/sinusoidal, closed/circular, discontinuous, or custom.',
+        'customPathProfile': 'Saved custom path profile used when pathType is set to custom.',
     }
 }
 
@@ -1031,6 +1033,45 @@ class VoiceEditorDialog(QDialog): # Standard class name
                 current_row += 1
                 continue
 
+            if name == 'customPathProfile':
+                param_label = QLabel('customPathProfile:')
+                self.params_scroll_layout.addWidget(param_label, current_row, 0)
+
+                current_profile = current_value if isinstance(current_value, dict) else {}
+                summary_label = QLabel(
+                    f"{len(current_profile.get('points', []))} points"
+                )
+                edit_btn = QPushButton('Edit...')
+
+                container = QWidget()
+                cont_layout = QHBoxLayout(container)
+                cont_layout.setContentsMargins(0, 0, 0, 0)
+                cont_layout.addWidget(summary_label)
+                cont_layout.addWidget(edit_btn)
+                cont_layout.addStretch(1)
+
+                self.params_scroll_layout.addWidget(container, current_row, 1, 1, 5)
+
+                self.param_widgets[name] = {'widget': summary_label, 'type': 'json', 'value': current_profile}
+
+                def _edit_custom_path():
+                    dlg = CustomPathCreatorDialog(self, self.param_widgets[name]['value'])
+                    if dlg.exec_() == QDialog.Accepted:
+                        updated_profile = dlg.get_profile()
+                        self.param_widgets[name]['value'] = updated_profile
+                        summary_label.setText(f"{len(updated_profile.get('points', []))} points")
+                        path_type_data = self.param_widgets.get('pathType')
+                        if path_type_data and isinstance(path_type_data.get('widget'), QComboBox):
+                            idx = path_type_data['widget'].findText('custom')
+                            if idx >= 0:
+                                path_type_data['widget'].setCurrentIndex(idx)
+
+                edit_btn.clicked.connect(_edit_custom_path)
+
+                processed_names.add(name)
+                current_row += 1
+                continue
+
             if name == 'sweeps':
                 label = QLabel('sweeps:')
                 label.setStyleSheet('font-weight: bold;')
@@ -1448,7 +1489,7 @@ class VoiceEditorDialog(QDialog): # Standard class name
             widget.setMinimumWidth(width)
         elif base_name == 'pathType' and type_hint == 'str':
             widget = QComboBox()
-            path_types = ['open', 'closed', 'discontinuous']
+            path_types = ['open', 'closed', 'discontinuous', 'custom']
             widget.addItems(path_types)
             val_to_set = value if value in path_types else 'open'
             widget.setCurrentText(str(val_to_set))
@@ -2020,6 +2061,10 @@ class VoiceEditorDialog(QDialog): # Standard class name
                     synth_params[name] = value
                 continue
 
+            if param_type == 'json':
+                synth_params[name] = data.get('value', {} if name == 'customPathProfile' else [])
+                continue
+
             if isinstance(widget, QCheckBox):
                 value = widget.isChecked()
             elif isinstance(widget, QComboBox):
@@ -2182,7 +2227,8 @@ class VoiceEditorDialog(QDialog): # Standard class name
                 continue
 
             if param_type == 'json':
-                new_synth_params[name] = data.get('value', [])
+                default_json_value = {} if name == 'customPathProfile' else []
+                new_synth_params[name] = data.get('value', default_json_value)
                 continue
 
             if isinstance(widget, QCheckBox):
@@ -2544,7 +2590,7 @@ def get_default_params_for_function(func_name_from_combo: str, is_transition_mod
             "standard": [
                 ('amp', 0.7), ('carrierFreq', 440.0), ('modFreq', 4.0),
                 ('arcWidthDeg', 90.0), ('directionOffsetDeg', 0.0),
-                ('spatialScale', 1.0), ('pathType', 'open')
+                ('spatialScale', 1.0), ('pathType', 'open'), ('customPathProfile', {'kind': 'linear', 'points': []})
             ],
             "transition": [
                 ('amp', 0.7),
@@ -2554,6 +2600,7 @@ def get_default_params_for_function(func_name_from_combo: str, is_transition_mod
                 ('startDirectionOffsetDeg', 0.0), ('endDirectionOffsetDeg', 0.0),
                 ('startSpatialScale', 1.0), ('endSpatialScale', 1.0),
                 ('pathType', 'open'),
+                ('customPathProfile', {'kind': 'linear', 'points': []}),
                 ('initial_offset', 0.0), ('duration', 0.0), ('transition_curve', 'linear')
             ]
         },
@@ -2838,7 +2885,7 @@ def get_default_params_for_function(func_name_from_combo: str, is_transition_mod
             "standard": [
                 ('amp', 0.7), ('carrierFreq', 440.0), ('modFreq', 4.0),
                 ('arcWidthDeg', 90.0), ('directionOffsetDeg', 0.0),
-                ('spatialScale', 1.0), ('pathType', 'open')
+                ('spatialScale', 1.0), ('pathType', 'open'), ('customPathProfile', {'kind': 'linear', 'points': []})
             ],
             "transition": [
                 ('amp', 0.7),
@@ -2848,6 +2895,7 @@ def get_default_params_for_function(func_name_from_combo: str, is_transition_mod
                 ('startDirectionOffsetDeg', 0.0), ('endDirectionOffsetDeg', 0.0),
                 ('startSpatialScale', 1.0), ('endSpatialScale', 1.0),
                 ('pathType', 'open'),
+                ('customPathProfile', {'kind': 'linear', 'points': []}),
                 ('initial_offset', 0.0), ('duration', 0.0), ('transition_curve', 'linear')
             ]
         },
