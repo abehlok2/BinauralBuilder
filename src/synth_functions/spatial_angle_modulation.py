@@ -48,6 +48,25 @@ except Exception:
 # Spatial Angle Modulation - Helper Functions
 # -----------------------------------------------------------------------------
 
+def _sam2_path_open_sinusoidal(phase: np.ndarray) -> np.ndarray:
+    return np.sin(phase)
+
+
+def _sam2_path_closed_circular(phase: np.ndarray) -> np.ndarray:
+    return ((phase / (2.0 * math.pi)) % 1.0) * 2.0 - 1.0
+
+
+SAM2_PATH_GENERATORS = {
+    'open': _sam2_path_open_sinusoidal,
+    'sinusoidal': _sam2_path_open_sinusoidal,
+    'closed': _sam2_path_closed_circular,
+    'circular': _sam2_path_closed_circular,
+}
+
+
+def _resolve_sam2_path_generator(path_type: str):
+    return SAM2_PATH_GENERATORS.get(path_type.lower(), _sam2_path_open_sinusoidal)
+
 @numba.njit(parallel=True, fastmath=True)
 def _prepare_beats_and_angles(
     mono: np.ndarray,
@@ -308,7 +327,10 @@ def spatial_angle_modulation_transition(
 
 
 def spatial_angle_modulation_sam2(duration, sample_rate=44100, **params):
-    """SAM2: phase-modulation SAM implementation independent of audio_engine."""
+    """SAM2 spatialized stereo tone with modular path generators.
+
+    Angular controls are specified in degrees.
+    """
     n_samples = int(duration * sample_rate)
     if n_samples <= 0:
         return np.zeros((0, 2), dtype=np.float32)
@@ -316,30 +338,22 @@ def spatial_angle_modulation_sam2(duration, sample_rate=44100, **params):
     amp = float(params.get('amp', 0.7))
     carrier_freq = float(params.get('carrierFreq', 440.0))
     mod_freq = float(params.get('modFreq', params.get('beatFreq', 4.0)))
-    peak_phase_dev = float(params.get('peakPhaseDev', 0.55))
-    phase_offset_l = float(params.get('phaseOffsetL', 0.0))
-    phase_offset_r = float(params.get('phaseOffsetR', math.pi / 2.0))
+    arc_width_deg = float(params.get('arcWidthDeg', params.get('arcWidth', 90.0)))
+    direction_offset_deg = float(params.get('directionOffsetDeg', params.get('directionOffset', 0.0)))
+    spatial_scale = float(params.get('spatialScale', 1.0))
     path_type = str(params.get('pathType', 'open')).lower()
-    discontinuous_steps = int(params.get('discontinuousSteps', 8))
+    path_generator = _resolve_sam2_path_generator(path_type)
 
     t = np.arange(n_samples, dtype=np.float64) / float(sample_rate)
     mod_phase = 2.0 * math.pi * mod_freq * t
 
-    if path_type == 'closed':
-        wrapped = (mod_phase / (2.0 * math.pi)) % 1.0
-        shape = (2.0 * wrapped) - 1.0
-    elif path_type == 'discontinuous':
-        wrapped = (mod_phase / (2.0 * math.pi)) % 1.0
-        steps = max(1, discontinuous_steps)
-        shape = (np.floor(wrapped * steps) / max(1, steps - 1)) * 2.0 - 1.0
-    else:
-        shape = np.sin(mod_phase)
-
-    mod_term = peak_phase_dev * shape
+    shape = path_generator(mod_phase)
+    spatial_angle_deg = direction_offset_deg + 0.5 * arc_width_deg * shape
+    interaural_phase = spatial_scale * np.sin(np.radians(spatial_angle_deg))
     carrier_phase = 2.0 * math.pi * carrier_freq * t
 
-    left = amp * np.sin(carrier_phase + mod_term + phase_offset_l)
-    right = amp * np.sin(carrier_phase + mod_term + phase_offset_r)
+    left = amp * np.sin(carrier_phase - interaural_phase)
+    right = amp * np.sin(carrier_phase + interaural_phase)
 
     return np.column_stack((left, right)).astype(np.float32)
 
@@ -347,7 +361,7 @@ def spatial_angle_modulation_sam2(duration, sample_rate=44100, **params):
 def spatial_angle_modulation_sam2_transition(
     duration, sample_rate=44100, initial_offset=0.0, transition_duration=None, **params
 ):
-    """SAM2 transition with linear parameter interpolation."""
+    """SAM2 transition with linear parameter interpolation (angles in degrees)."""
     n_samples = int(duration * sample_rate)
     if n_samples <= 0:
         return np.zeros((0, 2), dtype=np.float32)
@@ -357,38 +371,31 @@ def spatial_angle_modulation_sam2_transition(
     end_carrier = float(params.get('endCarrierFreq', 440.0))
     start_mod = float(params.get('startModFreq', params.get('startBeatFreq', 4.0)))
     end_mod = float(params.get('endModFreq', params.get('endBeatFreq', 4.0)))
-    start_peak = float(params.get('startPeakPhaseDev', 0.55))
-    end_peak = float(params.get('endPeakPhaseDev', 0.55))
-    start_l = float(params.get('startPhaseOffsetL', 0.0))
-    end_l = float(params.get('endPhaseOffsetL', 0.0))
-    start_r = float(params.get('startPhaseOffsetR', math.pi / 2.0))
-    end_r = float(params.get('endPhaseOffsetR', math.pi / 2.0))
+    start_arc_width = float(params.get('startArcWidthDeg', params.get('arcWidthDeg', 90.0)))
+    end_arc_width = float(params.get('endArcWidthDeg', params.get('arcWidthDeg', start_arc_width)))
+    start_direction = float(params.get('startDirectionOffsetDeg', params.get('directionOffsetDeg', 0.0)))
+    end_direction = float(params.get('endDirectionOffsetDeg', params.get('directionOffsetDeg', start_direction)))
+    start_spatial_scale = float(params.get('startSpatialScale', params.get('spatialScale', 1.0)))
+    end_spatial_scale = float(params.get('endSpatialScale', params.get('spatialScale', start_spatial_scale)))
     path_type = str(params.get('pathType', 'open')).lower()
-    discontinuous_steps = int(params.get('discontinuousSteps', 8))
+    path_generator = _resolve_sam2_path_generator(path_type)
 
     alpha = np.linspace(0.0, 1.0, n_samples, dtype=np.float64)
     carrier_freq = start_carrier + (end_carrier - start_carrier) * alpha
     mod_freq = start_mod + (end_mod - start_mod) * alpha
-    peak_phase_dev = start_peak + (end_peak - start_peak) * alpha
-    phase_l = start_l + (end_l - start_l) * alpha
-    phase_r = start_r + (end_r - start_r) * alpha
+    arc_width_deg = start_arc_width + (end_arc_width - start_arc_width) * alpha
+    direction_offset_deg = start_direction + (end_direction - start_direction) * alpha
+    spatial_scale = start_spatial_scale + (end_spatial_scale - start_spatial_scale) * alpha
 
     mod_phase = np.cumsum((2.0 * math.pi * mod_freq) / float(sample_rate))
     carrier_phase = np.cumsum((2.0 * math.pi * carrier_freq) / float(sample_rate))
 
-    if path_type == 'closed':
-        wrapped = (mod_phase / (2.0 * math.pi)) % 1.0
-        shape = (2.0 * wrapped) - 1.0
-    elif path_type == 'discontinuous':
-        wrapped = (mod_phase / (2.0 * math.pi)) % 1.0
-        steps = max(1, discontinuous_steps)
-        shape = (np.floor(wrapped * steps) / max(1, steps - 1)) * 2.0 - 1.0
-    else:
-        shape = np.sin(mod_phase)
+    shape = path_generator(mod_phase)
+    spatial_angle_deg = direction_offset_deg + 0.5 * arc_width_deg * shape
+    interaural_phase = spatial_scale * np.sin(np.radians(spatial_angle_deg))
 
-    mod_term = peak_phase_dev * shape
-    left = amp * np.sin(carrier_phase + mod_term + phase_l + initial_offset)
-    right = amp * np.sin(carrier_phase + mod_term + phase_r + initial_offset)
+    left = amp * np.sin(carrier_phase - interaural_phase + initial_offset)
+    right = amp * np.sin(carrier_phase + interaural_phase + initial_offset)
 
     return np.column_stack((left, right)).astype(np.float32)
 

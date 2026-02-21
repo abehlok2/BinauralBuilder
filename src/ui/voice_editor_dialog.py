@@ -107,14 +107,13 @@ PARAM_TOOLTIPS = {
         'phaseOscRange': 'Range of phase modulation in radians.',
     },
     'spatial_angle_modulation_sam2': {
-        'amp': 'Overall signal amplitude.',
-        'carrierFreq': 'Carrier tone frequency (f_s) in Hz.',
-        'modFreq': 'Spatial modulation frequency (f_m) in Hz.',
-        'peakPhaseDev': 'Peak phase deviation (φ_p) in radians; controls spatial width.',
-        'phaseOffsetL': 'Absolute left-channel phase offset (φ_L) in radians.',
-        'phaseOffsetR': 'Absolute right-channel phase offset (φ_R) in radians.',
-        'pathType': 'Spatial path mode: open (sine), closed (ramp), discontinuous (step).',
-        'discontinuousSteps': 'Number of discrete positions used by discontinuous path type.',
+        'carrierFreq': 'Carrier frequency in Hz (audible tone frequency).',
+        'modFreq': 'Modulation frequency in Hz (spatial oscillation / entrainment target).',
+        'arcWidthDeg': 'Arc width in degrees swept by the virtual source.',
+        'directionOffsetDeg': 'Midpoint direction of the sound path in degrees.',
+        'spatialScale': 'Multiplier for interaural phase (spatial depth/intensity).',
+        'amp': 'Signal amplitude.',
+        'pathType': 'Path type: open/sinusoidal (back-and-forth) or closed/circular (looping).',
     }
 }
 
@@ -2544,18 +2543,17 @@ def get_default_params_for_function(func_name_from_combo: str, is_transition_mod
         "spatial_angle_modulation_sam2": {
             "standard": [
                 ('amp', 0.7), ('carrierFreq', 440.0), ('modFreq', 4.0),
-                ('peakPhaseDev', 0.55),
-                ('phaseOffsetL', 0.0), ('phaseOffsetR', math.pi / 2),
-                ('pathType', 'open'), ('discontinuousSteps', 8)
+                ('arcWidthDeg', 90.0), ('directionOffsetDeg', 0.0),
+                ('spatialScale', 1.0), ('pathType', 'open')
             ],
             "transition": [
                 ('amp', 0.7),
                 ('startCarrierFreq', 440.0), ('endCarrierFreq', 440.0),
                 ('startModFreq', 4.0), ('endModFreq', 4.0),
-                ('startPeakPhaseDev', 0.55), ('endPeakPhaseDev', 0.55),
-                ('startPhaseOffsetL', 0.0), ('endPhaseOffsetL', 0.0),
-                ('startPhaseOffsetR', math.pi / 2), ('endPhaseOffsetR', math.pi / 2),
-                ('pathType', 'open'), ('discontinuousSteps', 8),
+                ('startArcWidthDeg', 90.0), ('endArcWidthDeg', 90.0),
+                ('startDirectionOffsetDeg', 0.0), ('endDirectionOffsetDeg', 0.0),
+                ('startSpatialScale', 1.0), ('endSpatialScale', 1.0),
+                ('pathType', 'open'),
                 ('initial_offset', 0.0), ('duration', 0.0), ('transition_curve', 'linear')
             ]
         },
@@ -2839,18 +2837,17 @@ def get_default_params_for_function(func_name_from_combo: str, is_transition_mod
         "spatial_angle_modulation_sam2": {
             "standard": [
                 ('amp', 0.7), ('carrierFreq', 440.0), ('modFreq', 4.0),
-                ('peakPhaseDev', 0.55),
-                ('phaseOffsetL', 0.0), ('phaseOffsetR', math.pi / 2),
-                ('pathType', 'open'), ('discontinuousSteps', 8)
+                ('arcWidthDeg', 90.0), ('directionOffsetDeg', 0.0),
+                ('spatialScale', 1.0), ('pathType', 'open')
             ],
             "transition": [
                 ('amp', 0.7),
                 ('startCarrierFreq', 440.0), ('endCarrierFreq', 440.0),
                 ('startModFreq', 4.0), ('endModFreq', 4.0),
-                ('startPeakPhaseDev', 0.55), ('endPeakPhaseDev', 0.55),
-                ('startPhaseOffsetL', 0.0), ('endPhaseOffsetL', 0.0),
-                ('startPhaseOffsetR', math.pi / 2), ('endPhaseOffsetR', math.pi / 2),
-                ('pathType', 'open'), ('discontinuousSteps', 8),
+                ('startArcWidthDeg', 90.0), ('endArcWidthDeg', 90.0),
+                ('startDirectionOffsetDeg', 0.0), ('endDirectionOffsetDeg', 0.0),
+                ('startSpatialScale', 1.0), ('endSpatialScale', 1.0),
+                ('pathType', 'open'),
                 ('initial_offset', 0.0), ('duration', 0.0), ('transition_curve', 'linear')
             ]
         },
