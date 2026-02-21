@@ -34,20 +34,32 @@ class _PathView(QGraphicsView):
         self.setScene(QGraphicsScene(self))
         self.setRenderHint(QPainter.Antialiasing, True)
         self.setMinimumSize(440, 320)
+        self.setFocusPolicy(Qt.StrongFocus)
         self.scene().setSceneRect(-210, -140, 420, 280)
 
         self.ear_a = QPointF(-65.0, 0.0)
         self.ear_b = QPointF(65.0, 0.0)
         self._points: List[_DraggablePoint] = []
+        self._path_kind = "linear"
+        self._closed_loop = False
+        self._close_snap_px = 12.0
         self._path_item = QGraphicsPathItem()
         self._path_item.setPen(QPen(Qt.blue, 2.0))
         self.scene().addItem(self._path_item)
+        self._x_axis_item = self.scene().addText("")
+        self._y_axis_item = self.scene().addText("")
+        self._x_axis_item.setDefaultTextColor(Qt.darkGreen)
+        self._y_axis_item.setDefaultTextColor(Qt.darkGreen)
 
         self._draw_head_guides()
 
     def _draw_head_guides(self) -> None:
         head = self.scene().addEllipse(-90, -60, 180, 120, QPen(Qt.darkGray, 1.0))
         head.setZValue(-5)
+        x_axis = self.scene().addLine(-200, 0, 200, 0, QPen(Qt.lightGray, 1.0, Qt.DashLine))
+        y_axis = self.scene().addLine(0, -130, 0, 130, QPen(Qt.lightGray, 1.0, Qt.DashLine))
+        x_axis.setZValue(-6)
+        y_axis.setZValue(-6)
 
         for label, pt in (("A", self.ear_a), ("B", self.ear_b)):
             marker = self.scene().addEllipse(pt.x() - 8, pt.y() - 8, 16, 16, QPen(Qt.black, 1.0))
@@ -67,6 +79,17 @@ class _PathView(QGraphicsView):
             self._points.append(point_item)
         self._redraw_path()
 
+    def set_path_kind(self, kind: str) -> None:
+        self._path_kind = str(kind or "linear").lower()
+        self._redraw_path()
+
+    def set_closed_loop(self, closed: bool) -> None:
+        self._closed_loop = bool(closed)
+        self._redraw_path()
+
+    def is_closed_loop(self) -> bool:
+        return self._closed_loop
+
     def get_points(self) -> List[Tuple[float, float]]:
         return [(float(p.scenePos().x()), float(p.scenePos().y())) for p in self._points]
 
@@ -79,18 +102,68 @@ class _PathView(QGraphicsView):
         super().mouseDoubleClickEvent(event)
 
     def mouseReleaseEvent(self, event):
+        self._snap_endpoints_if_needed()
         self._redraw_path()
         super().mouseReleaseEvent(event)
+
+    def keyPressEvent(self, event):
+        if event.key() in (Qt.Key_Delete, Qt.Key_Backspace):
+            selected = [p for p in self._points if p.isSelected()]
+            for p in selected:
+                self.scene().removeItem(p)
+                self._points.remove(p)
+            if selected:
+                self._closed_loop = False
+                self._redraw_path()
+                event.accept()
+                return
+        super().keyPressEvent(event)
+
+    def _snap_endpoints_if_needed(self) -> None:
+        if len(self._points) < 3:
+            self._closed_loop = False
+            return
+        first = self._points[0]
+        last = self._points[-1]
+        if math.hypot(first.scenePos().x() - last.scenePos().x(), first.scenePos().y() - last.scenePos().y()) <= self._close_snap_px:
+            last.setPos(first.scenePos())
+            self._closed_loop = True
+        else:
+            self._closed_loop = False
 
     def _redraw_path(self) -> None:
         if not self._points:
             self._path_item.setPath(QPainterPath())
+            self._x_axis_item.setPlainText("")
+            self._y_axis_item.setPlainText("")
             return
         ordered = self.get_points()
         path = QPainterPath(QPointF(ordered[0][0], ordered[0][1]))
-        for x, y in ordered[1:]:
-            path.lineTo(x, y)
+        if self._path_kind == "spline" and len(ordered) >= 3:
+            for i in range(len(ordered) - 1):
+                p0 = ordered[i - 1] if i > 0 else ordered[0]
+                p1 = ordered[i]
+                p2 = ordered[i + 1]
+                p3 = ordered[i + 2] if (i + 2) < len(ordered) else ordered[-1]
+                c1x = p1[0] + (p2[0] - p0[0]) / 6.0
+                c1y = p1[1] + (p2[1] - p0[1]) / 6.0
+                c2x = p2[0] - (p3[0] - p1[0]) / 6.0
+                c2y = p2[1] - (p3[1] - p1[1]) / 6.0
+                path.cubicTo(c1x, c1y, c2x, c2y, p2[0], p2[1])
+        else:
+            for x, y in ordered[1:]:
+                path.lineTo(x, y)
+        if self._closed_loop and len(ordered) >= 3:
+            path.closeSubpath()
         self._path_item.setPath(path)
+        xs = [pt[0] for pt in ordered]
+        ys = [pt[1] for pt in ordered]
+        dx = max(xs) - min(xs) if len(xs) > 1 else 0.0
+        dy = max(ys) - min(ys) if len(ys) > 1 else 0.0
+        self._x_axis_item.setPlainText(f"ΔX distance: {dx:.1f}")
+        self._y_axis_item.setPlainText(f"ΔY distance: {dy:.1f}")
+        self._x_axis_item.setPos(-205, 118)
+        self._y_axis_item.setPos(-205, 98)
 
 
 class CustomPathCreatorDialog(QDialog):
@@ -113,9 +186,10 @@ class CustomPathCreatorDialog(QDialog):
         main_layout.addLayout(top_row)
 
         self.view = _PathView(self)
+        self.path_kind_combo.currentTextChanged.connect(self.view.set_path_kind)
         main_layout.addWidget(self.view)
 
-        help_label = QLabel("Double-click to add points. Drag points to refine. Use 'Seed Shape' for presets.")
+        help_label = QLabel("Double-click to add points. Drag points to refine. Press Delete to remove selected points. Drag one endpoint onto the other to close a loop.")
         help_label.setWordWrap(True)
         main_layout.addWidget(help_label)
 
@@ -136,6 +210,8 @@ class CustomPathCreatorDialog(QDialog):
         idx = self.path_kind_combo.findText(kind)
         self.path_kind_combo.setCurrentIndex(idx if idx >= 0 else 0)
         points = self.profile.get("points")
+        self.view.set_path_kind(kind)
+        self.view.set_closed_loop(bool(self.profile.get("closedLoop", False)))
         if isinstance(points, list) and points:
             clean = []
             for p in points:
@@ -148,6 +224,8 @@ class CustomPathCreatorDialog(QDialog):
 
     def _seed_shape(self) -> None:
         kind = self.path_kind_combo.currentText()
+        self.view.set_path_kind(kind)
+        self.view.set_closed_loop(kind in ("circular", "ovoid"))
         if kind == "linear":
             pts = [(-120.0, -20.0), (0.0, 0.0), (120.0, 20.0)]
         elif kind == "circular":
@@ -161,5 +239,6 @@ class CustomPathCreatorDialog(QDialog):
     def get_profile(self) -> dict:
         return {
             "kind": self.path_kind_combo.currentText(),
+            "closedLoop": self.view.is_closed_loop(),
             "points": [[x, y] for x, y in self.view.get_points()],
         }
