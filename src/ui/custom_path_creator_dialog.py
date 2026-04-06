@@ -14,6 +14,8 @@ from PyQt5.QtWidgets import (
     QLabel,
     QPushButton,
     QVBoxLayout,
+    QSpinBox,
+    QDoubleSpinBox,
 )
 
 
@@ -239,6 +241,23 @@ class CustomPathCreatorDialog(QDialog):
         top_row.addStretch(1)
         main_layout.addLayout(top_row)
 
+        smoothing_row = QHBoxLayout()
+        smoothing_row.addWidget(QLabel('Smoothing Passes:'))
+        self.smoothing_passes = QSpinBox()
+        self.smoothing_passes.setRange(0, 6)
+        self.smoothing_passes.setValue(1)
+        smoothing_row.addWidget(self.smoothing_passes)
+        smoothing_row.addSpacing(12)
+        smoothing_row.addWidget(QLabel('Smoothing Ratio:'))
+        self.smoothing_ratio = QDoubleSpinBox()
+        self.smoothing_ratio.setDecimals(3)
+        self.smoothing_ratio.setRange(0.001, 0.499)
+        self.smoothing_ratio.setSingleStep(0.01)
+        self.smoothing_ratio.setValue(0.25)
+        smoothing_row.addWidget(self.smoothing_ratio)
+        smoothing_row.addStretch(1)
+        main_layout.addLayout(smoothing_row)
+
         self.view = _PathView(self)
         self.path_kind_combo.currentTextChanged.connect(self.view.set_path_kind)
         main_layout.addWidget(self.view)
@@ -267,6 +286,8 @@ class CustomPathCreatorDialog(QDialog):
         idx = self.path_kind_combo.findText(kind)
         self.path_kind_combo.setCurrentIndex(idx if idx >= 0 else 0)
         points = self.profile.get("points")
+        self.smoothing_passes.setValue(int(self.profile.get('smoothingPasses', 1)))
+        self.smoothing_ratio.setValue(float(self.profile.get('smoothingRatio', 0.25)))
         self.view.set_path_kind(kind)
         self.view.set_closed_loop(bool(self.profile.get("closedLoop", False)))
         if isinstance(points, list) and points:
@@ -297,5 +318,7 @@ class CustomPathCreatorDialog(QDialog):
         return {
             "kind": self.path_kind_combo.currentText(),
             "closedLoop": self.view.is_closed_loop(),
+            "smoothingPasses": int(self.smoothing_passes.value()),
+            "smoothingRatio": float(self.smoothing_ratio.value()),
             "points": [[x, y] for x, y in self.view.get_points()],
         }

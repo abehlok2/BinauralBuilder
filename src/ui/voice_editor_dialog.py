@@ -114,11 +114,16 @@ PARAM_TOOLTIPS = {
         'directionOffsetDeg': 'Midpoint direction of the sound path in degrees.',
         'spatialScale': 'Multiplier for interaural phase (spatial depth/intensity).',
         'amp': 'Signal amplitude.',
-        'pathType': 'Path type: open/sinusoidal, closed/circular, discontinuous, or custom.',
+        'pathType': 'Path type: open, closed, discontinuous, or custom.',
+        'pathShape': 'Shape used for open/closed/discontinuous path traversal (e.g., sinusoidal, ramp, square, triangle).',
+        'customPathSmoothingPasses': 'Chaikin smoothing passes applied to custom-path points (0-6).',
+        'customPathSmoothingRatio': 'Chaikin smoothing ratio for custom-path refinement (0.001-0.499).',
         'customPathProfile': 'Saved custom path profile used when pathType is set to custom.',
     }
 }
 
+
+SAM2_PATH_SHAPES = ['sinusoidal', 'triangle', 'ramp', 'saw', 'square']
 
 # Tooltips for flanger parameters
 FLANGE_TOOLTIPS = {
@@ -1058,6 +1063,25 @@ class VoiceEditorDialog(QDialog): # Standard class name
                     dlg = CustomPathCreatorDialog(self, self.param_widgets[name]['value'])
                     if dlg.exec_() == QDialog.Accepted:
                         updated_profile = dlg.get_profile()
+                        smoothing_passes_data = self.param_widgets.get('customPathSmoothingPasses')
+                        smoothing_ratio_data = self.param_widgets.get('customPathSmoothingRatio')
+                        if smoothing_passes_data and isinstance(smoothing_passes_data.get('widget'), (QSpinBox, QLineEdit)):
+                            if isinstance(smoothing_passes_data['widget'], QSpinBox):
+                                updated_profile['smoothingPasses'] = int(smoothing_passes_data['widget'].value())
+                            else:
+                                try:
+                                    updated_profile['smoothingPasses'] = int(float(smoothing_passes_data['widget'].text()))
+                                except Exception:
+                                    pass
+                        if smoothing_ratio_data and isinstance(smoothing_ratio_data.get('widget'), (QDoubleSpinBox, QLineEdit)):
+                            if isinstance(smoothing_ratio_data['widget'], QDoubleSpinBox):
+                                updated_profile['smoothingRatio'] = float(smoothing_ratio_data['widget'].value())
+                            else:
+                                try:
+                                    updated_profile['smoothingRatio'] = float(smoothing_ratio_data['widget'].text())
+                                except Exception:
+                                    pass
+
                         self.param_widgets[name]['value'] = updated_profile
                         summary_label.setText(f"{len(updated_profile.get('points', []))} points")
                         path_type_data = self.param_widgets.get('pathType')
@@ -1481,10 +1505,17 @@ class VoiceEditorDialog(QDialog): # Standard class name
             idx = widget.findData(int(value)) if isinstance(value, (int, float)) else 0
             widget.setCurrentIndex(idx if idx >= 0 else 0)
             widget.setMinimumWidth(width)
-        elif base_name == 'pathShape' and type_hint == 'str' and hasattr(sound_creator, 'VALID_SAM_PATHS'):
+        elif base_name == 'pathShape' and type_hint == 'str':
             widget = QComboBox()
-            widget.addItems(sound_creator.VALID_SAM_PATHS)
-            val_to_set = value if value in sound_creator.VALID_SAM_PATHS else sound_creator.VALID_SAM_PATHS[0]
+            sam_shapes = list(getattr(sound_creator, 'VALID_SAM_PATHS', []))
+            shape_options = []
+            for shape_name in (sam_shapes + SAM2_PATH_SHAPES):
+                if shape_name not in shape_options:
+                    shape_options.append(shape_name)
+            if not shape_options:
+                shape_options = ['circle']
+            widget.addItems(shape_options)
+            val_to_set = value if value in shape_options else shape_options[0]
             widget.setCurrentText(str(val_to_set))
             widget.setMinimumWidth(width)
         elif base_name == 'pathType' and type_hint == 'str':
@@ -2590,7 +2621,9 @@ def get_default_params_for_function(func_name_from_combo: str, is_transition_mod
             "standard": [
                 ('amp', 0.7), ('carrierFreq', 440.0), ('modFreq', 4.0),
                 ('arcWidthDeg', 90.0), ('directionOffsetDeg', 0.0),
-                ('spatialScale', 1.0), ('pathType', 'open'), ('customPathProfile', {'kind': 'linear', 'points': []})
+                ('spatialScale', 1.0), ('pathType', 'open'), ('pathShape', 'sinusoidal'),
+                ('customPathSmoothingPasses', 1), ('customPathSmoothingRatio', 0.25),
+                ('customPathProfile', {'kind': 'linear', 'points': [], 'smoothingPasses': 1, 'smoothingRatio': 0.25})
             ],
             "transition": [
                 ('amp', 0.7),
@@ -2599,8 +2632,9 @@ def get_default_params_for_function(func_name_from_combo: str, is_transition_mod
                 ('startArcWidthDeg', 90.0), ('endArcWidthDeg', 90.0),
                 ('startDirectionOffsetDeg', 0.0), ('endDirectionOffsetDeg', 0.0),
                 ('startSpatialScale', 1.0), ('endSpatialScale', 1.0),
-                ('pathType', 'open'),
-                ('customPathProfile', {'kind': 'linear', 'points': []}),
+                ('pathType', 'open'), ('pathShape', 'sinusoidal'),
+                ('customPathSmoothingPasses', 1), ('customPathSmoothingRatio', 0.25),
+                ('customPathProfile', {'kind': 'linear', 'points': [], 'smoothingPasses': 1, 'smoothingRatio': 0.25}),
                 ('initial_offset', 0.0), ('duration', 0.0), ('transition_curve', 'linear')
             ]
         },
@@ -2885,7 +2919,9 @@ def get_default_params_for_function(func_name_from_combo: str, is_transition_mod
             "standard": [
                 ('amp', 0.7), ('carrierFreq', 440.0), ('modFreq', 4.0),
                 ('arcWidthDeg', 90.0), ('directionOffsetDeg', 0.0),
-                ('spatialScale', 1.0), ('pathType', 'open'), ('customPathProfile', {'kind': 'linear', 'points': []})
+                ('spatialScale', 1.0), ('pathType', 'open'), ('pathShape', 'sinusoidal'),
+                ('customPathSmoothingPasses', 1), ('customPathSmoothingRatio', 0.25),
+                ('customPathProfile', {'kind': 'linear', 'points': [], 'smoothingPasses': 1, 'smoothingRatio': 0.25})
             ],
             "transition": [
                 ('amp', 0.7),
@@ -2894,8 +2930,9 @@ def get_default_params_for_function(func_name_from_combo: str, is_transition_mod
                 ('startArcWidthDeg', 90.0), ('endArcWidthDeg', 90.0),
                 ('startDirectionOffsetDeg', 0.0), ('endDirectionOffsetDeg', 0.0),
                 ('startSpatialScale', 1.0), ('endSpatialScale', 1.0),
-                ('pathType', 'open'),
-                ('customPathProfile', {'kind': 'linear', 'points': []}),
+                ('pathType', 'open'), ('pathShape', 'sinusoidal'),
+                ('customPathSmoothingPasses', 1), ('customPathSmoothingRatio', 0.25),
+                ('customPathProfile', {'kind': 'linear', 'points': [], 'smoothingPasses': 1, 'smoothingRatio': 0.25}),
                 ('initial_offset', 0.0), ('duration', 0.0), ('transition_curve', 'linear')
             ]
         },
