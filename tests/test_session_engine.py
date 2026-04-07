@@ -227,3 +227,47 @@ def test_generate_voice_audio_transition_uses_transition_duration(monkeypatch):
     assert np.allclose(alpha[:100], 0.0)  # initial_offset = 10s
     assert np.all((alpha[100:400] >= 0.0) & (alpha[100:400] <= 1.0))
     assert np.allclose(alpha[400:], 1.0)  # End-state hold for final 20s
+
+
+def test_generate_voice_audio_transition_duration_falls_back_when_none(monkeypatch):
+    sample_rate = 10
+
+    def transition_probe(duration, sample_rate, initial_offset=0.0, transition_duration=None, **kwargs):
+        alpha = calculate_transition_alpha(
+            duration,
+            sample_rate,
+            initial_offset=initial_offset,
+            duration=transition_duration,
+            curve="linear",
+        ).astype(np.float32)
+        return np.column_stack((alpha, alpha))
+
+    monkeypatch.setitem(
+        sound_creator.SYNTH_FUNCTIONS,
+        "test_transition_probe_transition",
+        transition_probe,
+    )
+
+    voice_data = {
+        "synth_function_name": "test_transition_probe_transition",
+        "is_transition": True,
+        "params": {
+            "initial_offset": 10.0,
+            "transition_duration": None,
+            "duration": 30.0,
+        },
+    }
+
+    audio = sound_creator.generate_voice_audio(
+        voice_data,
+        duration=60.0,
+        sample_rate=sample_rate,
+        global_start_time=0.0,
+        chunk_start_time=0.0,
+        full_step_duration=60.0,
+    )
+
+    alpha = audio[:, 0]
+    assert np.allclose(alpha[:100], 0.0)
+    assert np.all((alpha[100:400] >= 0.0) & (alpha[100:400] <= 1.0))
+    assert np.allclose(alpha[400:], 1.0)  # End-state hold for final 20s
