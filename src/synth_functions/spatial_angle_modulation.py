@@ -533,6 +533,12 @@ def spatial_angle_modulation_sam2(duration, sample_rate=44100, **params):
     rotation_direction = str(params.get('rotationDirection', 'cw')).lower()
     discontinuous_steps = int(params.get('discontinuousSteps', 8))
     custom_path_profile = params.get('customPathProfile', {})
+    if isinstance(custom_path_profile, dict):
+        custom_path_profile = dict(custom_path_profile)
+        if 'customPathSmoothingPasses' in params:
+            custom_path_profile['smoothingPasses'] = int(params.get('customPathSmoothingPasses', custom_path_profile.get('smoothingPasses', 1)))
+        if 'customPathSmoothingRatio' in params:
+            custom_path_profile['smoothingRatio'] = float(params.get('customPathSmoothingRatio', custom_path_profile.get('smoothingRatio', 0.25)))
 
     t = np.arange(n_samples, dtype=np.float64) / float(sample_rate)
     mod_phase = 2.0 * math.pi * mod_freq * t
@@ -579,6 +585,12 @@ def spatial_angle_modulation_sam2_transition(
     rotation_direction = str(params.get('rotationDirection', 'cw')).lower()
     discontinuous_steps = int(params.get('discontinuousSteps', 8))
     custom_path_profile = params.get('customPathProfile', {})
+    if isinstance(custom_path_profile, dict):
+        custom_path_profile = dict(custom_path_profile)
+        if 'customPathSmoothingPasses' in params:
+            custom_path_profile['smoothingPasses'] = int(params.get('customPathSmoothingPasses', custom_path_profile.get('smoothingPasses', 1)))
+        if 'customPathSmoothingRatio' in params:
+            custom_path_profile['smoothingRatio'] = float(params.get('customPathSmoothingRatio', custom_path_profile.get('smoothingRatio', 0.25)))
 
     alpha = np.linspace(0.0, 1.0, n_samples, dtype=np.float64)
     carrier_freq = start_carrier + (end_carrier - start_carrier) * alpha
