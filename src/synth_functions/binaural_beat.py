@@ -493,12 +493,24 @@ def binaural_beat_transition(
         pos_arr   = np.empty(0, dtype=np.int32)
         burst_arr = np.empty(0, dtype=np.float32)
 
-    curve = params.get('transition_curve', 'linear')
-    alpha_arr = calculate_transition_alpha(
-        duration, sample_rate, initial_offset, transition_duration, curve
-    )
+    curve = str(params.get('transition_curve', 'linear')).strip().lower()
+    curve_mode = 0
+    if curve == 'linear':
+        curve_mode = 0
+    elif curve == 'logarithmic':
+        curve_mode = 1
+    elif curve == 'exponential':
+        curve_mode = 2
+    else:
+        curve_mode = -1
 
-    audio, finalL, finalR = _binaural_beat_transition_core(
+    alpha_arr = np.empty(0, dtype=np.float64)
+    if curve_mode == -1:
+        alpha_arr = calculate_transition_alpha(
+            duration, sample_rate, initial_offset, transition_duration, curve
+        )
+
+    audio, finalL, finalR = _binaural_beat_transition_core_streaming(
         N, float(duration), float(sample_rate),
         startAmpL, endAmpL, startAmpR, endAmpR,
         startBaseF, endBaseF, startBeatF, endBeatF, leftHigh,
@@ -518,20 +530,31 @@ def binaural_beat_transition(
         startFreqOscPhaseOffsetR, endFreqOscPhaseOffsetR,
         shape_int,
         pos_arr, burst_arr, # Pass pre-calculated glitches
+        float(initial_offset),
+        float(transition_duration if transition_duration is not None else -1.0),
+        curve_mode,
         alpha_arr
     )
 
     if audio.size:
-        pan_range_min_arr = startPanRangeMin + (endPanRangeMin - startPanRangeMin) * alpha_arr
-        pan_range_max_arr = startPanRangeMax + (endPanRangeMax - startPanRangeMax) * alpha_arr
-        pan_freq_arr = startPanFreq + (endPanFreq - startPanFreq) * alpha_arr
-        pan_phase_arr = startPanPhase + (endPanPhase - startPanPhase) * alpha_arr
+        pan_uses_modulation = (
+            abs(startPanRangeMin) > 1e-9
+            or abs(endPanRangeMin) > 1e-9
+            or abs(startPanRangeMax) > 1e-9
+            or abs(endPanRangeMax) > 1e-9
+            or abs(startPanFreq) > 1e-9
+            or abs(endPanFreq) > 1e-9
+        )
 
-        if (
-            np.any(~np.isclose(pan_range_min_arr, 0.0))
-            or np.any(~np.isclose(pan_range_max_arr, 0.0))
-            or np.any(~np.isclose(pan_freq_arr, 0.0))
-        ):
+        if pan_uses_modulation:
+            if alpha_arr.size != N:
+                alpha_arr = calculate_transition_alpha(
+                    duration, sample_rate, initial_offset, transition_duration, curve
+                )
+            pan_range_min_arr = startPanRangeMin + (endPanRangeMin - startPanRangeMin) * alpha_arr
+            pan_range_max_arr = startPanRangeMax + (endPanRangeMax - startPanRangeMax) * alpha_arr
+            pan_freq_arr = startPanFreq + (endPanFreq - startPanFreq) * alpha_arr
+            pan_phase_arr = startPanPhase + (endPanPhase - startPanPhase) * alpha_arr
             pan_curve = generate_pan_envelope(
                 audio.shape[0],
                 sample_rate,
@@ -591,8 +614,8 @@ def binaural_beat_transition(
     return audio, state
 
 
-@numba.njit(parallel=True, fastmath=True)
-def _binaural_beat_transition_core(
+@numba.njit(fastmath=True)
+def _binaural_beat_transition_core_streaming(
     N, duration, sample_rate,
     startAmpL, endAmpL, startAmpR, endAmpR,
     startBaseF, endBaseF, startBeatF, endBeatF, leftHigh,
@@ -612,145 +635,119 @@ def _binaural_beat_transition_core(
     startFreqOscPhaseOffsetR, endFreqOscPhaseOffsetR,
     freqOscShape,
     pos, burst, # Glitch arrays (static for this core run)
+    initial_offset,
+    transition_duration,
+    curve_mode,
     alpha_arr
 ):
     if N <= 0:
         return np.zeros((0, 2), dtype=np.float32), startStartPhaseL, startStartPhaseR
 
     dt = duration / N
-    
-    t_arr = np.empty(N, np.float64)
-    ampL_arr = np.empty(N, np.float64)
-    ampR_arr = np.empty(N, np.float64)
-    baseF_arr = np.empty(N, np.float64)
-    beatF_arr = np.empty(N, np.float64)
 
-    pOF_arr = np.empty(N, np.float64)
-    pOR_arr = np.empty(N, np.float64)
-    aODL_arr = np.empty(N, np.float64)
-    aOFL_arr = np.empty(N, np.float64)
-    aODR_arr = np.empty(N, np.float64)
-    aOFR_arr = np.empty(N, np.float64)
-    ampOscPhaseOffsetL_arr = np.empty(N, np.float64)
-    ampOscPhaseOffsetR_arr = np.empty(N, np.float64)
-    ampOscSkewL_arr = np.empty(N, np.float64)
-    ampOscSkewR_arr = np.empty(N, np.float64)
-    fORL_arr = np.empty(N, np.float64)
-    fOFL_arr = np.empty(N, np.float64)
-    fORR_arr = np.empty(N, np.float64)
-    fOFR_arr = np.empty(N, np.float64)
-    freqOscSkewL_arr = np.empty(N, np.float64)
-    freqOscSkewR_arr = np.empty(N, np.float64)
-    freqOscPhaseOffsetL_arr = np.empty(N, np.float64)
-    freqOscPhaseOffsetR_arr = np.empty(N, np.float64)
-    
-    instL = np.empty(N, np.float64)
-    instR = np.empty(N, np.float64)
+    start_t = initial_offset
+    end_t = duration
+    if transition_duration >= 0.0:
+        end_t = start_t + transition_duration
+        if end_t > duration:
+            end_t = duration
+    trans_time = end_t - start_t
+    inv_trans_time = 0.0
+    if trans_time > 0.0:
+        inv_trans_time = 1.0 / trans_time
 
-    # Linear interpolation of parameters
-    for i in numba.prange(N):
-        alpha = alpha_arr[i] if alpha_arr.size == N else (i / (N - 1) if N > 1 else 0.0)
-        t_arr[i] = i * dt
-        
-        ampL_arr[i] = startAmpL + (endAmpL - startAmpL) * alpha
-        ampR_arr[i] = startAmpR + (endAmpR - startAmpR) * alpha
-        baseF_arr[i] = startBaseF + (endBaseF - startBaseF) * alpha
-        beatF_arr[i] = startBeatF + (endBeatF - startBeatF) * alpha
-
-        pOF_arr[i] = startPOF + (endPOF - startPOF) * alpha
-        pOR_arr[i] = startPOR + (endPOR - startPOR) * alpha
-        aODL_arr[i] = startAODL + (endAODL - startAODL) * alpha
-        aOFL_arr[i] = startAOFL + (endAOFL - startAOFL) * alpha
-        aODR_arr[i] = startAODR + (endAODR - startAODR) * alpha
-        aOFR_arr[i] = startAOFR + (endAOFR - startAOFR) * alpha
-        ampOscPhaseOffsetL_arr[i] = startAmpOscPhaseOffsetL + (endAmpOscPhaseOffsetL - startAmpOscPhaseOffsetL) * alpha
-        ampOscPhaseOffsetR_arr[i] = startAmpOscPhaseOffsetR + (endAmpOscPhaseOffsetR - startAmpOscPhaseOffsetR) * alpha
-        ampOscSkewL_arr[i] = startAmpOscSkewL + (endAmpOscSkewL - startAmpOscSkewL) * alpha
-        ampOscSkewR_arr[i] = startAmpOscSkewR + (endAmpOscSkewR - startAmpOscSkewR) * alpha
-        fORL_arr[i] = startFORL + (endFORL - startFORL) * alpha
-        fOFL_arr[i] = startFOFL + (endFOFL - startFOFL) * alpha
-        fORR_arr[i] = startFORR + (endFORR - startFORR) * alpha
-        fOFR_arr[i] = startFOFR + (endFOFR - startFOFR) * alpha
-        freqOscSkewL_arr[i] = startFreqOscSkewL + (endFreqOscSkewL - startFreqOscSkewL) * alpha
-        freqOscSkewR_arr[i] = startFreqOscSkewR + (endFreqOscSkewR - startFreqOscSkewR) * alpha
-        freqOscPhaseOffsetL_arr[i] = startFreqOscPhaseOffsetL + (endFreqOscPhaseOffsetL - startFreqOscPhaseOffsetL) * alpha
-        freqOscPhaseOffsetR_arr[i] = startFreqOscPhaseOffsetR + (endFreqOscPhaseOffsetR - startFreqOscPhaseOffsetR) * alpha
-
-    # Instantaneous frequencies with proper integration of LFO phase
+    out = np.empty((N, 2), dtype=np.float32)
     phaseL_fo = 0.0
     phaseR_fo = 0.0
-    for i in range(N):
-        halfB_i = beatF_arr[i] * 0.5
-        if leftHigh:
-            fL_base_i = baseF_arr[i] + halfB_i
-            fR_base_i = baseF_arr[i] - halfB_i
-        else:
-            fL_base_i = baseF_arr[i] - halfB_i
-            fR_base_i = baseF_arr[i] + halfB_i
+    curL = startStartPhaseL
+    curR = startStartPhaseR
 
-        phaseL_fo += fOFL_arr[i] * dt
-        phaseR_fo += fOFR_arr[i] * dt
-        phL_frac = _frac(phaseL_fo + freqOscPhaseOffsetL_arr[i] / (2 * np.pi))
-        phR_frac = _frac(phaseR_fo + freqOscPhaseOffsetR_arr[i] / (2 * np.pi))
-        if freqOscShape == 1:
-            vibL_i = (fORL_arr[i] / 2.0) * skewed_triangle_phase(phL_frac, freqOscSkewL_arr[i])
-            vibR_i = (fORR_arr[i] / 2.0) * skewed_triangle_phase(phR_frac, freqOscSkewR_arr[i])
+    for i in range(N):
+        if alpha_arr.size == N:
+            alpha = alpha_arr[i]
         else:
-            vibL_i = (fORL_arr[i] / 2.0) * skewed_sine_phase(phL_frac, freqOscSkewL_arr[i])
-            vibR_i = (fORR_arr[i] / 2.0) * skewed_sine_phase(phR_frac, freqOscSkewR_arr[i])
+            t = i * dt
+            if trans_time <= 0.0:
+                alpha = 1.0 if t >= start_t else 0.0
+            else:
+                raw = (t - start_t) * inv_trans_time
+                if raw < 0.0:
+                    raw = 0.0
+                elif raw > 1.0:
+                    raw = 1.0
+                if curve_mode == 1:
+                    alpha = 1.0 - (1.0 - raw) * (1.0 - raw)
+                elif curve_mode == 2:
+                    alpha = raw * raw
+                else:
+                    alpha = raw
+
+        t = i * dt
+        ampL_i = startAmpL + (endAmpL - startAmpL) * alpha
+        ampR_i = startAmpR + (endAmpR - startAmpR) * alpha
+        baseF_i = startBaseF + (endBaseF - startBaseF) * alpha
+        beatF_i = startBeatF + (endBeatF - startBeatF) * alpha
+        pOF_i = startPOF + (endPOF - startPOF) * alpha
+        pOR_i = startPOR + (endPOR - startPOR) * alpha
+        aODL_i = startAODL + (endAODL - startAODL) * alpha
+        aOFL_i = startAOFL + (endAOFL - startAOFL) * alpha
+        aODR_i = startAODR + (endAODR - startAODR) * alpha
+        aOFR_i = startAOFR + (endAOFR - startAOFR) * alpha
+        ampOscPhaseOffsetL_i = startAmpOscPhaseOffsetL + (endAmpOscPhaseOffsetL - startAmpOscPhaseOffsetL) * alpha
+        ampOscPhaseOffsetR_i = startAmpOscPhaseOffsetR + (endAmpOscPhaseOffsetR - startAmpOscPhaseOffsetR) * alpha
+        ampOscSkewL_i = startAmpOscSkewL + (endAmpOscSkewL - startAmpOscSkewL) * alpha
+        ampOscSkewR_i = startAmpOscSkewR + (endAmpOscSkewR - startAmpOscSkewR) * alpha
+        fORL_i = startFORL + (endFORL - startFORL) * alpha
+        fOFL_i = startFOFL + (endFOFL - startFOFL) * alpha
+        fORR_i = startFORR + (endFORR - startFORR) * alpha
+        fOFR_i = startFOFR + (endFOFR - startFOFR) * alpha
+        freqOscSkewL_i = startFreqOscSkewL + (endFreqOscSkewL - startFreqOscSkewL) * alpha
+        freqOscSkewR_i = startFreqOscSkewR + (endFreqOscSkewR - startFreqOscSkewR) * alpha
+        freqOscPhaseOffsetL_i = startFreqOscPhaseOffsetL + (endFreqOscPhaseOffsetL - startFreqOscPhaseOffsetL) * alpha
+        freqOscPhaseOffsetR_i = startFreqOscPhaseOffsetR + (endFreqOscPhaseOffsetR - startFreqOscPhaseOffsetR) * alpha
+
+        halfB_i = beatF_i * 0.5
+        if leftHigh:
+            fL_base_i = baseF_i + halfB_i
+            fR_base_i = baseF_i - halfB_i
+        else:
+            fL_base_i = baseF_i - halfB_i
+            fR_base_i = baseF_i + halfB_i
+
+        phaseL_fo += fOFL_i * dt
+        phaseR_fo += fOFR_i * dt
+        phL_frac = _frac(phaseL_fo + freqOscPhaseOffsetL_i / (2 * np.pi))
+        phR_frac = _frac(phaseR_fo + freqOscPhaseOffsetR_i / (2 * np.pi))
+        if freqOscShape == 1:
+            vibL_i = (fORL_i / 2.0) * skewed_triangle_phase(phL_frac, freqOscSkewL_i)
+            vibR_i = (fORR_i / 2.0) * skewed_triangle_phase(phR_frac, freqOscSkewR_i)
+        else:
+            vibL_i = (fORL_i / 2.0) * skewed_sine_phase(phL_frac, freqOscSkewL_i)
+            vibR_i = (fORR_i / 2.0) * skewed_sine_phase(phR_frac, freqOscSkewR_i)
 
         instL_candidate = fL_base_i + vibL_i
         instR_candidate = fR_base_i + vibR_i
 
-        instL[i] = instL_candidate if instL_candidate > 0.0 else 0.0
-        instR[i] = instR_candidate if instR_candidate > 0.0 else 0.0
+        instL_i = instL_candidate if instL_candidate > 0.0 else 0.0
+        instR_i = instR_candidate if instR_candidate > 0.0 else 0.0
 
-    # Previously the instantaneous frequencies were forced to the base
-    # value whenever `beatFreq` was zero.  This prevented any frequency
-    # oscillation from being applied when using a 0 Hz beat to create a
-    # monaural tone.  Removing that check allows the `freqOsc*` parameters
-    # to modulate the base frequency in both channels equally.
+        curL += 2.0 * np.pi * instL_i * dt
+        curR += 2.0 * np.pi * instR_i * dt
+        phL_i = curL
+        phR_i = curR
 
-    # Phase accumulation (sequential)
-    phL = np.empty(N, np.float64)
-    phR = np.empty(N, np.float64)
-    # Interpolate start phases (initial phase for the accumulation)
-    # For phase, the start/end is for the *initial* phase value, not a rate of change of start phase.
-    curL = startStartPhaseL # Use the start of the transition for the initial phase value
-    curR = startStartPhaseR # Use the start of the transition for the initial phase value
+        if pOF_i != 0.0 or pOR_i != 0.0:
+            dphi = (pOR_i / 2.0) * np.sin(2 * np.pi * pOF_i * t)
+            phL_i -= dphi
+            phR_i += dphi
 
-    current_start_phase_L = startStartPhaseL
-    current_start_phase_R = startStartPhaseR
-    curL = startStartPhaseL
-    curR = startStartPhaseR
+        phL_env = aOFL_i * t + ampOscPhaseOffsetL_i / (2 * np.pi)
+        phR_env = aOFR_i * t + ampOscPhaseOffsetR_i / (2 * np.pi)
+        envL_i = 1.0 - aODL_i * (0.5 * (1.0 + skewed_sine_phase(_frac(phL_env), ampOscSkewL_i)))
+        envR_i = 1.0 - aODR_i * (0.5 * (1.0 + skewed_sine_phase(_frac(phR_env), ampOscSkewR_i)))
 
-    for i in range(N): # Sequential loop
-        curL += 2.0 * np.pi * instL[i] * dt
-        curR += 2.0 * np.pi * instR[i] * dt
-        phL[i] = curL
-        phR[i] = curR
-
-    # Phase modulation
-    for i in numba.prange(N): # Parallel (as it's per sample based on already calculated t_arr and pOF/pOR_arr)
-        if pOF_arr[i] != 0.0 or pOR_arr[i] != 0.0:
-            dphi = (pOR_arr[i]/2.0) * np.sin(2*np.pi*pOF_arr[i]*t_arr[i])
-            phL[i] -= dphi
-            phR[i] += dphi
-            
-    # Amplitude envelopes
-    envL = np.empty(N, np.float64)
-    envR = np.empty(N, np.float64)
-    for i in numba.prange(N): # Parallel
-        phL_env = aOFL_arr[i]*t_arr[i] + ampOscPhaseOffsetL_arr[i]/(2*np.pi)
-        phR_env = aOFR_arr[i]*t_arr[i] + ampOscPhaseOffsetR_arr[i]/(2*np.pi)
-        envL[i] = 1.0 - aODL_arr[i] * (0.5*(1.0 + skewed_sine_phase(_frac(phL_env), ampOscSkewL_arr[i])))
-        envR[i] = 1.0 - aODR_arr[i] * (0.5*(1.0 + skewed_sine_phase(_frac(phR_env), ampOscSkewR_arr[i])))
-
-    # Generate output
-    out = np.empty((N, 2), dtype=np.float32)
-    for i in numba.prange(N): # Parallel
-        out[i, 0] = np.float32(np.sin(phL[i]) * envL[i] * ampL_arr[i])
-        out[i, 1] = np.float32(np.sin(phR[i]) * envR[i] * ampR_arr[i])
+        out[i, 0] = np.float32(np.sin(phL_i) * envL_i * ampL_i)
+        out[i, 1] = np.float32(np.sin(phR_i) * envR_i * ampR_i)
 
     # Add glitch bursts (using the static pos and burst arrays)
     num_bursts = pos.shape[0]
