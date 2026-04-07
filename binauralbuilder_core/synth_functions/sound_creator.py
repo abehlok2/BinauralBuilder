@@ -1382,16 +1382,94 @@ def generate_single_step_audio_segment(step_data, global_settings, target_durati
         print("Warning: Step has zero samples. Returning silence.")
         return output_audio_segment
 
-    # Generate one iteration of the step's audio
+    # When the requested output duration matches the step generation duration,
+    # mix in fixed-size chunks to avoid very large temporary allocations for
+    # long sessions.
+    chunk_samples = int(global_settings.get("synthesis_chunk_samples", 262144))
+    chunk_samples = max(2048, chunk_samples)
+
+    if target_total_samples == step_generation_samples:
+        print(
+            f"  Generating single iteration for step in chunks "
+            f"(Duration: {step_generation_duration:.2f}s, Samples: {step_generation_samples}, Chunk: {chunk_samples})"
+        )
+
+        step_peak = 0.0
+        for chunk_start in range(0, step_generation_samples, chunk_samples):
+            this_chunk_samples = min(chunk_samples, step_generation_samples - chunk_start)
+            this_chunk_duration = this_chunk_samples / sample_rate
+            chunk_mix = np.zeros((this_chunk_samples, 2), dtype=np.float32)
+
+            for i, voice_data in enumerate(voices_data):
+                voice_audio = generate_voice_audio(
+                    voice_data,
+                    this_chunk_duration,
+                    sample_rate,
+                    chunk_start / sample_rate,
+                )
+                if (
+                    voice_audio is not None
+                    and voice_audio.shape[0] == this_chunk_samples
+                    and voice_audio.ndim == 2
+                    and voice_audio.shape[1] == 2
+                ):
+                    chunk_mix += voice_audio
+                elif voice_audio is not None:
+                    func_name_short = voice_data.get("synth_function_name", "UnknownFunc")
+                    print(
+                        f"    Warning: Voice {i+1} ({func_name_short}) generated audio shape mismatch "
+                        f"({voice_audio.shape} vs {(this_chunk_samples, 2)}). Skipping chunk."
+                    )
+
+            chunk_peak = float(np.max(np.abs(chunk_mix))) if chunk_mix.size else 0.0
+            if chunk_peak > step_peak:
+                step_peak = chunk_peak
+
+        step_normalization_threshold = 0.95
+        gain = 1.0
+        if step_peak > step_normalization_threshold and step_peak > 1e-9:
+            gain = step_normalization_threshold / step_peak
+            print(f"    Normalizing step mix (peak={step_peak:.3f}) down to {step_normalization_threshold:.2f}")
+        elif step_peak <= 1e-9:
+            print("    Warning: Step audio is essentially silent.")
+
+        for chunk_start in range(0, step_generation_samples, chunk_samples):
+            this_chunk_samples = min(chunk_samples, step_generation_samples - chunk_start)
+            this_chunk_duration = this_chunk_samples / sample_rate
+            chunk_mix = np.zeros((this_chunk_samples, 2), dtype=np.float32)
+
+            for i, voice_data in enumerate(voices_data):
+                voice_audio = generate_voice_audio(
+                    voice_data,
+                    this_chunk_duration,
+                    sample_rate,
+                    chunk_start / sample_rate,
+                )
+                if (
+                    voice_audio is not None
+                    and voice_audio.shape[0] == this_chunk_samples
+                    and voice_audio.ndim == 2
+                    and voice_audio.shape[1] == 2
+                ):
+                    chunk_mix += voice_audio
+
+            if gain != 1.0:
+                chunk_mix *= gain
+            output_audio_segment[chunk_start : chunk_start + this_chunk_samples] = chunk_mix
+
+        print(f"  Generated single step audio segment: {target_duration_seconds:.2f}s ({output_audio_segment.shape[0]} samples)")
+        return output_audio_segment.astype(np.float32)
+
+    # Fallback path (used when looping/truncating is required).
     single_iteration_audio_mix = np.zeros((step_generation_samples, 2), dtype=np.float32)
-    
+
     print(f"  Generating single iteration for step (Duration: {step_generation_duration:.2f}s, Samples: {step_generation_samples})")
     for i, voice_data in enumerate(voices_data):
         func_name_short = voice_data.get('synth_function_name', 'UnknownFunc')
         print(f"    Generating Voice {i+1}/{len(voices_data)}: {func_name_short}")
-        
+
         voice_audio = generate_voice_audio(voice_data, step_generation_duration, sample_rate, 0.0)
-        
+
         # Add generated audio if valid
         if voice_audio is not None and voice_audio.shape[0] == step_generation_samples and voice_audio.ndim == 2 and voice_audio.shape[1] == 2:
             single_iteration_audio_mix += voice_audio  # Sum voices
