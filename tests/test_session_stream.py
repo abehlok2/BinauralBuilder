@@ -144,6 +144,39 @@ def test_stream_player_pause_and_stop(track_data):
     assert player._buffer_device is None
 
 
+def test_worker_prunes_inactive_step_states(monkeypatch):
+    sample_rate = 100
+    track_data = {
+        "global_settings": {"sample_rate": sample_rate, "crossfade_duration": 0.0},
+        "steps": [
+            {"duration": 0.10, "voices": [{"voice_type": "noise"}]},
+            {"duration": 0.10, "voices": [{"voice_type": "noise"}]},
+        ],
+    }
+
+    def fake_generate(step, global_settings, target_duration, **kwargs):
+        n = int(target_duration * sample_rate)
+        audio = np.ones((n, 2), dtype=np.float32)
+        state = [{"full_audio": np.ones((n, 2), dtype=np.float32)}]
+        return audio, state
+
+    monkeypatch.setattr(session_stream, "generate_single_step_audio_segment", fake_generate)
+
+    worker = session_stream.AudioGeneratorWorker(
+        track_data,
+        session_stream._PCMBufferDevice(),
+        sample_rate,
+        ring_buffer_seconds=1.0,
+    )
+    step_states = {}
+
+    worker._generate_next_chunk(0, 10, step_states)
+    assert set(step_states.keys()) == {0}
+
+    worker._generate_next_chunk(10, 10, step_states)
+    assert set(step_states.keys()) == {1}
+
+
 # =============================================================================
 # Noise voice streaming tests (directly test generate_single_step_audio_segment)
 # =============================================================================

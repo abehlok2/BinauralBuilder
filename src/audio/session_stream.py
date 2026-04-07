@@ -686,6 +686,8 @@ class AudioGeneratorWorker(QObject):
         if num_frames <= 0:
             return None
 
+        active_step_indices: set[int] = set()
+
         mix_buffer = np.zeros((num_frames, 2), dtype=np.float32)
 
         if self._background_noise is not None:
@@ -703,6 +705,8 @@ class AudioGeneratorWorker(QObject):
                 continue
             if info.start_sample >= end_sample:
                 break 
+
+            active_step_indices.add(info.index)
                 
             chunk_rel_start = max(0, info.start_sample - start_sample)
             chunk_rel_end = min(num_frames, info.end_sample - start_sample)
@@ -790,6 +794,12 @@ class AudioGeneratorWorker(QObject):
                 audio[local_start:local_end] *= envelope[:, np.newaxis]
             
             mix_buffer[chunk_rel_start:chunk_rel_end] += audio
+
+        # Remove states for inactive steps so per-step caches (e.g. full noise
+        # waveforms) do not accumulate throughout long sessions.
+        stale_indices = [idx for idx in step_states if idx not in active_step_indices]
+        for idx in stale_indices:
+            step_states.pop(idx, None)
             
         return mix_buffer
 
