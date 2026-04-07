@@ -660,8 +660,10 @@ def generate_voice_audio(voice_data, duration, sample_rate, global_start_time, c
     # ``duration`` in voice params. Preserve that value by mapping it to the
     # runtime-facing ``transition_duration`` argument before dropping
     # ``duration`` from kwargs to avoid duplicate function arguments.
-    if is_transition and "transition_duration" not in cleaned_params and "duration" in cleaned_params:
-        cleaned_params["transition_duration"] = cleaned_params["duration"]
+    if is_transition and "duration" in cleaned_params:
+        transition_span = cleaned_params.get("transition_duration")
+        if transition_span is None:
+            cleaned_params["transition_duration"] = cleaned_params["duration"]
 
     # duration (and sometimes sample_rate) are supplied explicitly below. If they
     # are still present in the cleaned params dictionary we will pass them twice
@@ -1994,4 +1996,3 @@ def generate_single_step_audio_segment(step_data, global_settings, target_durati
     # print(f"  Generated single step audio segment: {target_duration_seconds:.2f}s ({output_audio_segment.shape[0]} samples)")
     result = output_audio_segment.astype(np.float32)
     return (result, new_voice_states) if return_state else result
-
