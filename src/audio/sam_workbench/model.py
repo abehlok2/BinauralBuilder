@@ -69,6 +69,17 @@ class SignalSpec:
 
 
 @dataclass(frozen=True)
+class SamModulationSpec:
+    """Opposed-ear sinusoidal phase modulation for reference SAM."""
+
+    rate_hz: float = 4.0
+    depth_rad: float = 1.0
+    phase_rad: float = 0.0
+    left_bias_rad: float = 0.0
+    right_bias_rad: float = 0.0
+
+
+@dataclass(frozen=True)
 class SpatializerSpec:
     type: str = "abstract"
 
@@ -82,6 +93,7 @@ class Source:
     duration_s: float | None = None
     amplitude_linear: float = 0.5
     signal: SignalSpec = field(default_factory=SignalSpec)
+    sam: SamModulationSpec = field(default_factory=SamModulationSpec)
     spatializer: SpatializerSpec = field(default_factory=SpatializerSpec)
     tags: tuple[str, ...] = ()
 
@@ -156,6 +168,12 @@ def validate_project(project: Project) -> tuple[ValidationIssue, ...]:
             0 < source.signal.carrier_frequency_hz < project.audio.sample_rate_hz / 2
         ):
             issues.append(ValidationIssue(f"{prefix}.signal.carrier_frequency_hz", "must be below Nyquist"))
+        if not math.isfinite(source.sam.rate_hz) or source.sam.rate_hz < 0:
+            issues.append(ValidationIssue(f"{prefix}.sam.rate_hz", "must be finite and non-negative"))
+        if not math.isfinite(source.sam.depth_rad) or source.sam.depth_rad < 0:
+            issues.append(ValidationIssue(f"{prefix}.sam.depth_rad", "must be finite and non-negative"))
+        if abs(source.sam.depth_rad * source.sam.rate_hz) + source.signal.carrier_frequency_hz >= project.audio.sample_rate_hz / 2:
+            issues.append(ValidationIssue(f"{prefix}.sam", "instantaneous frequency reaches or exceeds Nyquist"))
         if source.duration_s is not None and source.duration_s <= 0:
             issues.append(ValidationIssue(f"{prefix}.duration_s", "must be positive or null"))
         if not math.isfinite(source.amplitude_linear) or source.amplitude_linear < 0:
@@ -175,6 +193,7 @@ def project_from_dict(data: Mapping[str, Any]) -> Project:
                 enabled=item.get("enabled", True), start_s=item.get("start_s", 0.0),
                 duration_s=item.get("duration_s"), amplitude_linear=item.get("amplitude_linear", 0.5),
                 signal=SignalSpec(**item.get("signal", {})),
+                sam=SamModulationSpec(**item.get("sam", {})),
                 spatializer=SpatializerSpec(**item.get("spatializer", {})),
                 tags=tuple(item.get("tags", ())),
             ) for item in data.get("sources", ())

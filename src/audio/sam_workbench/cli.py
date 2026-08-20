@@ -6,6 +6,7 @@ import argparse
 from pathlib import Path
 
 from .model import Project, ProjectValidationError, load_project, save_project
+from .export import export_wav
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -16,6 +17,10 @@ def build_parser() -> argparse.ArgumentParser:
     new.add_argument("--name", default="Untitled SAM Project")
     validate = subparsers.add_parser("validate", help="validate an existing project")
     validate.add_argument("path", type=Path)
+    render = subparsers.add_parser("render", help="render exact symmetric SAM to WAV")
+    render.add_argument("project", type=Path)
+    render.add_argument("output", type=Path)
+    render.add_argument("--duration-s", type=float, required=True)
     return parser
 
 
@@ -25,9 +30,12 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "new":
             save_project(Project(name=args.name), args.path)
             print(f"Created {args.path}")
-        else:
+        elif args.command == "validate":
             load_project(args.path)
             print(f"Valid SAM project: {args.path}")
+        else:
+            manifest = export_wav(load_project(args.project), args.duration_s, args.output)
+            print(f"Rendered {args.output} (manifest: {manifest})")
     except (OSError, ProjectValidationError) as error:
         print(f"error: {error}")
         return 2
