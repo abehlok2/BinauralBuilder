@@ -31,6 +31,9 @@ and a clean-environment import in a subprocess with those modules blocked.
 | `export.py` | WAV export plus the reconstruction manifest | 1 |
 | `compat.py` | The BinauralBuilder voice adapter both public trees delegate to | 1 |
 | `trajectory/legacy_paths.py` | Behaviour-preserving port of the legacy SAM2 path evaluation | 1 |
+| `parameters.py` | The one SAM parameter registry: names, aliases, units, bounds, defaults, tooltips, disclosure mode | 2 |
+| `analysis/` | Waveform, spectrum, instantaneous frequency, IPD/ILD/ITD measured from rendered audio | 2 |
+| `preview.py` | Preview rendering and 16-bit PCM conversion for the existing QtMultimedia path | 2 |
 
 Later phases add the rest of `trajectory/`, plus `hrtf/` and `analysis/`, as
 described in `AGENTS.md`.
@@ -40,6 +43,16 @@ The dependency graph is one-directional and enforced by the tests:
 ```text
 conventions -> waveforms -> controls -> dsp -> render -> export -> cli
                                           \-> compat (with trajectory/legacy_paths)
+                                          \-> analysis, preview, parameters
+```
+
+The GUI sits above all of it and is the only Qt-aware layer:
+
+```text
+src/ui/voice_editor_dialog.py  (existing editor; keeps the entry point)
+  -> src/ui/sam_workbench_dialog.py   (QDialog over a copied voice)
+       -> src/ui/sam_basic_panel.py     (controls generated from parameters.py)
+       -> src/ui/sam_analysis_panel.py  (plots computed by analysis/)
 ```
 
 ## The SAM equations
@@ -119,6 +132,26 @@ the shared master gain and limiter report, and the measured levels.
 
 `validate` reports every problem at once, each tagged with a stable field path
 such as `sources[1].amplitude_linear`, and exits non-zero on failure.
+
+## The SAM parameter registry
+
+`parameters.py` is the single declaration of every SAM field: serialized
+camelCase name, legacy aliases, unit, bounds, decimals, default, tooltip,
+disclosure mode (basic / advanced / expert), transition policy, and whether the
+value is automatable or safe to change during playback.
+
+Before it, the SAM/SAM2 parameter tables were declared *twice* in one dict
+literal inside `voice_editor_dialog.get_default_params_for_function` - the
+later copy silently shadowing the earlier - with tooltips and path-shape lists
+in three more places. `sam2_parameter_defaults()` reproduces the old table
+exactly, so an existing voice opens and saves with precisely the keys it had;
+extended fields (`rotationDirection`, `discontinuousSteps`, `earPolarity`, the
+per-ear phase offsets) are opt-in and are only written when a user edits them
+in the workbench.
+
+`validate_sam2_params()` returns structured issues whose `path` is the
+serialized parameter name, which is what lets the GUI badge the field that
+produced each message.
 
 ## Development assets
 
