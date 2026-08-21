@@ -39,6 +39,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from src.audio.sam_workbench.conventions import AUDIO_DTYPE, seconds_to_samples, to_frame_major
+from src.audio.sam_workbench.dsp.blocks import RenderBlock, RenderContext
 from src.audio.sam_workbench.dsp.source import (
     EAR_POLARITY_CANONICAL,
     EAR_POLARITY_LEGACY,
@@ -46,6 +47,8 @@ from src.audio.sam_workbench.dsp.source import (
     CompiledSource,
     render_source,
 )
+from src.audio.sam_workbench.render.geometric import GeometricBinauralRenderer, GeometricSpec
+from src.audio.sam_workbench.trajectory import trajectory_from_dict
 from src.audio.sam_workbench.trajectory.legacy_paths import SAM2_DEFAULT_SHAPES_BY_TYPE, resolve_sam2_shape
 from src.audio.sam_workbench.waveforms import TWO_PI
 
@@ -137,6 +140,12 @@ _KNOWN_KEYS = (
         "endPhaseOffsetL",
         "endPhaseOffsetR",
         "transitionCurve",
+        "canonicalTrajectory",
+        "distanceLaw",
+        "referenceDistanceM",
+        "minimumDistanceM",
+        "maximumDistanceM",
+        "dopplerEnabled",
     }
 )
 
@@ -460,108 +469,75 @@ def render_sam2_voice(
     if frames <= 0:
         return np.zeros((0, 2), dtype=AUDIO_DTYPE)
 
-    raw_params = dict(params or {})
-    renderer_mode = raw_params.get("rendererMode", "abstract_pm")
-    if renderer_mode == "hrtf":
-        return _render_hrtf_voice(
-            duration, sample_rate, raw_params, initial_offset=initial_offset,
-            block_size=block_size,
-        )
-    if renderer_mode == "geometric":
-        return _render_geometric_voice(duration, sample_rate, raw_params,
-                                       initial_offset=initial_offset, block_size=block_size)
-    if renderer_mode != "abstract_pm":
-        raise ValueError(f"rendererMode {renderer_mode!r} is not available in the Phase 4 renderer")
+    voice_params = params or {}
     spec = sam2_spec_from_params(
-        raw_params,
+        voice_params,
         is_transition=is_transition,
         initial_offset=float(initial_offset),
         transition_duration=transition_duration,
         duration=float(duration),
     )
     start_sample = 0 if is_transition else seconds_to_samples(initial_offset, sample_rate)
-    audio = render_sam2(spec, frames, sample_rate, start_sample=start_sample, block_size=block_size)
+    renderer_mode = str(voice_params.get("rendererMode", "abstract_pm")).lower()
+    if renderer_mode == "geometric":
+        audio = _render_geometric_voice(
+            spec, voice_params, frames, sample_rate, start_sample=start_sample,
+            block_size=block_size,
+        )
+    elif renderer_mode == "abstract_pm":
+        audio = render_sam2(spec, frames, sample_rate, start_sample=start_sample, block_size=block_size)
+    else:
+        raise ValueError(f"rendererMode {renderer_mode!r} is not available in this build")
     return to_frame_major(audio).astype(AUDIO_DTYPE, copy=False)
 
 
-def _render_hrtf_voice(duration, sample_rate, params, *, initial_offset=0.0, block_size=None):
-    """Translate the versioned voice envelope into the explicit-SOFA renderer."""
-    asset = params.get("hrtfAsset")
-    if not asset:
-        raise ValueError("rendererMode 'hrtf' requires an explicit hrtfAsset SOFA path")
-    options = dict(params.get("hrtfOptions") or {})
-    if int(options.get("schemaVersion", 1)) != 1:
-        raise ValueError("unsupported hrtfOptions schemaVersion")
-    from .render.hrtf import HRTFRendererSpec, render_hrtf
-    carrier = float(params.get("carrierFreq", 440.0))
-    amplitude = float(params.get("amp", 0.7))
-    start_sample = seconds_to_samples(initial_offset, sample_rate)
-    frames = int(float(duration) * float(sample_rate))
-    rate = float(params.get("modFreq", 4.0))
-    width = float(params.get("arcWidthDeg", 90.0))
-    offset = float(params.get("directionOffsetDeg", 0.0))
-    radius = float(options.get("distanceM", 1.0))
+def _render_geometric_voice(
+    spec: Sam2Spec,
+    params: Mapping[str, Any],
+    frames: int,
+    sample_rate: float,
+    *,
+    start_sample: int,
+    block_size: int | None,
+) -> NDArray[np.float64]:
+    """Render a saved canonical trajectory, including seek pre-roll.
 
-    def trajectory(times):
-        azimuth = offset + 0.5 * width * np.sin(TWO_PI * rate * np.asarray(times))
-        radians = np.radians(azimuth)
-        elevation = np.radians(float(options.get("elevationDeg", 0.0)))
-        return np.column_stack((
-            radius * np.cos(elevation) * np.cos(radians),
-            radius * np.cos(elevation) * np.sin(radians),
-            np.full_like(radians, radius * np.sin(elevation)),
-        ))
+    The adapter can reconstruct its sine source at any absolute sample.  It
+    therefore renders the maximum propagation-history window immediately
+    before a requested chunk and discards it.  This makes random scheduling
+    match a sequential export rather than resetting to a silent delay line.
+    """
 
-    renderer_spec = HRTFRendererSpec(
-        sofa_path=asset, trajectory=trajectory,
-        interpolation=str(options.get("interpolation", "nearest")),
-        delay_policy=str(options.get("delayPolicy", "bake_delay_into_ir")),
-        crossfade_ms=float(options.get("crossfadeMs", 10.0)),
-        control_interval_samples=int(options.get("controlIntervalSamples", 128)),
-        expected_sha256=params.get("hrtfAssetHash"),
-        project_directory=options.get("projectDirectory"),
+    payload = params.get("canonicalTrajectory")
+    if not isinstance(payload, Mapping):
+        raise ValueError("geometric rendererMode requires canonicalTrajectory")
+    trajectory = trajectory_from_dict(payload)
+    maximum_distance = _as_float(params.get("maximumDistanceM", 100.0), 100.0)
+    geometric_spec = GeometricSpec(
+        trajectory=trajectory,
+        distance_law=str(params.get("distanceLaw", "inverse")),
+        reference_distance_m=_as_float(params.get("referenceDistanceM", 1.0), 1.0),
+        minimum_distance_m=_as_float(params.get("minimumDistanceM", 0.05), 0.05),
+        maximum_distance_m=maximum_distance,
+        doppler_enabled=bool(params.get("dopplerEnabled", True)),
     )
-    # BinauralBuilder may call a static synth once per export chunk and its
-    # legacy function signature cannot return convolution state. Reconstruct
-    # the finite FIR/crossfade state from an absolute-time preroll so arbitrary
-    # chunk partitions still match a whole render and retain convolution tails.
-    # Rebuild from the voice origin. Crossfades recursively carry the audible
-    # filter state when a rapidly moving source retargets mid-fade, so a merely
-    # finite FIR preroll is not sufficient for sample-identical reconstruction.
-    # This path is offline/worker rendering; correctness takes precedence over
-    # redundant work until the public synth boundary can checkpoint state.
-    render_start = 0
-    discard = start_sample - render_start
-    render_frames = frames + discard
-    samples = render_start + np.arange(render_frames, dtype=np.float64)
-    mono = amplitude * np.sin(TWO_PI * carrier * samples / float(sample_rate))
-    rendered = render_hrtf(mono, renderer_spec, int(sample_rate),
-                           block_size=block_size or 4096, start_sample=render_start)
-    audio = rendered[:, discard:discard + frames]
-    return to_frame_major(audio).astype(AUDIO_DTYPE, copy=False)
-
-
-def _render_geometric_voice(duration, sample_rate, params, *, initial_offset=0.0, block_size=None):
-    """Render the same audible source/path with the analytic geometric baseline."""
-    from .dsp.blocks import RenderContext, iter_blocks
-    from .render.geometric import GeometricBinauralRenderer, GeometricSpec
-    frames = int(float(duration) * float(sample_rate))
-    start_sample = seconds_to_samples(initial_offset, sample_rate)
-    samples = start_sample + np.arange(frames, dtype=np.float64)
-    mono = float(params.get("amp", 0.7)) * np.sin(
-        TWO_PI * float(params.get("carrierFreq", 440.0)) * samples / float(sample_rate)
+    history_frames = int(np.ceil(maximum_distance / geometric_spec.speed_of_sound_m_s * sample_rate)) + 4
+    render_start = max(0, int(start_sample) - history_frames)
+    discard = int(start_sample) - render_start
+    total_frames = discard + frames
+    times = _spec_times(spec, render_start, total_frames, sample_rate)
+    # Geometric mode spatializes a mono source; its phase is accumulated on
+    # the same absolute clock as abstract PM and is reconstructible on seeks.
+    mono = spec.amplitude * np.sin(
+        _ramp_phase(spec.carrier_start_hz, spec.carrier_end_hz, spec.transition_duration_s, times)
     )
-    options = dict(params.get("hrtfOptions") or {})
-    rate, width = float(params.get("modFreq", 4.0)), float(params.get("arcWidthDeg", 90.0))
-    offset, radius = float(params.get("directionOffsetDeg", 0.0)), float(options.get("distanceM", 1.0))
-    def trajectory(times):
-        azimuth = np.radians(offset + .5 * width * np.sin(TWO_PI * rate * np.asarray(times)))
-        return np.column_stack((radius*np.cos(azimuth), radius*np.sin(azimuth), np.zeros_like(azimuth)))
-    renderer = GeometricBinauralRenderer(GeometricSpec(trajectory=trajectory,
-        doppler_enabled=bool(options.get("dopplerEnabled", True))))
-    span = int(block_size or 4096); renderer.prepare(RenderContext(int(sample_rate), span))
-    output = np.empty((2, frames), dtype=AUDIO_DTYPE); position = 0
-    for block in iter_blocks(frames, span, start_sample):
-        output[:, position:position+block.frames] = renderer.process(mono[position:position+block.frames], block)
-        position += block.frames
-    return to_frame_major(output).astype(AUDIO_DTYPE, copy=False)
+    size = int(block_size or total_frames or 1)
+    context = RenderContext(int(sample_rate), size)
+    renderer = GeometricBinauralRenderer(geometric_spec)
+    renderer.prepare(context)
+    pieces = []
+    for offset in range(0, total_frames, size):
+        span = min(size, total_frames - offset)
+        pieces.append(renderer.process(mono[offset : offset + span], RenderBlock(render_start + offset, span)))
+    rendered = np.concatenate(pieces, axis=1)
+    return rendered[:, discard:].astype(np.float64, copy=False)

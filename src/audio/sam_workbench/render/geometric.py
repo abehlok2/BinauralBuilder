@@ -151,6 +151,26 @@ class GeometricBinauralRenderer:
             raise ValueError(f"trajectory returned {result.shape}; expected {(len(time_s), 3)}")
         return result
 
+    def _render_positions(
+        self,
+        combined: NDArray[np.float64],
+        combined_origin: int,
+        sample_indices: NDArray[np.float64],
+        positions: NDArray[np.float64],
+    ) -> tuple[NDArray[np.float64], dict[str, NDArray[np.float64]], NDArray[np.float64]]:
+        cues = geometric_cues(positions, self.spec.listener, self.spec.speed_of_sound_m_s)
+        gains = distance_gains(cues["distance_m"], self.spec)
+        delay_samples = cues["delay_s"] * self._sample_rate_hz
+        if not self.spec.doppler_enabled:
+            differential = delay_samples - np.mean(delay_samples, axis=1, keepdims=True)
+            causal_reference_m = max(self.spec.reference_distance_m, self.spec.listener.ear_spacing_m / 2.0)
+            delay_samples = causal_reference_m / self.spec.speed_of_sound_m_s * self._sample_rate_hz + differential
+        output = np.empty((2, len(sample_indices)), dtype=np.float64)
+        for ear in range(2):
+            reads = sample_indices - delay_samples[:, ear] - combined_origin
+            output[ear] = cubic_fractional_sample(combined, reads) * gains[:, ear]
+        return output, cues, delay_samples
+
     def process(self, mono: ArrayLike, block) -> NDArray[np.float32]:
         source = np.asarray(mono, dtype=np.float64)
         if source.ndim != 1 or len(source) != block.frames:
@@ -163,32 +183,22 @@ class GeometricBinauralRenderer:
 
         sample_indices = start_sample + np.arange(block.frames, dtype=np.float64)
         time_s = sample_indices / self._sample_rate_hz
-        positions = self._positions(time_s)
-        cues = geometric_cues(positions, self.spec.listener, self.spec.speed_of_sound_m_s)
-        gains = distance_gains(cues["distance_m"], self.spec)
-        delay_samples = cues["delay_s"] * self._sample_rate_hz
-        if not self.spec.doppler_enabled:
-            differential = delay_samples - np.mean(delay_samples, axis=1, keepdims=True)
-            # Half the ear spacing is a geometry-wide upper bound on the
-            # differential propagation distance, so this fixed common delay
-            # remains causal without depending on block contents.
-            causal_reference_m = max(
-                self.spec.reference_distance_m,
-                self.spec.listener.ear_spacing_m / 2.0,
-            )
-            delay_samples = (
-                causal_reference_m
-                / self.spec.speed_of_sound_m_s
-                * self._sample_rate_hz
-                + differential
-            )
-
         combined = np.concatenate((self._history, source))
         combined_origin = start_sample - len(self._history)
-        output = np.empty((2, block.frames), dtype=np.float64)
-        for ear in range(2):
-            read_positions = sample_indices - delay_samples[:, ear] - combined_origin
-            output[ear] = cubic_fractional_sample(combined, read_positions) * gains[:, ear]
+        positions = self._positions(time_s)
+        branches = getattr(self.spec.trajectory, "audio_branches", lambda _: None)(time_s)
+        if branches is not None and np.any(branches[3] != 1.0):
+            old_audio, old_cues, old_delays = self._render_positions(combined, combined_origin, sample_indices, branches[0])
+            new_audio, new_cues, new_delays = self._render_positions(combined, combined_origin, sample_indices, branches[1])
+            output = old_audio * branches[2][None, :] + new_audio * branches[3][None, :]
+            # Diagnostics describe the audible weighted cue trajectory.
+            positions = branches[0] * branches[2][:, None] + branches[1] * branches[3][:, None]
+            cues = {key: old_cues[key] * branches[2][..., None] + new_cues[key] * branches[3][..., None] if old_cues[key].ndim == 2 else old_cues[key] * branches[2] + new_cues[key] * branches[3] for key in old_cues}
+            delay_samples = np.maximum(old_delays, new_delays)
+            gains = distance_gains(cues["distance_m"], self.spec)
+        else:
+            output, cues, delay_samples = self._render_positions(combined, combined_origin, sample_indices, positions)
+            gains = distance_gains(cues["distance_m"], self.spec)
 
         required_history = max(4, int(math.ceil(float(np.max(delay_samples, initial=0.0)))) + 3)
         self._history = combined[-required_history:]
