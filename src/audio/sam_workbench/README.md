@@ -49,6 +49,10 @@ and a clean-environment import in a subprocess with those modules blocked.
 | `dsp/crossover.py` | Linkwitz-Riley band splitting that reconstructs | 6 |
 | `render/routing.py` | Buses, stems, per-band routing, deterministic seeds | 6 |
 | `trajectory/coupling.py` | How one source's path follows another's | 6 |
+| `experiment/localization.py` | Blinded localization test for choosing among generic HRTFs | 7 |
+| `experiment/session.py` | Condition builder, randomisation, rating capture, export with provenance | 7 |
+| `hrtf/measurement.py` | Swept-sine measurement import, behind an advanced flag | 7 |
+| `hrtf/mesh2hrtf.py` | Import guidance and validation for simulated HRTFs | 7 |
 
 Phase 4 adds explicit-SOFA loading, validation, coordinate conversion,
 resampling, delay policies, caching, nearest/crossfaded rendering, and aligned
@@ -91,6 +95,24 @@ cannot shift another's random stream. A modulation matrix connects modulators
 to parameters and refuses any route that would close a loop. Because bands
 multiply by sources, `cost.py` states what a scene will cost before it is paid
 and routes an expensive one to an offline render.
+
+Phase 7 is about choosing an HRTF for a particular listener, and recording how
+that choice was made. The cheapest route comes first: a blinded, seeded
+localization test across candidate sets, scored on angular error and on
+front/back reversals rather than on preference, because the set someone likes
+on first listen is not reliably the one they localise best with. Around it sits
+the machinery of any listening comparison - conditions, randomised order,
+captured responses - and an export that carries the full acoustic description
+of every condition, so a result can be read later by someone who was not there.
+
+The measurement and simulation routes are deliberately harder to reach.
+`hrtf/measurement.py` implements the swept-sine chain - deconvolution,
+reference division, windowing before the first reflection - but is off unless
+`SAM_WORKBENCH_ADVANCED` is set, and refuses any measurement that fails its
+signal-to-noise, clipping, repeatability or onset checks rather than returning
+it with a warning. `hrtf/mesh2hrtf.py` runs no solver; it validates what one
+produced, against the setup errors this route reliably makes - a mesh scaled in
+millimetres, swapped ears, rotated axes, a grid with no elevation.
 
 SOFA assets may be absolute, project-relative, or resolved through
 `SAM_WORKBENCH_HRTF_DIR`; their hashes are checked when supplied. Static HRTF
