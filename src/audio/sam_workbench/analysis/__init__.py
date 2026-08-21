@@ -30,5 +30,10 @@ __all__ = [
     "rms_envelope",
     "spectrogram_db",
     "summarize_cues",
+    "trajectory_metrics",
+    "ComparisonResult",
+    "render_ab_comparison",
+    "render_legacy_migration_preview",
 ]
 from .trajectory_metrics import trajectory_metrics
+from .comparison import ComparisonResult, render_ab_comparison, render_legacy_migration_preview

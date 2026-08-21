@@ -1,0 +1,4 @@
+# Optional explicit-SOFA HRTF feature dependencies.
+h5py>=3.10
+sofar>=1.1.3
+pyfar>=0.7

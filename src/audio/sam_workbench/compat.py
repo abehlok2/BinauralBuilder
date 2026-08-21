@@ -83,6 +83,10 @@ SAM2_PARAMETER_DEFAULTS: dict[str, Any] = {
     "customPathProfile": None,
     "phaseOffsetLRad": 0.0,
     "phaseOffsetRRad": 0.0,
+    "rendererMode": "abstract_pm",
+    "hrtfAsset": None,
+    "hrtfAssetHash": None,
+    "hrtfOptions": {},
 }
 
 #: Transition parameters. Each start/end pair compiles into one control.
@@ -129,7 +133,7 @@ _KNOWN_KEYS = (
     | {alias for aliases in _ALIASES.values() for alias in aliases}
     | {
         "samSchemaVersion",
-        "rendererMode",
+        "rendererMode", "hrtfAsset", "hrtfAssetHash", "hrtfOptions",
         "earPolarity",
         "customPathSmoothingPasses",
         "customPathSmoothingRatio",

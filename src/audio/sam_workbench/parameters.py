@@ -455,7 +455,7 @@ def validate_sam2_params(
     issues: list[ValidationIssue] = []
     known = set(transition_names(is_transition)) | set(transition_names(not is_transition))
     known |= {alias for entry in SAM2_FIELDS for alias in entry.aliases}
-    known |= {"samSchemaVersion", "rendererMode"}
+    known |= {"samSchemaVersion", "rendererMode", "hrtfAsset", "hrtfAssetHash", "hrtfOptions"}
 
     for key, value in params.items():
         entry = field_for(key)
@@ -503,4 +503,18 @@ def validate_sam2_params(
                         key, f"is at or above Nyquist ({nyquist:.0f} Hz) for this project's sample rate"
                     )
                 )
+    renderer_mode = params.get("rendererMode", "abstract_pm")
+    if renderer_mode not in ("abstract_pm", "geometric", "hrtf", "hybrid"):
+        issues.append(ValidationIssue("rendererMode", "must be abstract_pm, geometric, hrtf, or hybrid"))
+    if renderer_mode in ("hrtf", "hybrid") and not params.get("hrtfAsset"):
+        issues.append(ValidationIssue("hrtfAsset", "an explicit SOFA asset is required for this renderer"))
+    if renderer_mode == "hybrid":
+        issues.append(ValidationIssue(
+            "rendererMode", "hybrid rendering is a Phase 5 feature and is not available yet"
+        ))
+    options = params.get("hrtfOptions", {})
+    if options is not None and not isinstance(options, dict):
+        issues.append(ValidationIssue("hrtfOptions", "must be a versioned object"))
+    elif isinstance(options, dict) and int(options.get("schemaVersion", 1)) != 1:
+        issues.append(ValidationIssue("hrtfOptions.schemaVersion", "unsupported HRTF options schema version"))
     return tuple(issues)
