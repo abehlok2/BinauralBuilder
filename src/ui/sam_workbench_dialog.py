@@ -41,6 +41,7 @@ from src.audio.sam_workbench.preview import PreviewResult, render_voice_preview,
 
 from .sam_analysis_panel import SamAnalysisPanel
 from .sam_basic_panel import SamBasicPanel
+from .sam_path_panel import SamPathPanel
 
 try:  # pragma: no cover - import guard mirrors the rest of the UI package
     from PyQt5.QtMultimedia import QAudio, QAudioDeviceInfo, QAudioFormat, QAudioOutput
@@ -146,17 +147,20 @@ class SamWorkbenchDialog(QDialog):
         self.basic_panel = SamBasicPanel(mode=BASIC, is_transition=self._is_transition)
         self.advanced_panel = SamBasicPanel(mode=EXPERT, is_transition=self._is_transition)
         self.analysis_panel = SamAnalysisPanel()
+        self.path_panel = SamPathPanel()
         self.compatibility_view = QTextEdit()
         self.compatibility_view.setReadOnly(True)
 
         self.tabs.addTab(self._scrolled(self.basic_panel), "Basic SAM")
         self.tabs.addTab(self._scrolled(self.advanced_panel), "Advanced")
+        self.tabs.addTab(self._scrolled(self.path_panel), "Path & Geometry")
         self.tabs.addTab(self.analysis_panel, "Analysis")
         self.tabs.addTab(self.compatibility_view, "Compatibility")
         layout.addWidget(self.tabs, 1)
 
         for panel in (self.basic_panel, self.advanced_panel):
             panel.paramsChanged.connect(self._on_params_changed)
+        self.path_panel.paramsChanged.connect(self._on_params_changed)
 
         preview_row = QHBoxLayout()
         preview_row.addWidget(QLabel("Preview length:"))
@@ -216,6 +220,7 @@ class SamWorkbenchDialog(QDialog):
         params = self.params
         self.basic_panel.set_params(params)
         self.advanced_panel.set_params(params)
+        self.path_panel.set_params(params)
         self._on_mode_changed(self.mode_combo.currentText())
 
     def collect_params(self) -> dict[str, Any]:
@@ -230,6 +235,7 @@ class SamWorkbenchDialog(QDialog):
         merged.update(self.basic_panel.params())
         if self.mode_combo.currentText() in (ADVANCED, EXPERT):
             merged.update(self.advanced_panel.params())
+        merged.update(self.path_panel.params())
         return merged
 
     def voice_data(self) -> dict[str, Any]:
