@@ -62,7 +62,9 @@ class FakeApp:
     def __init__(self, voice: dict | None = None) -> None:
         self.track_data = {
             "global_settings": {"sample_rate": SAMPLE_RATE},
-            "steps": [{"duration": 10.0, "voices": [copy.deepcopy(voice or SAM_VOICE)]}],
+            "steps": [
+                {"duration": 10.0, "voices": [copy.deepcopy(voice or SAM_VOICE)]}
+            ],
         }
         self.prefs = None
 
@@ -82,7 +84,9 @@ def fake_app() -> FakeApp:
 def voice_editor(qtbot, fake_app):
     from src.ui.voice_editor_dialog import VoiceEditorDialog
 
-    dialog = VoiceEditorDialog(parent=None, app_ref=fake_app, step_index=0, voice_index=0)
+    dialog = VoiceEditorDialog(
+        parent=None, app_ref=fake_app, step_index=0, voice_index=0
+    )
     qtbot.addWidget(dialog)
     return dialog
 
@@ -93,7 +97,9 @@ def voice_editor(qtbot, fake_app):
 def test_sam_parameter_tables_are_declared_once():
     """The editor's parameter dictionary must not shadow a key with a later copy."""
 
-    source = (REPOSITORY_ROOT / "src/ui/voice_editor_dialog.py").read_text(encoding="utf-8")
+    source = (REPOSITORY_ROOT / "src/ui/voice_editor_dialog.py").read_text(
+        encoding="utf-8"
+    )
     tree = ast.parse(source)
     tables = [
         node
@@ -104,7 +110,9 @@ def test_sam_parameter_tables_are_declared_once():
     assert tables, "param_definitions not found"
     for table in tables:
         keys = [key.value for key in table.value.keys]
-        duplicates = [name for name, count in collections.Counter(keys).items() if count > 1]
+        duplicates = [
+            name for name, count in collections.Counter(keys).items() if count > 1
+        ]
         assert duplicates == [], f"duplicate parameter tables: {duplicates}"
 
 
@@ -132,7 +140,9 @@ def test_editor_tooltips_come_from_the_registry():
 # --- unknown parameters survive ---------------------------------------------
 
 
-def test_saving_a_voice_keeps_parameters_the_editor_never_showed(voice_editor, fake_app):
+def test_saving_a_voice_keeps_parameters_the_editor_never_showed(
+    voice_editor, fake_app
+):
     assert voice_editor._preserved_params == {"legacyMystery": "keep me"}
     voice_editor.save_voice()
     saved = fake_app.track_data["steps"][0]["voices"][0]["params"]
@@ -178,7 +188,9 @@ def test_workbench_button_is_disabled_for_other_voices(qtbot):
     other = copy.deepcopy(SAM_VOICE)
     other["synth_function_name"] = "binaural_beat"
     other["params"] = {"ampL": 0.5, "ampR": 0.5, "baseFreq": 200.0, "beatFreq": 4.0}
-    dialog = VoiceEditorDialog(parent=None, app_ref=FakeApp(other), step_index=0, voice_index=0)
+    dialog = VoiceEditorDialog(
+        parent=None, app_ref=FakeApp(other), step_index=0, voice_index=0
+    )
     qtbot.addWidget(dialog)
     assert not dialog.workbench_button.isEnabled()
 
@@ -186,7 +198,9 @@ def test_workbench_button_is_disabled_for_other_voices(qtbot):
 def test_no_second_main_window_is_introduced():
     from src.ui import sam_workbench_dialog
 
-    source = (REPOSITORY_ROOT / "src/ui/sam_workbench_dialog.py").read_text(encoding="utf-8")
+    source = (REPOSITORY_ROOT / "src/ui/sam_workbench_dialog.py").read_text(
+        encoding="utf-8"
+    )
     assert "QMainWindow" not in source
     assert issubclass(sam_workbench_dialog.SamWorkbenchDialog, QDialog)
     assert not issubclass(sam_workbench_dialog.SamWorkbenchDialog, QMainWindow)
@@ -242,7 +256,10 @@ def test_workbench_preserves_parameters_it_does_not_edit(workbench):
     dialog, _ = workbench
     params = dialog.voice_data()["params"]
     assert params["legacyMystery"] == "keep me"
-    assert "Parameters preserved but not edited here" in dialog.compatibility_view.toPlainText()
+    assert (
+        "Parameters preserved but not edited here"
+        in dialog.compatibility_view.toPlainText()
+    )
     assert "legacyMystery" in dialog.compatibility_view.toPlainText()
 
 
@@ -276,6 +293,49 @@ def test_disclosure_mode_reveals_the_advanced_tab(workbench):
     dialog.mode_combo.setCurrentText(EXPERT)
     assert dialog.tabs.isTabEnabled(1)
     assert "earPolarity" in dialog.advanced_panel.parameter_names
+
+
+def test_phase_three_path_tools_are_part_of_the_standard_workbench(workbench):
+    dialog, _ = workbench
+    labels = [dialog.tabs.tabText(index) for index in range(dialog.tabs.count())]
+    assert "Path & Geometry" in labels
+    assert dialog.path_panel.designer_button.isEnabled()
+    assert "visual path designer" in dialog.path_panel.designer_button.text().lower()
+
+
+def test_path_panel_preserves_legacy_profile_before_designer_is_accepted(qtbot):
+    from src.ui.sam_path_panel import SamPathPanel
+
+    profile = {"kind": "linear", "points": [[0.0, -100.0], [100.0, 0.0]]}
+    panel = SamPathPanel()
+    qtbot.addWidget(panel)
+    panel.set_params({"customPathProfile": profile})
+    assert panel.params()["customPathProfile"] == profile
+    assert "unchanged until you accept" in panel.metadata_label.text()
+
+
+def test_visual_path_designer_writes_canonical_and_compatibility_models(qtbot):
+    from src.ui.sam_path_editor_dialog import SamPathEditorDialog
+
+    dialog = SamPathEditorDialog(
+        profile={"kind": "linear", "points": [[0, -100], [-100, -100]]}
+    )
+    qtbot.addWidget(dialog)
+    dialog.add_point((2.0, 0.5, 0.25))
+    spec = dialog.trajectory_spec()
+    profile = dialog.compatibility_profile()
+    assert spec["coordinateFrame"] == "listener"
+    assert spec["geometry"]["controlPointsM"][-1] == [2.0, 0.5, 0.25]
+    assert spec["traversal"]["mode"] == "loop"
+    assert profile["schemaVersion"] == 2
+    assert profile["coordinateSpace"] == "normalized_listener_2d"
+    assert profile["sceneUnitsPerMetre"] == pytest.approx(100.0)
+
+
+def test_visual_designer_does_not_import_legacy_editors():
+    source = (REPOSITORY_ROOT / "src/ui/sam_path_panel.py").read_text(encoding="utf-8")
+    assert "custom_path_creator_dialog" not in source
+    assert "spatial_trajectory_dialog" not in source
 
 
 def test_advanced_values_are_only_written_in_advanced_modes(workbench):

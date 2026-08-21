@@ -59,13 +59,19 @@ class _PathView(QGraphicsView):
     def _draw_head_guides(self) -> None:
         head = self.scene().addEllipse(-90, -60, 180, 120, QPen(Qt.darkGray, 1.0))
         head.setZValue(-5)
-        x_axis = self.scene().addLine(-200, 0, 200, 0, QPen(Qt.lightGray, 1.0, Qt.DashLine))
-        y_axis = self.scene().addLine(0, -130, 0, 130, QPen(Qt.lightGray, 1.0, Qt.DashLine))
+        x_axis = self.scene().addLine(
+            -200, 0, 200, 0, QPen(Qt.lightGray, 1.0, Qt.DashLine)
+        )
+        y_axis = self.scene().addLine(
+            0, -130, 0, 130, QPen(Qt.lightGray, 1.0, Qt.DashLine)
+        )
         x_axis.setZValue(-6)
         y_axis.setZValue(-6)
 
         for label, pt in (("A", self.ear_a), ("B", self.ear_b)):
-            marker = self.scene().addEllipse(pt.x() - 8, pt.y() - 8, 16, 16, QPen(Qt.black, 1.0))
+            marker = self.scene().addEllipse(
+                pt.x() - 8, pt.y() - 8, 16, 16, QPen(Qt.black, 1.0)
+            )
             marker.setBrush(Qt.lightGray)
             marker.setZValue(5)
             text = self.scene().addText(label)
@@ -94,7 +100,9 @@ class _PathView(QGraphicsView):
         return self._closed_loop
 
     def get_points(self) -> List[Tuple[float, float]]:
-        return [(float(p.scenePos().x()), float(p.scenePos().y())) for p in self._points]
+        return [
+            (float(p.scenePos().x()), float(p.scenePos().y())) for p in self._points
+        ]
 
     def mouseDoubleClickEvent(self, event):
         scene_pos = self.mapToScene(event.pos())
@@ -155,10 +163,13 @@ class _PathView(QGraphicsView):
         endpoint_candidates = [0, len(self._points) - 1]
         for idx in endpoint_candidates:
             endpoint = self._points[idx]
-            if math.hypot(
-                endpoint.scenePos().x() - scene_pos.x(),
-                endpoint.scenePos().y() - scene_pos.y(),
-            ) <= self._close_snap_px:
+            if (
+                math.hypot(
+                    endpoint.scenePos().x() - scene_pos.x(),
+                    endpoint.scenePos().y() - scene_pos.y(),
+                )
+                <= self._close_snap_px
+            ):
                 return idx
         return None
 
@@ -168,10 +179,13 @@ class _PathView(QGraphicsView):
             if self._closed_loop and len(self._points) >= 3:
                 first = self._points[0]
                 last = self._points[-1]
-                if math.hypot(
-                    first.scenePos().x() - last.scenePos().x(),
-                    first.scenePos().y() - last.scenePos().y(),
-                ) > self._close_snap_px:
+                if (
+                    math.hypot(
+                        first.scenePos().x() - last.scenePos().x(),
+                        first.scenePos().y() - last.scenePos().y(),
+                    )
+                    > self._close_snap_px
+                ):
                     self._closed_loop = False
             return
         if len(self._points) < 3:
@@ -180,7 +194,13 @@ class _PathView(QGraphicsView):
             return
         first = self._points[0]
         last = self._points[-1]
-        if math.hypot(first.scenePos().x() - last.scenePos().x(), first.scenePos().y() - last.scenePos().y()) <= self._close_snap_px:
+        if (
+            math.hypot(
+                first.scenePos().x() - last.scenePos().x(),
+                first.scenePos().y() - last.scenePos().y(),
+            )
+            <= self._close_snap_px
+        ):
             last.setPos(first.scenePos())
             self._closed_loop = True
         else:
@@ -242,13 +262,13 @@ class CustomPathCreatorDialog(QDialog):
         main_layout.addLayout(top_row)
 
         smoothing_row = QHBoxLayout()
-        smoothing_row.addWidget(QLabel('Smoothing Passes:'))
+        smoothing_row.addWidget(QLabel("Smoothing Passes:"))
         self.smoothing_passes = QSpinBox()
         self.smoothing_passes.setRange(0, 6)
         self.smoothing_passes.setValue(1)
         smoothing_row.addWidget(self.smoothing_passes)
         smoothing_row.addSpacing(12)
-        smoothing_row.addWidget(QLabel('Smoothing Ratio:'))
+        smoothing_row.addWidget(QLabel("Smoothing Ratio:"))
         self.smoothing_ratio = QDoubleSpinBox()
         self.smoothing_ratio.setDecimals(3)
         self.smoothing_ratio.setRange(0.001, 0.499)
@@ -257,6 +277,20 @@ class CustomPathCreatorDialog(QDialog):
         smoothing_row.addWidget(self.smoothing_ratio)
         smoothing_row.addStretch(1)
         main_layout.addLayout(smoothing_row)
+
+        scale_row = QHBoxLayout()
+        scale_row.addWidget(QLabel("Physical scale:"))
+        self.scene_units_per_metre = QDoubleSpinBox()
+        self.scene_units_per_metre.setRange(1.0, 100000.0)
+        self.scene_units_per_metre.setDecimals(2)
+        self.scene_units_per_metre.setValue(100.0)
+        self.scene_units_per_metre.setSuffix(" scene units/m")
+        self.scene_units_per_metre.setToolTip(
+            "Explicit conversion from legacy pixel/scene coordinates to metres."
+        )
+        scale_row.addWidget(self.scene_units_per_metre)
+        scale_row.addStretch(1)
+        main_layout.addLayout(scale_row)
 
         self.view = _PathView(self)
         self.path_kind_combo.currentTextChanged.connect(self.view.set_path_kind)
@@ -286,8 +320,11 @@ class CustomPathCreatorDialog(QDialog):
         idx = self.path_kind_combo.findText(kind)
         self.path_kind_combo.setCurrentIndex(idx if idx >= 0 else 0)
         points = self.profile.get("points")
-        self.smoothing_passes.setValue(int(self.profile.get('smoothingPasses', 1)))
-        self.smoothing_ratio.setValue(float(self.profile.get('smoothingRatio', 0.25)))
+        self.smoothing_passes.setValue(int(self.profile.get("smoothingPasses", 1)))
+        self.smoothing_ratio.setValue(float(self.profile.get("smoothingRatio", 0.25)))
+        self.scene_units_per_metre.setValue(
+            float(self.profile.get("sceneUnitsPerMetre", 100.0))
+        )
         self.view.set_path_kind(kind)
         self.view.set_closed_loop(bool(self.profile.get("closedLoop", False)))
         if isinstance(points, list) and points:
@@ -307,18 +344,41 @@ class CustomPathCreatorDialog(QDialog):
         if kind == "linear":
             pts = [(-120.0, -20.0), (0.0, 0.0), (120.0, 20.0)]
         elif kind == "circular":
-            pts = [(95.0 * math.cos(t), 95.0 * math.sin(t)) for t in [i * (math.pi / 6.0) for i in range(12)]]
+            pts = [
+                (95.0 * math.cos(t), 95.0 * math.sin(t))
+                for t in [i * (math.pi / 6.0) for i in range(12)]
+            ]
         elif kind == "ovoid":
-            pts = [(130.0 * math.cos(t), 75.0 * math.sin(t)) for t in [i * (math.pi / 6.0) for i in range(12)]]
+            pts = [
+                (130.0 * math.cos(t), 75.0 * math.sin(t))
+                for t in [i * (math.pi / 6.0) for i in range(12)]
+            ]
         else:
-            pts = [(-130.0, 20.0), (-70.0, -65.0), (-10.0, 40.0), (40.0, -35.0), (120.0, 50.0)]
+            pts = [
+                (-130.0, 20.0),
+                (-70.0, -65.0),
+                (-10.0, 40.0),
+                (40.0, -35.0),
+                (120.0, 50.0),
+            ]
         self.view.set_points(pts)
 
     def get_profile(self) -> dict:
-        return {
-            "kind": self.path_kind_combo.currentText(),
-            "closedLoop": self.view.is_closed_loop(),
-            "smoothingPasses": int(self.smoothing_passes.value()),
-            "smoothingRatio": float(self.smoothing_ratio.value()),
-            "points": [[x, y] for x, y in self.view.get_points()],
-        }
+        # Accepting this dialog is an explicit migration.  Keep extension keys,
+        # but declare the formerly implicit scene coordinate conversion.
+        result = dict(self.profile)
+        result.update(
+            {
+                "schemaVersion": 2,
+                "coordinateSpace": "normalized_listener_2d",
+                "axisConvention": "x_right_y_down",
+                "sceneCentre": list(self.profile.get("sceneCentre", [0.0, 0.0])),
+                "sceneUnitsPerMetre": float(self.scene_units_per_metre.value()),
+                "kind": self.path_kind_combo.currentText(),
+                "closedLoop": self.view.is_closed_loop(),
+                "smoothingPasses": int(self.smoothing_passes.value()),
+                "smoothingRatio": float(self.smoothing_ratio.value()),
+                "points": [[x, y] for x, y in self.view.get_points()],
+            }
+        )
+        return result
