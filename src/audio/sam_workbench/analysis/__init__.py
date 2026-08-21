@@ -31,3 +31,4 @@ __all__ = [
     "spectrogram_db",
     "summarize_cues",
 ]
+from .trajectory_metrics import trajectory_metrics

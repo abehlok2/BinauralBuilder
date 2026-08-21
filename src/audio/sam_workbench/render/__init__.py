@@ -25,3 +25,15 @@ __all__ = [
     "render_project",
     "render_warnings",
 ]
+from .geometric import (
+    GeometricBinauralRenderer,
+    GeometricSpec,
+    cubic_fractional_sample,
+    distance_gains,
+    geometric_cues,
+)
+
+__all__ = [
+    "GeometricBinauralRenderer", "GeometricSpec", "cubic_fractional_sample",
+    "distance_gains", "geometric_cues",
+]
