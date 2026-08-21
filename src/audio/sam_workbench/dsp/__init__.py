@@ -33,15 +33,31 @@ from src.audio.sam_workbench.dsp.source import (
     render_source,
     render_source_block,
 )
+from src.audio.sam_workbench.dsp.convolution import (
+    DEFAULT_FILTER_CROSSFADE_MS,
+    MAX_FILTER_CROSSFADE_MS,
+    MIN_FILTER_CROSSFADE_MS,
+    CrossfadingConvolver,
+    OverlapSaveConvolver,
+)
+from src.audio.sam_workbench.dsp.delay import FractionalDelayLine, cubic_interpolate, read_fractional
+from src.audio.sam_workbench.dsp.filters import OnePoleLowpass, head_shadow_cutoff_hz
 
 __all__ = [
+    "CompiledSource",
+    "CrossfadingConvolver",
     "DEFAULT_CROSSFADE_MS",
+    "DEFAULT_FILTER_CROSSFADE_MS",
     "EAR_POLARITY_CANONICAL",
     "EAR_POLARITY_LEGACY",
     "EAR_POLARITY_SAME",
-    "CompiledSource",
+    "FractionalDelayLine",
     "LimiterReport",
+    "MAX_FILTER_CROSSFADE_MS",
+    "MIN_FILTER_CROSSFADE_MS",
     "ModulatorSpec",
+    "OnePoleLowpass",
+    "OverlapSaveConvolver",
     "PhaseAccumulator",
     "RenderBlock",
     "RenderContext",
@@ -51,7 +67,9 @@ __all__ = [
     "carrier_phase",
     "compile_source",
     "crossfade_blocks",
+    "cubic_interpolate",
     "equal_power_crossfade",
+    "head_shadow_cutoff_hz",
     "instantaneous_frequencies",
     "integrate_phase",
     "interaural_phase_difference",
@@ -63,6 +81,7 @@ __all__ = [
     "modulation_sum",
     "peak_level",
     "phase_from_constant_frequency",
+    "read_fractional",
     "render_modulator",
     "render_oscillator",
     "render_source",

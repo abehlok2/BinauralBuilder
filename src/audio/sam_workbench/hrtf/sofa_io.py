@@ -190,11 +190,16 @@ def load_sofa(
     if ir.ndim != 3:
         raise ValueError(f"Data.IR must be three-dimensional, got {ir.shape}")
     delay = _expanded_delay(np.asarray(raw_delay, dtype=np.float64), ir.shape[0])
-    # SimpleFreeFieldHRIR declares Data.Delay in seconds. Some early files use
-    # an explicit samples unit; support both rather than guessing silently.
-    if delay_units.strip().lower().startswith(("second", "sec", "s")):
+    # SimpleFreeFieldHRIR declares Data.Delay in seconds. Some files use an
+    # explicit samples unit; support both rather than guessing silently.
+    # "sample" must be tested first: it also starts with "s", so testing the
+    # seconds spellings first would scale a samples delay by the sample rate.
+    units_text = delay_units.strip().lower()
+    if units_text.startswith("sample"):
+        pass
+    elif units_text.startswith(("second", "sec", "s")):
         delay = delay * rate
-    elif not delay_units.strip().lower().startswith("sample"):
+    else:
         raise ValueError(f"unsupported Data.Delay units {delay_units!r}")
     if policy is DelayPolicy.BAKE:
         ir = _bake_delay(ir, delay)
