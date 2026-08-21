@@ -12,13 +12,15 @@ audio device, or any Rust component:
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from dataclasses import replace
 from pathlib import Path
 from typing import Sequence
 
 from .conventions import SUPPORTED_SAMPLE_RATES_HZ
-from .model import Project, ProjectValidationError, load_project, save_project
+from .export import DEFAULT_SUBTYPE, export_wav
+from .model import Project, ProjectValidationError, Source, load_project, save_project
 from .version import PACKAGE_VERSION, SCHEMA_VERSION
 
 __all__ = ["main", "build_parser"]
@@ -49,6 +51,11 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"project sample rate (validated; common values: {', '.join(str(rate) for rate in SUPPORTED_SAMPLE_RATES_HZ)})",
     )
     new_command.add_argument(
+        "--with-source",
+        action="store_true",
+        help="add one exact-symmetric SAM source so the project renders audibly",
+    )
+    new_command.add_argument(
         "--force",
         action="store_true",
         help="overwrite an existing file",
@@ -56,6 +63,30 @@ def build_parser() -> argparse.ArgumentParser:
 
     validate_command = commands.add_parser("validate", help="validate an existing project")
     validate_command.add_argument("path", type=Path, help="project JSON file")
+
+    render_command = commands.add_parser("render", help="render a project to a WAV file plus manifest")
+    render_command.add_argument("path", type=Path, help="project JSON file")
+    render_command.add_argument("output", type=Path, help="destination WAV file")
+    render_command.add_argument(
+        "--duration", type=float, required=True, metavar="SECONDS", help="render length in seconds"
+    )
+    render_command.add_argument(
+        "--block-size",
+        type=int,
+        default=None,
+        metavar="FRAMES",
+        help="offline block size; the rendered samples do not depend on it",
+    )
+    render_command.add_argument(
+        "--subtype",
+        default=DEFAULT_SUBTYPE,
+        help=f"soundfile subtype for the WAV data (default: {DEFAULT_SUBTYPE})",
+    )
+    render_command.add_argument(
+        "--snapshot",
+        action="store_true",
+        help="also write the rendered project document next to the audio",
+    )
 
     return parser
 
@@ -78,6 +109,8 @@ def _command_new(arguments: argparse.Namespace) -> int:
         project = replace(project, name=arguments.name)
     if arguments.sample_rate is not None:
         project = replace(project, audio=replace(project.audio, sample_rate_hz=arguments.sample_rate))
+    if arguments.with_source:
+        project = project.with_source(Source(id="source-1", name="Exact symmetric SAM"))
 
     try:
         save_project(project, path)
@@ -111,6 +144,52 @@ def _command_validate(arguments: argparse.Namespace) -> int:
     return 0
 
 
+def _command_render(arguments: argparse.Namespace) -> int:
+    path: Path = arguments.path
+    try:
+        project = load_project(path)
+    except ProjectValidationError as error:
+        _report_issues(error, path)
+        return 1
+    except OSError as error:
+        print(f"Could not read {path}: {error}", file=sys.stderr)
+        return 1
+
+    if arguments.duration <= 0.0:
+        print(f"Render duration must be positive, got {arguments.duration}", file=sys.stderr)
+        return 1
+
+    try:
+        manifest_path = export_wav(
+            project,
+            arguments.duration,
+            arguments.output,
+            block_size=arguments.block_size,
+            subtype=arguments.subtype,
+            write_project_snapshot=arguments.snapshot,
+        )
+    except ProjectValidationError as error:
+        _report_issues(error, path)
+        return 1
+    except (OSError, ValueError, RuntimeError) as error:
+        print(f"Could not render {path}: {error}", file=sys.stderr)
+        return 1
+
+    if not any(source.enabled for source in project.sources):
+        print(f"Warning: {path} has no enabled sources; the render is silent", file=sys.stderr)
+
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    for warning in manifest.get("warnings", ()):
+        print(f"Warning: {warning['path']}: {warning['message']}", file=sys.stderr)
+    print(
+        f"Rendered {arguments.output} ({manifest['frames']} frames, "
+        f"{manifest['sample_rate_hz']} Hz, renderer {manifest['renderer']}, "
+        f"peak {manifest['levels']['peak']:.4f})"
+    )
+    print(f"Wrote manifest {manifest_path}")
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Run the command-line shell and return a process exit status."""
 
@@ -120,6 +199,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _command_new(arguments)
     if arguments.command == "validate":
         return _command_validate(arguments)
+    if arguments.command == "render":
+        return _command_render(arguments)
     parser.error(f"unknown command {arguments.command!r}")  # pragma: no cover - argparse guards this
     return 2
 

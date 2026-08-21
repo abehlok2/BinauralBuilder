@@ -1,10 +1,16 @@
-"""Spatial angle modulation synthesis functions."""
+"""Spatial angle modulation synthesis functions.
+
+The SAM2 renderer and its path evaluation live in the canonical package
+``src.audio.sam_workbench``; this module keeps the public function names and
+the legacy camelCase parameter shape that existing tracks and ``.voice``
+presets depend on.
+"""
 
 import numpy as np
 import math
 import numba
 import traceback
-import json
+
 from .monaural_beat_stereo_amps import monaural_beat_stereo_amps, monaural_beat_stereo_amps_transition
 
 # Placeholder for the missing audio_engine module
@@ -48,211 +54,41 @@ except Exception:
 # -----------------------------------------------------------------------------
 # Spatial Angle Modulation - Helper Functions
 # -----------------------------------------------------------------------------
+# The SAM2 path/shape evaluation now lives in the canonical package at
+# ``src.audio.sam_workbench.trajectory.legacy_paths``. These names are kept as
+# aliases so existing callers and tests keep working, but there is only one
+# implementation.
 
-def _progress_open(phase: np.ndarray) -> np.ndarray:
-    """Back-and-forth path traversal (0 → 1 → 0)."""
-    wrapped = (phase / (2.0 * math.pi)) % 1.0
-    return 1.0 - (2.0 * np.abs(wrapped - 0.5))
-
-
-def _progress_closed(phase: np.ndarray, direction: str = 'cw') -> np.ndarray:
-    """Looping path traversal (clockwise/counterclockwise)."""
-    wrapped = (phase / (2.0 * math.pi)) % 1.0
-    return wrapped if direction != 'ccw' else (1.0 - wrapped)
-
-
-def _progress_discontinuous(phase: np.ndarray, steps: int = 8, direction: str = 'cw') -> np.ndarray:
-    """Stepped looping traversal for staccato position jumps."""
-    smooth = _progress_closed(phase, direction=direction)
-    n_steps = max(2, int(steps))
-    return np.floor(smooth * n_steps) / float(n_steps - 1)
-
-
-def _shape_from_progress(path_shape: str, progress: np.ndarray) -> np.ndarray:
-    """Map normalized path progress [0,1] to SAM modulation shape [-1,1]."""
-    shape = str(path_shape or '').lower()
-    if shape in ('triangle', 'tri'):
-        return (4.0 * np.abs(progress - 0.5)) - 1.0
-    if shape in ('saw', 'sawtooth', 'ramp', 'linear'):
-        return (2.0 * progress) - 1.0
-    if shape in ('square', 'step'):
-        return np.where(np.sin(2.0 * math.pi * progress) >= 0.0, 1.0, -1.0)
-    # Default smooth sinusoid around center
-    return np.sin(2.0 * math.pi * progress)
-
-
-SAM2_DEFAULT_SHAPES_BY_TYPE = {
-    'open': 'sinusoidal',
-    'closed': 'ramp',
-    'discontinuous': 'square',
+# Importing the canonical package here would run ``src.audio.__init__`` while
+# this module is still being imported by synth discovery, which is a genuine
+# import cycle. The aliases are therefore resolved on first use.
+_LEGACY_PATH_ALIASES = {
+    "SAM2_DEFAULT_SHAPES_BY_TYPE": "SAM2_DEFAULT_SHAPES_BY_TYPE",
+    "_catmull_rom_eval": "catmull_rom_eval",
+    "_chaikin_smooth_points": "chaikin_smooth_points",
+    "_progress_closed": "progress_closed",
+    "_progress_discontinuous": "progress_discontinuous",
+    "_progress_open": "progress_open",
+    "_resolve_custom_path_xy": "resolve_custom_path_xy",
+    "_resolve_sam2_shape": "resolve_sam2_shape",
+    "_sam2_custom_path_shape_and_scale": "custom_path_shape_and_scale",
+    "_shape_from_progress": "shape_from_progress",
 }
 
 
-def _catmull_rom_eval(p0, p1, p2, p3, t: np.ndarray):
-    t2 = t * t
-    t3 = t2 * t
-    x = 0.5 * (
-        (2.0 * p1[0])
-        + (-p0[0] + p2[0]) * t
-        + (2.0 * p0[0] - 5.0 * p1[0] + 4.0 * p2[0] - p3[0]) * t2
-        + (-p0[0] + 3.0 * p1[0] - 3.0 * p2[0] + p3[0]) * t3
-    )
-    y = 0.5 * (
-        (2.0 * p1[1])
-        + (-p0[1] + p2[1]) * t
-        + (2.0 * p0[1] - 5.0 * p1[1] + 4.0 * p2[1] - p3[1]) * t2
-        + (-p0[1] + 3.0 * p1[1] - 3.0 * p2[1] + p3[1]) * t3
-    )
-    return x, y
+def __getattr__(name):
+    """Resolve the legacy SAM2 path helpers from the canonical package."""
+
+    canonical_name = _LEGACY_PATH_ALIASES.get(name)
+    if canonical_name is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    from src.audio.sam_workbench.trajectory import legacy_paths
+
+    value = getattr(legacy_paths, canonical_name)
+    globals()[name] = value
+    return value
 
 
-def _chaikin_smooth_points(points, is_closed: bool, passes: int, ratio: float):
-    if passes <= 0 or len(points) < 3:
-        return points
-
-    ratio = float(np.clip(ratio, 1e-3, 0.499))
-    smoothed = list(points)
-    for _ in range(passes):
-        if len(smoothed) < 3:
-            break
-
-        if is_closed:
-            refined = []
-            count = len(smoothed)
-            for i in range(count):
-                p0 = smoothed[i]
-                p1 = smoothed[(i + 1) % count]
-                q = ((1.0 - ratio) * p0[0] + ratio * p1[0], (1.0 - ratio) * p0[1] + ratio * p1[1])
-                r = (ratio * p0[0] + (1.0 - ratio) * p1[0], ratio * p0[1] + (1.0 - ratio) * p1[1])
-                refined.extend((q, r))
-            smoothed = refined
-        else:
-            refined = [smoothed[0]]
-            for i in range(len(smoothed) - 1):
-                p0 = smoothed[i]
-                p1 = smoothed[i + 1]
-                q = ((1.0 - ratio) * p0[0] + ratio * p1[0], (1.0 - ratio) * p0[1] + ratio * p1[1])
-                r = (ratio * p0[0] + (1.0 - ratio) * p1[0], ratio * p0[1] + (1.0 - ratio) * p1[1])
-                refined.extend((q, r))
-            refined.append(smoothed[-1])
-            smoothed = refined
-
-    return smoothed
-
-
-def _resolve_custom_path_xy(phase: np.ndarray, custom_profile):
-    if isinstance(custom_profile, str):
-        try:
-            custom_profile = json.loads(custom_profile)
-        except Exception:
-            custom_profile = {}
-
-    points = custom_profile.get('points') if isinstance(custom_profile, dict) else None
-    if not isinstance(points, list) or len(points) < 2:
-        return None, None
-
-    clean_points = []
-    for point in points:
-        if isinstance(point, (list, tuple)) and len(point) == 2:
-            try:
-                clean_points.append((float(point[0]), float(point[1])))
-            except (TypeError, ValueError):
-                pass
-
-    if len(clean_points) < 2:
-        return None, None
-
-    is_closed = bool(custom_profile.get('closedLoop', False)) if isinstance(custom_profile, dict) else False
-    kind = str(custom_profile.get('kind', '')).lower() if isinstance(custom_profile, dict) else ''
-    subnodes_per_segment = int(custom_profile.get('subNodesPerSegment', 24)) if isinstance(custom_profile, dict) else 24
-    subnodes_per_segment = max(4, min(subnodes_per_segment, 256))
-    smoothing_passes = int(custom_profile.get('smoothingPasses', 1)) if isinstance(custom_profile, dict) else 1
-    smoothing_passes = max(0, min(smoothing_passes, 6))
-    smoothing_ratio = float(custom_profile.get('smoothingRatio', 0.25)) if isinstance(custom_profile, dict) else 0.25
-
-    if is_closed and clean_points[0] != clean_points[-1]:
-        clean_points.append(clean_points[0])
-
-    if kind != 'spline':
-        clean_points = _chaikin_smooth_points(clean_points, is_closed=is_closed, passes=smoothing_passes, ratio=smoothing_ratio)
-
-    sample_x = []
-    sample_y = []
-    sample_d = [0.0]
-
-    if kind == 'spline' and len(clean_points) >= 3:
-        segment_count = len(clean_points) if is_closed else len(clean_points) - 1
-        for i in range(segment_count):
-            p1 = clean_points[i]
-            p2 = clean_points[(i + 1) % len(clean_points)] if is_closed else clean_points[i + 1]
-            p0 = clean_points[i - 1] if i > 0 else (clean_points[-2] if is_closed else clean_points[0])
-            p3 = clean_points[(i + 2) % len(clean_points)] if (is_closed or i + 2 < len(clean_points)) else clean_points[-1]
-            t = np.linspace(0.0, 1.0, subnodes_per_segment, endpoint=False)
-            x, y = _catmull_rom_eval(p0, p1, p2, p3, t)
-            sample_x.extend(x.tolist())
-            sample_y.extend(y.tolist())
-        sample_x.append(clean_points[-1][0])
-        sample_y.append(clean_points[-1][1])
-    else:
-        for i in range(len(clean_points) - 1):
-            p0 = clean_points[i]
-            p1 = clean_points[i + 1]
-            t = np.linspace(0.0, 1.0, subnodes_per_segment, endpoint=False)
-            for ti in t:
-                sample_x.append((1.0 - ti) * p0[0] + ti * p1[0])
-                sample_y.append((1.0 - ti) * p0[1] + ti * p1[1])
-        sample_x.append(clean_points[-1][0])
-        sample_y.append(clean_points[-1][1])
-
-    for i in range(1, len(sample_x)):
-        sample_d.append(sample_d[-1] + math.hypot(sample_x[i] - sample_x[i - 1], sample_y[i] - sample_y[i - 1]))
-
-    total = sample_d[-1]
-    if total <= 1e-6:
-        return None, None
-
-    pos = ((phase / (2.0 * math.pi)) % 1.0) * total
-    x_interp = np.interp(pos, np.array(sample_d, dtype=np.float64), np.array(sample_x, dtype=np.float64))
-    y_interp = np.interp(pos, np.array(sample_d, dtype=np.float64), np.array(sample_y, dtype=np.float64))
-    return x_interp, y_interp
-
-
-def _sam2_custom_path_shape_and_scale(phase: np.ndarray, custom_profile):
-    x_interp, y_interp = _resolve_custom_path_xy(phase, custom_profile)
-    if x_interp is None or y_interp is None:
-        base = _shape_from_progress('sinusoidal', _progress_open(phase))
-        return base, np.ones_like(base)
-
-    angle_deg = np.degrees(np.arctan2(x_interp, y_interp))
-    norm_angle = np.clip(angle_deg / 180.0, -1.0, 1.0)
-
-    radial_dist = np.hypot(x_interp, y_interp)
-    d_min = float(np.min(radial_dist))
-    d_max = float(np.max(radial_dist))
-    if d_max - d_min <= 1e-6:
-        return norm_angle, np.ones_like(norm_angle)
-
-    dist_norm = (radial_dist - d_min) / (d_max - d_min)
-    # closer (smaller distance) => stronger spatial scale
-    dynamic_scale = 1.25 - 0.5 * dist_norm
-    return norm_angle, np.clip(dynamic_scale, 0.75, 1.25)
-
-
-def _resolve_sam2_shape(path_type: str, phase: np.ndarray, custom_profile=None, path_shape=None, discontinuous_steps=8, rotation_direction='cw'):
-    if path_type.lower() == 'custom':
-        return _sam2_custom_path_shape_and_scale(phase, custom_profile)
-
-    path_type_norm = path_type.lower()
-    if path_type_norm == 'closed':
-        progress = _progress_closed(phase, direction=rotation_direction)
-    elif path_type_norm == 'discontinuous':
-        progress = _progress_discontinuous(phase, steps=discontinuous_steps, direction=rotation_direction)
-    else:
-        progress = _progress_open(phase)
-
-    selected_shape = path_shape or SAM2_DEFAULT_SHAPES_BY_TYPE.get(path_type_norm, 'sinusoidal')
-    shape = _shape_from_progress(selected_shape, progress)
-    return shape, np.ones_like(shape)
 
 @numba.njit(parallel=True, fastmath=True)
 def _prepare_beats_and_angles(
@@ -514,109 +350,48 @@ def spatial_angle_modulation_transition(
 
 
 def spatial_angle_modulation_sam2(duration, sample_rate=44100, **params):
-    """SAM2 spatialized stereo tone with modular path generators.
+    """SAM2 spatialized stereo tone. Angular controls are specified in degrees.
 
-    Angular controls are specified in degrees.
+    Public name and parameter shape are unchanged; the audio now comes from the
+    canonical renderer in :mod:`src.audio.sam_workbench`. ``initial_offset`` is
+    honoured as an absolute start time, so a chunked render continues the
+    waveform instead of restarting it at every chunk.
     """
-    n_samples = int(duration * sample_rate)
-    if n_samples <= 0:
-        return np.zeros((0, 2), dtype=np.float32)
 
-    amp = float(params.get('amp', 0.7))
-    carrier_freq = float(params.get('carrierFreq', 440.0))
-    mod_freq = float(params.get('modFreq', params.get('beatFreq', 4.0)))
-    arc_width_deg = float(params.get('arcWidthDeg', params.get('arcWidth', 90.0)))
-    direction_offset_deg = float(params.get('directionOffsetDeg', params.get('directionOffset', 0.0)))
-    spatial_scale = float(params.get('spatialScale', 1.0))
-    path_type = str(params.get('pathType', 'open')).lower()
-    path_shape = str(params.get('pathShape', SAM2_DEFAULT_SHAPES_BY_TYPE.get(path_type, 'sinusoidal'))).lower()
-    rotation_direction = str(params.get('rotationDirection', 'cw')).lower()
-    discontinuous_steps = int(params.get('discontinuousSteps', 8))
-    custom_path_profile = params.get('customPathProfile', {})
-    if isinstance(custom_path_profile, dict):
-        custom_path_profile = dict(custom_path_profile)
-        if 'customPathSmoothingPasses' in params:
-            custom_path_profile['smoothingPasses'] = int(params.get('customPathSmoothingPasses', custom_path_profile.get('smoothingPasses', 1)))
-        if 'customPathSmoothingRatio' in params:
-            custom_path_profile['smoothingRatio'] = float(params.get('customPathSmoothingRatio', custom_path_profile.get('smoothingRatio', 0.25)))
+    from src.audio.sam_workbench.compat import render_sam2_voice
 
-    t = np.arange(n_samples, dtype=np.float64) / float(sample_rate)
-    mod_phase = 2.0 * math.pi * mod_freq * t
-
-    shape, dynamic_scale = _resolve_sam2_shape(
-        path_type,
-        mod_phase,
-        custom_path_profile,
-        path_shape=path_shape,
-        discontinuous_steps=discontinuous_steps,
-        rotation_direction=rotation_direction,
+    voice_params = dict(params)
+    initial_offset = float(voice_params.pop("initial_offset", 0.0) or 0.0)
+    return render_sam2_voice(
+        duration,
+        sample_rate,
+        params=voice_params,
+        is_transition=False,
+        initial_offset=initial_offset,
     )
-    spatial_angle_deg = direction_offset_deg + 0.5 * arc_width_deg * shape
-    interaural_phase = (spatial_scale * dynamic_scale) * np.sin(np.radians(spatial_angle_deg))
-    carrier_phase = 2.0 * math.pi * carrier_freq * t
-
-    left = amp * np.sin(carrier_phase - interaural_phase)
-    right = amp * np.sin(carrier_phase + interaural_phase)
-
-    return np.column_stack((left, right)).astype(np.float32)
 
 
 def spatial_angle_modulation_sam2_transition(
     duration, sample_rate=44100, initial_offset=0.0, transition_duration=None, **params
 ):
-    """SAM2 transition with linear parameter interpolation (angles in degrees)."""
-    n_samples = int(duration * sample_rate)
-    if n_samples <= 0:
-        return np.zeros((0, 2), dtype=np.float32)
+    """SAM2 transition with linear parameter interpolation (angles in degrees).
 
-    amp = float(params.get('amp', 0.7))
-    start_carrier = float(params.get('startCarrierFreq', 440.0))
-    end_carrier = float(params.get('endCarrierFreq', 440.0))
-    start_mod = float(params.get('startModFreq', params.get('startBeatFreq', 4.0)))
-    end_mod = float(params.get('endModFreq', params.get('endBeatFreq', 4.0)))
-    start_arc_width = float(params.get('startArcWidthDeg', params.get('arcWidthDeg', 90.0)))
-    end_arc_width = float(params.get('endArcWidthDeg', params.get('arcWidthDeg', start_arc_width)))
-    start_direction = float(params.get('startDirectionOffsetDeg', params.get('directionOffsetDeg', 0.0)))
-    end_direction = float(params.get('endDirectionOffsetDeg', params.get('directionOffsetDeg', start_direction)))
-    start_spatial_scale = float(params.get('startSpatialScale', params.get('spatialScale', 1.0)))
-    end_spatial_scale = float(params.get('endSpatialScale', params.get('spatialScale', start_spatial_scale)))
-    path_type = str(params.get('pathType', 'open')).lower()
-    path_shape = str(params.get('pathShape', SAM2_DEFAULT_SHAPES_BY_TYPE.get(path_type, 'sinusoidal'))).lower()
-    rotation_direction = str(params.get('rotationDirection', 'cw')).lower()
-    discontinuous_steps = int(params.get('discontinuousSteps', 8))
-    custom_path_profile = params.get('customPathProfile', {})
-    if isinstance(custom_path_profile, dict):
-        custom_path_profile = dict(custom_path_profile)
-        if 'customPathSmoothingPasses' in params:
-            custom_path_profile['smoothingPasses'] = int(params.get('customPathSmoothingPasses', custom_path_profile.get('smoothingPasses', 1)))
-        if 'customPathSmoothingRatio' in params:
-            custom_path_profile['smoothingRatio'] = float(params.get('customPathSmoothingRatio', custom_path_profile.get('smoothingRatio', 0.25)))
+    ``initial_offset`` is the transition's start time relative to this chunk -
+    negative once the transition began in an earlier chunk - and is used as
+    time, never as a phase angle. Phase is integrated from the transition's own
+    origin, so an arbitrarily chunked render matches a whole-step render.
+    """
 
-    alpha = np.linspace(0.0, 1.0, n_samples, dtype=np.float64)
-    carrier_freq = start_carrier + (end_carrier - start_carrier) * alpha
-    mod_freq = start_mod + (end_mod - start_mod) * alpha
-    arc_width_deg = start_arc_width + (end_arc_width - start_arc_width) * alpha
-    direction_offset_deg = start_direction + (end_direction - start_direction) * alpha
-    spatial_scale = start_spatial_scale + (end_spatial_scale - start_spatial_scale) * alpha
+    from src.audio.sam_workbench.compat import render_sam2_voice
 
-    mod_phase = np.cumsum((2.0 * math.pi * mod_freq) / float(sample_rate))
-    carrier_phase = np.cumsum((2.0 * math.pi * carrier_freq) / float(sample_rate))
-
-    shape, dynamic_scale = _resolve_sam2_shape(
-        path_type,
-        mod_phase,
-        custom_path_profile,
-        path_shape=path_shape,
-        discontinuous_steps=discontinuous_steps,
-        rotation_direction=rotation_direction,
+    return render_sam2_voice(
+        duration,
+        sample_rate,
+        params=dict(params),
+        is_transition=True,
+        initial_offset=float(initial_offset or 0.0),
+        transition_duration=transition_duration,
     )
-    spatial_angle_deg = direction_offset_deg + 0.5 * arc_width_deg * shape
-    interaural_phase = (spatial_scale * dynamic_scale) * np.sin(np.radians(spatial_angle_deg))
-
-    left = amp * np.sin(carrier_phase - interaural_phase + initial_offset)
-    right = amp * np.sin(carrier_phase + interaural_phase + initial_offset)
-
-    return np.column_stack((left, right)).astype(np.float32)
 
 
 def spatial_angle_modulation_monaural_beat(duration, sample_rate=44100, **params):

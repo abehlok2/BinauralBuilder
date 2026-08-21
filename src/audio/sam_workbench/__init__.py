@@ -9,7 +9,10 @@ implementation (see ``README.md`` next to this file).
 
 Phase 0 provides the conventions, the versioned project document, aggregate
 validation, atomic persistence, explicit migrations, and the ``new``/
-``validate`` command-line shell.
+``validate`` command-line shell. Phase 1 adds the control engine, the DSP
+primitives, the abstract phase-modulation renderer, WAV export with a
+reconstruction manifest, the ``render`` command, and the BinauralBuilder
+compatibility adapter that both public synthesis trees delegate to.
 """
 
 from __future__ import annotations
@@ -28,6 +31,27 @@ from .conventions import (
     to_channel_major,
     to_frame_major,
 )
+from .compat import Sam2Spec, render_sam2, render_sam2_voice, sam2_spec_from_params
+from .controls import (
+    ConstantControl,
+    ControlBase,
+    KeyframeControl,
+    LfoControl,
+    RampControl,
+    compile_control,
+    linear_transition_control,
+)
+from .dsp import (
+    EAR_POLARITY_CANONICAL,
+    EAR_POLARITY_LEGACY,
+    EAR_POLARITY_SAME,
+    CompiledSource,
+    ModulatorSpec,
+    RenderContext,
+    compile_source,
+    render_source,
+)
+from .export import build_manifest, export_wav, project_sha256
 from .migrations import migrate_project_dict
 from .model import (
     AudioSettings,
@@ -43,11 +67,37 @@ from .model import (
     save_project,
     validate_project,
 )
+from .render import AbstractPMRenderer, SceneReport, render_project
 from .validation import ValidationCollector, ValidationIssue
 from .version import PACKAGE_VERSION, SCHEMA_VERSION, SUPPORTED_SCHEMA_VERSIONS
 
 __all__ = [
     "AUDIO_DTYPE",
+    "EAR_POLARITY_CANONICAL",
+    "EAR_POLARITY_LEGACY",
+    "EAR_POLARITY_SAME",
+    "AbstractPMRenderer",
+    "CompiledSource",
+    "ConstantControl",
+    "ControlBase",
+    "KeyframeControl",
+    "LfoControl",
+    "ModulatorSpec",
+    "RampControl",
+    "RenderContext",
+    "Sam2Spec",
+    "SceneReport",
+    "build_manifest",
+    "compile_control",
+    "compile_source",
+    "export_wav",
+    "linear_transition_control",
+    "project_sha256",
+    "render_project",
+    "render_sam2",
+    "render_sam2_voice",
+    "render_source",
+    "sam2_spec_from_params",
     "CHANNEL_LEFT",
     "CHANNEL_RIGHT",
     "DEFAULT_SAMPLE_RATE_HZ",
