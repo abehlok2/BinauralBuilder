@@ -29,7 +29,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from .conventions import (
+from src.audio.sam_workbench.conventions import (
     DEFAULT_LIMITER_CEILING_DBFS,
     DEFAULT_MASTER_GAIN_DB,
     DEFAULT_OFFLINE_BLOCK_SIZE,
@@ -41,9 +41,9 @@ from .conventions import (
     MIN_PREVIEW_BLOCK_SIZE,
     MIN_SAMPLE_RATE_HZ,
 )
-from .migrations import migrate_project_dict
-from .validation import ProjectValidationError, ValidationCollector, ValidationIssue
-from .version import SCHEMA_VERSION
+from src.audio.sam_workbench.migrations import migrate_project_dict
+from src.audio.sam_workbench.validation import ProjectValidationError, ValidationCollector, ValidationIssue
+from src.audio.sam_workbench.version import SCHEMA_VERSION
 
 __all__ = [
     "AudioSettings",

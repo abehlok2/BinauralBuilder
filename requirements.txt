@@ -9,3 +9,6 @@ plotly>=5.20
 slab==1.8.0
 soundfile
 matplotlib
+# SOFA files are HDF5 containers.  The Phase 4 GUI exposes SOFA selection in
+# the standard installation, so its file reader must be available there too.
+h5py>=3.11

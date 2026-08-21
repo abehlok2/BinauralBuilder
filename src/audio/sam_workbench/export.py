@@ -25,9 +25,9 @@ from typing import Any
 import numpy as np
 import soundfile as sf
 
-from .conventions import CHANNEL_ORDER, seconds_to_samples
-from .render.scene import SceneReport, render_project
-from .version import PACKAGE_VERSION, SCHEMA_VERSION
+from src.audio.sam_workbench.conventions import CHANNEL_ORDER, seconds_to_samples
+from src.audio.sam_workbench.render.scene import SceneReport, render_project
+from src.audio.sam_workbench.version import PACKAGE_VERSION, SCHEMA_VERSION
 
 __all__ = [
     "DEFAULT_SUBTYPE",

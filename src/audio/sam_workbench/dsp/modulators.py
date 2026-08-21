@@ -19,10 +19,10 @@ from dataclasses import dataclass
 import numpy as np
 from numpy.typing import NDArray
 
-from ..controls import ControlBase, as_control
-from ..waveforms import evaluate_waveform
-from .oscillators import carrier_phase
-from .phase import PhaseAccumulator
+from src.audio.sam_workbench.controls import ControlBase, as_control
+from src.audio.sam_workbench.waveforms import evaluate_waveform
+from src.audio.sam_workbench.dsp.oscillators import carrier_phase
+from src.audio.sam_workbench.dsp.phase import PhaseAccumulator
 
 __all__ = ["ModulatorSpec", "render_modulator", "modulation_sum"]
 

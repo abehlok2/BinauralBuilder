@@ -7,16 +7,9 @@ geometric, HRTF, and hybrid engines arrive in later phases behind the same
 
 from __future__ import annotations
 
-from .abstract_pm import PRESET_BUILDERS, RENDERER_NAME, AbstractPMRenderer, peak_frequency_deviation_hz
-from .base import RenderBlock, RenderContext, RenderDiagnostics, SpatialRenderer
-from .geometric import (
-    DISTANCE_LAWS,
-    GeometricBinauralRenderer,
-    GeometricBinauralSpec,
-    ear_distances_m,
-    render_geometric,
-)
-from .scene import SceneReport, SourceRender, render_project, render_warnings
+from src.audio.sam_workbench.render.abstract_pm import PRESET_BUILDERS, RENDERER_NAME, AbstractPMRenderer, peak_frequency_deviation_hz
+from src.audio.sam_workbench.render.base import RenderBlock, RenderContext, RenderDiagnostics, SpatialRenderer
+from src.audio.sam_workbench.render.scene import SceneReport, SourceRender, render_project, render_warnings
 
 __all__ = [
     "PRESET_BUILDERS",
@@ -36,4 +29,17 @@ __all__ = [
     "render_geometric",
     "render_project",
     "render_warnings",
+]
+from .geometric import (
+    GeometricBinauralRenderer,
+    GeometricSpec,
+    cubic_fractional_sample,
+    distance_gains,
+    geometric_cues,
+)
+from .hrtf import HRTFRenderer, HRTFRendererSpec, render_hrtf
+
+__all__ += [
+    "GeometricBinauralRenderer", "GeometricSpec", "cubic_fractional_sample",
+    "distance_gains", "geometric_cues", "HRTFRenderer", "HRTFRendererSpec", "render_hrtf",
 ]

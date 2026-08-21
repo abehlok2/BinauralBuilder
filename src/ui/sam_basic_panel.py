@@ -45,6 +45,35 @@ COALESCE_MS = 120
 _ERROR_STYLE = "border: 1px solid #d04040;"
 
 
+def _parameter_tooltip(entry: ParameterField, name: str) -> str:
+    """Build a useful hover card from the parameter registry metadata."""
+
+    lines = [entry.tooltip]
+    if entry.kind in ("float", "int"):
+        bounds = []
+        if entry.minimum is not None:
+            bounds.append(f"minimum {entry.minimum:g}")
+        if entry.maximum is not None:
+            bounds.append(f"maximum {entry.maximum:g}")
+        if bounds:
+            lines.append(f"Range: {', '.join(bounds)}{f' {entry.unit}' if entry.unit else ''}.")
+    elif entry.choices:
+        lines.append(f"Choices: {', '.join(entry.choices)}.")
+
+    default = f"{entry.default!r}{f' {entry.unit}' if entry.unit else ''}"
+    lines.append(f"Default: {default}.")
+    if name == entry.start_name:
+        lines.append("This is the value at the beginning of the transition.")
+    elif name == entry.end_name:
+        lines.append("This is the value at the end of the transition.")
+    lines.append(
+        "Can be automated." if entry.automatable else "Uses one fixed value; it is not automatable."
+    )
+    if not entry.live_safe:
+        lines.append("Changing this setting requires the preview to be rendered again.")
+    return "\n".join(lines)
+
+
 class _ControlBase(QWidget):
     """Shared chrome: label, unit, reset-to-default, and a warning badge."""
 
@@ -54,12 +83,15 @@ class _ControlBase(QWidget):
         super().__init__(parent)
         self.entry = entry
         self.name = name
+        self.parameter_tooltip = _parameter_tooltip(entry, name)
 
         self.badge = QLabel("")
         self.badge.setVisible(False)
 
         self.reset_button = QPushButton("Reset")
-        self.reset_button.setToolTip(f"Restore the default ({entry.default!r})")
+        self.reset_button.setToolTip(
+            f"Restore {entry.label} to its default.\n\n{self.parameter_tooltip}"
+        )
         self.reset_button.setFixedWidth(56)
         self.reset_button.clicked.connect(self.reset_to_default)
 
@@ -70,12 +102,12 @@ class _ControlBase(QWidget):
         self._layout.addWidget(editor, 1)
         if self.entry.unit:
             unit_label = QLabel(self.entry.unit)
-            unit_label.setToolTip(f"Unit of {self.entry.label}")
+            unit_label.setToolTip(self.parameter_tooltip)
             self._layout.addWidget(unit_label)
         self._layout.addWidget(self.reset_button)
         self._layout.addWidget(self.badge)
-        editor.setToolTip(self.entry.tooltip)
-        self.setToolTip(self.entry.tooltip)
+        editor.setToolTip(self.parameter_tooltip)
+        self.setToolTip(self.parameter_tooltip)
 
     # --- issues -------------------------------------------------------------
 
@@ -88,12 +120,12 @@ class _ControlBase(QWidget):
             self.badge.setText("")
             self.badge.setToolTip("")
             editor.setStyleSheet("")
-            editor.setToolTip(self.entry.tooltip)
+            editor.setToolTip(self.parameter_tooltip)
             return
         self.badge.setText("!" if severity == "error" else "i")
         self.badge.setToolTip(message)
         self.badge.setVisible(True)
-        editor.setToolTip(f"{self.entry.tooltip}\n\n{severity.title()}: {message}")
+        editor.setToolTip(f"{self.parameter_tooltip}\n\n{severity.title()}: {message}")
         editor.setStyleSheet(_ERROR_STYLE if severity == "error" else "")
 
     # --- interface ----------------------------------------------------------
@@ -207,6 +239,7 @@ class SamBasicPanel(QWidget):
         self._mode = mode
         self._is_transition = bool(is_transition)
         self._controls: dict[str, _ControlBase] = {}
+        self._groups: dict[str, QGroupBox] = {}
 
         self._coalesce = QTimer(self)
         self._coalesce.setSingleShot(True)
@@ -219,6 +252,7 @@ class SamBasicPanel(QWidget):
             if not entries:
                 continue
             box = QGroupBox(title)
+            self._groups[group_mode] = box
             form = QFormLayout(box)
             for entry in entries:
                 for name in entry.names_for(self._is_transition):
@@ -226,9 +260,19 @@ class SamBasicPanel(QWidget):
                     if control is None:
                         continue
                     self._controls[name] = control
-                    form.addRow(self._row_label(entry, name), control)
+                    label = QLabel(self._row_label(entry, name))
+                    label.setToolTip(control.parameter_tooltip)
+                    form.addRow(label, control)
             layout.addWidget(box)
         layout.addStretch(1)
+
+    def set_mode(self, mode: str) -> None:
+        """Show parameter groups at or below ``mode`` in this one panel."""
+
+        visible_modes = {entry.mode for entry in fields_for_mode(mode)}
+        for group_mode, group in self._groups.items():
+            group.setVisible(group_mode in visible_modes)
+        self._mode = mode
 
     # --- construction -------------------------------------------------------
 

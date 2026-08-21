@@ -1,194 +1,288 @@
-"""Traversal: *when* a source is where, given a geometry.
-
-The traversal maps absolute time to a position along the path. It owns
-direction, looping, easing, speed, and deliberate jumps - and nothing about the
-shape of the path, so the same law can drive a circle, a spline, or a point
-cloud.
-
-Two properties matter as much as the shape:
-
-* **Block-size invariance.** Position is a function of absolute time, so a
-  chunked render lands on exactly the samples a whole render would.
-* **Honest discontinuities.** A jump is reported, not hidden. The renderer
-  crossfades across it; a jump that nobody declared would arrive as a click.
-"""
+"""Time laws and legacy-segment translation for canonical trajectories."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
+from typing import Literal, Sequence
 
 import numpy as np
-from numpy.typing import NDArray
+from numpy.typing import ArrayLike, NDArray
 
-__all__ = [
-    "DEFAULT_JUMP_CROSSFADE_MS",
-    "EASINGS",
-    "constant_speed_rate_hz",
-    "TRAVERSAL_MODES",
-    "TraversalResult",
-    "TraversalSpec",
-    "traversal_from_dict",
-]
+TraversalMode = Literal["loop", "one_shot", "ping_pong", "discontinuous"]
 
-#: Directions and looping laws a traversal can follow.
-TRAVERSAL_MODES = ("loop", "one_shot", "ping_pong", "reverse")
-#: Easing curves applied to the position within one traversal cycle.
-EASINGS = ("linear", "sine", "smooth", "keyframed")
-#: A jump shorter than this would still click; the renderer fades across it.
-DEFAULT_JUMP_CROSSFADE_MS = 12.0
+
+def apply_easing(value: ArrayLike, easing: str = "linear") -> NDArray[np.float64]:
+    progress = np.clip(np.asarray(value, dtype=np.float64), 0.0, 1.0)
+    if easing in ("sine", "smooth"):
+        return 0.5 - 0.5 * np.cos(np.pi * progress)
+    if easing == "smoothstep":
+        return progress * progress * (3.0 - 2.0 * progress)
+    if easing != "linear":
+        raise ValueError(f"unsupported easing: {easing!r}")
+    return progress
 
 
 @dataclass(frozen=True)
-class TraversalResult:
-    """Positions along a path plus where the motion deliberately jumped."""
+class DiscontinuityBlend:
+    """Path positions on either side of a jump plus equal-power weights."""
 
-    #: Normalized position along the path, in ``[0, 1]``.
-    position: NDArray[np.float64]
-    #: True at the first sample after a declared discontinuity.
-    jumps: NDArray[np.bool_]
-    crossfade_ms: float = DEFAULT_JUMP_CROSSFADE_MS
-
-    @property
-    def jump_indices(self) -> NDArray[np.int64]:
-        return np.flatnonzero(self.jumps)
-
-
-def _ease(values: NDArray[np.float64], easing: str) -> NDArray[np.float64]:
-    if easing == "linear":
-        return values
-    if easing == "sine":
-        # Slow at both ends, fastest in the middle.
-        return 0.5 - 0.5 * np.cos(np.pi * values)
-    if easing == "smooth":
-        return values * values * (3.0 - 2.0 * values)
-    raise ValueError(f"unknown easing {easing!r}")
+    previous_progress: NDArray[np.float64]
+    next_progress: NDArray[np.float64]
+    previous_gain: NDArray[np.float64]
+    next_gain: NDArray[np.float64]
 
 
 @dataclass(frozen=True)
-class TraversalSpec:
-    """A timing law over a path.
-
-    ``rate_hz`` is traversals per second: one full pass along an open path, or
-    one lap of a closed one. ``arc_length`` asks for constant metres per second
-    instead of constant parameter per second, which the geometry supports.
-    """
-
-    rate_hz: float = 0.25
-    mode: str = "loop"
+class Traversal:
+    duration_s: float = 1.0
+    mode: TraversalMode = "loop"
+    direction: int = 1
     easing: str = "linear"
-    phase: float = 0.0
-    arc_length: bool = True
-    #: ``(time_s, position)`` pairs for ``easing="keyframed"``.
-    keyframes: tuple[tuple[float, float], ...] = ()
-    #: Absolute times at which the source jumps to a new position.
-    jump_times_s: tuple[float, ...] = ()
-    #: Positions to jump to, matched to ``jump_times_s`` by index. When empty
-    #: the jump advances by one step of ``jump_step``.
-    jump_positions: tuple[float, ...] = ()
-    jump_step: float = 0.25
-    crossfade_ms: float = DEFAULT_JUMP_CROSSFADE_MS
+    steps: int = 8
+    crossfade_s: float = 0.0
 
     def __post_init__(self) -> None:
-        if self.mode not in TRAVERSAL_MODES:
-            raise ValueError(f"unknown traversal mode {self.mode!r}; expected one of {TRAVERSAL_MODES}")
-        if self.easing not in EASINGS:
-            raise ValueError(f"unknown easing {self.easing!r}; expected one of {EASINGS}")
-        if self.easing == "keyframed" and not self.keyframes:
-            raise ValueError("keyframed traversal needs keyframes")
+        if not math.isfinite(self.duration_s) or self.duration_s <= 0.0:
+            raise ValueError("duration_s must be finite and positive")
+        if self.mode not in ("loop", "one_shot", "ping_pong", "discontinuous"):
+            raise ValueError(f"unsupported traversal mode: {self.mode!r}")
+        if self.direction not in (-1, 1):
+            raise ValueError("direction must be -1 or 1")
+        if self.steps < 2:
+            raise ValueError("steps must be at least two")
+        if not math.isfinite(self.crossfade_s) or self.crossfade_s < 0.0:
+            raise ValueError("crossfade_s must be finite and non-negative")
+        apply_easing(0.0, self.easing)
 
-    # --- position -----------------------------------------------------------
-
-    def _cycle_position(self, times: NDArray[np.float64]) -> NDArray[np.float64]:
-        """Raw position in ``[0, 1]`` before easing, from absolute time."""
-
-        if self.easing == "keyframed":
-            knot_times = np.array([time for time, _ in self.keyframes], dtype=np.float64)
-            knot_values = np.array([value for _, value in self.keyframes], dtype=np.float64)
-            order = np.argsort(knot_times)
-            return np.clip(np.interp(times, knot_times[order], knot_values[order]), 0.0, 1.0)
-
-        cycles = float(self.rate_hz) * times + float(self.phase)
+    def _continuous_progress(self, time_s: ArrayLike) -> NDArray[np.float64]:
+        normalized = np.asarray(time_s, dtype=np.float64) / self.duration_s
         if self.mode == "one_shot":
-            return np.clip(cycles, 0.0, 1.0)
-        if self.mode == "ping_pong":
-            wrapped = np.mod(cycles, 2.0)
-            return np.where(wrapped <= 1.0, wrapped, 2.0 - wrapped)
-        if self.mode == "reverse":
-            return 1.0 - np.mod(cycles, 1.0)
-        return np.mod(cycles, 1.0)
+            progress = np.clip(normalized, 0.0, 1.0)
+        elif self.mode == "ping_pong":
+            progress = 1.0 - np.abs(2.0 * (normalized % 1.0) - 1.0)
+        else:
+            progress = normalized % 1.0
+        if self.direction < 0:
+            progress = 1.0 - progress
+        return apply_easing(progress, self.easing)
 
-    def _apply_jumps(
-        self, times: NDArray[np.float64], position: NDArray[np.float64]
-    ) -> tuple[NDArray[np.float64], NDArray[np.bool_]]:
-        jumps = np.zeros(position.shape, dtype=bool)
-        if not self.jump_times_s:
-            return position, jumps
+    def progress(self, time_s: ArrayLike) -> NDArray[np.float64]:
+        progress = self._continuous_progress(time_s)
+        if self.mode == "discontinuous":
+            progress = np.floor(progress * self.steps) / (self.steps - 1)
+        return np.clip(progress, 0.0, 1.0)
 
-        offsets = np.zeros(position.shape, dtype=np.float64)
-        absolute = np.full(position.shape, np.nan)
-        for index, jump_time in enumerate(sorted(self.jump_times_s)):
-            after = times >= float(jump_time)
-            if not np.any(after):
-                continue
-            if index < len(self.jump_positions):
-                absolute[after] = float(self.jump_positions[index])
-            else:
-                offsets[after] += float(self.jump_step)
-            first = int(np.argmax(after))
-            # Only mark a boundary that is inside this block.
-            if after[first] and (first > 0 or times[0] >= float(jump_time) - 1e-12):
-                jumps[first] = True
+    def discontinuity_blend(self, time_s: ArrayLike) -> DiscontinuityBlend:
+        """Describe deterministic crossfades leading into each position jump.
 
-        jumped = np.where(np.isnan(absolute), np.mod(position + offsets, 1.0), absolute)
-        return jumped, jumps
+        With no transition, the returned next gain is one. During the final
+        ``crossfade_s`` before a step boundary, the two gains follow an
+        equal-power curve and refer to the adjacent quantized path positions.
+        """
 
-    def positions(self, times: NDArray[np.floating]) -> TraversalResult:
-        """Positions along the path for absolute times in seconds."""
+        time = np.asarray(time_s, dtype=np.float64)
+        current = self.progress(time)
+        zeros = np.zeros_like(time)
+        ones = np.ones_like(time)
+        if self.mode != "discontinuous" or self.crossfade_s == 0.0:
+            return DiscontinuityBlend(current, current, zeros, ones)
 
-        time_array = np.atleast_1d(np.asarray(times, dtype=np.float64))
-        raw = self._cycle_position(time_array)
-        eased = raw if self.easing in ("keyframed", "linear") else _ease(raw, self.easing)
-        position, jumps = self._apply_jumps(time_array, eased)
-        return TraversalResult(position=position, jumps=jumps, crossfade_ms=float(self.crossfade_ms))
+        step_period_s = self.duration_s / self.steps
+        fade_s = min(self.crossfade_s, step_period_s)
+        phase_s = np.mod(time, step_period_s)
+        blend = np.clip((phase_s - (step_period_s - fade_s)) / fade_s, 0.0, 1.0)
+        # Evaluate the next time cell rather than adding a position increment;
+        # this correctly crossfades the final step back to the first on loop
+        # wrap and also handles reverse traversal.
+        adjacent = self.progress(time + step_period_s)
+        return DiscontinuityBlend(
+            previous_progress=current,
+            next_progress=adjacent,
+            previous_gain=np.cos(0.5 * np.pi * blend),
+            next_gain=np.sin(0.5 * np.pi * blend),
+        )
 
-    def sample_times(self, start_sample: int, frames: int, sample_rate: float) -> NDArray[np.float64]:
-        """Absolute times for a block, so a chunked render matches a whole one."""
+    def transition_weights(self, time_s: ArrayLike) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+        """Compatibility shorthand for :meth:`discontinuity_blend`."""
 
-        index = np.arange(int(start_sample), int(start_sample) + int(frames), dtype=np.float64)
-        return index / float(sample_rate)
-
-    # --- serialization ------------------------------------------------------
-
-    def to_dict(self) -> dict:
-        return {
-            "rate_hz": float(self.rate_hz),
-            "mode": self.mode,
-            "easing": self.easing,
-            "phase": float(self.phase),
-            "arc_length": bool(self.arc_length),
-            "keyframes": [[float(time), float(value)] for time, value in self.keyframes],
-            "jump_times_s": [float(value) for value in self.jump_times_s],
-            "jump_positions": [float(value) for value in self.jump_positions],
-            "jump_step": float(self.jump_step),
-            "crossfade_ms": float(self.crossfade_ms),
-        }
+        blend = self.discontinuity_blend(time_s)
+        return blend.previous_gain, blend.next_gain
 
 
-def traversal_from_dict(data) -> TraversalSpec:
-    """Rebuild a traversal from its serialized form."""
+@dataclass(frozen=True)
+class KeyframedTraversal:
+    """User-authored time-to-position law with hold, linear, or smooth keys."""
 
-    fields = dict(data)
-    if "keyframes" in fields:
-        fields["keyframes"] = tuple((float(time), float(value)) for time, value in fields["keyframes"])
-    for key in ("jump_times_s", "jump_positions"):
-        if key in fields:
-            fields[key] = tuple(float(value) for value in fields[key])
-    return TraversalSpec(**fields)
+    times_s: tuple[float, ...]
+    positions: tuple[float, ...]
+    interpolation: Literal["hold", "linear", "smooth"] = "linear"
+
+    def __post_init__(self) -> None:
+        times = np.asarray(self.times_s, dtype=np.float64)
+        positions = np.asarray(self.positions, dtype=np.float64)
+        if len(times) < 2 or times.shape != positions.shape:
+            raise ValueError("keyframed traversal requires matching time/position arrays")
+        if np.any(np.diff(times) <= 0.0) or np.any((positions < 0.0) | (positions > 1.0)):
+            raise ValueError("key times must increase and positions must lie in [0, 1]")
+        if self.interpolation not in ("hold", "linear", "smooth"):
+            raise ValueError(f"unsupported keyframe interpolation: {self.interpolation!r}")
+
+    def progress(self, time_s: ArrayLike) -> NDArray[np.float64]:
+        requested = np.asarray(time_s, dtype=np.float64)
+        times = np.asarray(self.times_s)
+        positions = np.asarray(self.positions)
+        if self.interpolation == "hold":
+            indices = np.clip(np.searchsorted(times, requested, side="right") - 1, 0, len(times) - 1)
+            return positions[indices]
+        if self.interpolation == "smooth":
+            indices = np.clip(np.searchsorted(times, requested, side="right") - 1, 0, len(times) - 2)
+            fraction = (requested - times[indices]) / (times[indices + 1] - times[indices])
+            fraction = apply_easing(fraction, "smoothstep")
+            result = positions[indices] + (positions[indices + 1] - positions[indices]) * fraction
+            return np.where(requested <= times[0], positions[0], np.where(requested >= times[-1], positions[-1], result))
+        return np.interp(requested, times, positions)
 
 
-def constant_speed_rate_hz(path_length_m: float, speed_m_s: float) -> float:
-    """The traversal rate that moves a source at ``speed_m_s`` along a path."""
+@dataclass(frozen=True)
+class StochasticTraversal:
+    """Seeded sample-and-hold random positions with optional smoothing."""
 
-    if path_length_m <= 0.0:
-        return 0.0
-    return float(speed_m_s) / float(path_length_m)
+    interval_s: float = 1.0
+    seed: int = 0
+    smoothing: Literal["hold", "linear", "smooth"] = "hold"
+
+    def __post_init__(self) -> None:
+        if not math.isfinite(self.interval_s) or self.interval_s <= 0.0:
+            raise ValueError("interval_s must be finite and positive")
+        if self.seed < 0:
+            raise ValueError("seed must be non-negative")
+
+    def _value(self, indices: NDArray[np.int64]) -> NDArray[np.float64]:
+        # Integer hashing makes results independent of block order/size.
+        values = indices.astype(np.uint64) + np.uint64(self.seed)
+        values ^= values >> np.uint64(30)
+        values *= np.uint64(0xBF58476D1CE4E5B9)
+        values ^= values >> np.uint64(27)
+        values *= np.uint64(0x94D049BB133111EB)
+        values ^= values >> np.uint64(31)
+        return (values >> np.uint64(11)).astype(np.float64) / float(1 << 53)
+
+    def progress(self, time_s: ArrayLike) -> NDArray[np.float64]:
+        normalized = np.maximum(np.asarray(time_s, dtype=np.float64), 0.0) / self.interval_s
+        index = np.floor(normalized).astype(np.int64)
+        current = self._value(index)
+        if self.smoothing == "hold":
+            return current
+        fraction = normalized - index
+        if self.smoothing == "smooth":
+            fraction = apply_easing(fraction, "smoothstep")
+        elif self.smoothing != "linear":
+            raise ValueError(f"unsupported stochastic smoothing: {self.smoothing!r}")
+        return current + (self._value(index + 1) - current) * fraction
+
+
+@dataclass(frozen=True)
+class CanonicalTrajectory:
+    """Compose reusable path geometry with an independent traversal law."""
+
+    geometry: object
+    traversal: Traversal = Traversal()
+    arc_length: bool = True
+    arclength_samples: int = 2049
+    coordinate_smoothing: bool = False
+
+    def _positions(self, progress: NDArray[np.float64]) -> NDArray[np.float64]:
+        if self.arc_length:
+            from .geometry import evaluate_arclength
+
+            return evaluate_arclength(self.geometry, progress, self.arclength_samples)
+        return self.geometry.evaluate(progress)
+
+    def evaluate(self, time_s: ArrayLike) -> NDArray[np.float64]:
+        if (
+            not self.coordinate_smoothing
+            or not isinstance(self.traversal, Traversal)
+            or self.traversal.mode != "discontinuous"
+            or self.traversal.crossfade_s == 0.0
+        ):
+            return self._positions(self.traversal.progress(time_s))
+        blend = self.traversal.discontinuity_blend(time_s)
+        previous = self._positions(blend.previous_progress)
+        following = self._positions(blend.next_progress)
+        # Equal-power audio crossfades can exceed unity for correlated values;
+        # normalize here because these are coordinates, not audio amplitudes.
+        total = np.maximum(blend.previous_gain + blend.next_gain, np.finfo(float).eps)
+        return (
+            previous * blend.previous_gain[..., None]
+            + following * blend.next_gain[..., None]
+        ) / total[..., None]
+
+    __call__ = evaluate
+
+    def audio_branches(self, time_s: ArrayLike):
+        """Return positions and gains for renderer-level jump crossfading.
+
+        Unlike :meth:`evaluate`, this never blends coordinates.  A geometric
+        renderer can spatialize both positions independently (including their
+        different delays and levels) and then equal-power mix the audio.
+        """
+
+        if not isinstance(self.traversal, Traversal):
+            return None
+        blend = self.traversal.discontinuity_blend(time_s)
+        return (
+            self._positions(blend.previous_progress),
+            self._positions(blend.next_progress),
+            blend.previous_gain,
+            blend.next_gain,
+        )
+
+
+def segment_positions(segments: Sequence[dict], time_s: ArrayLike) -> NDArray[np.float64]:
+    """Evaluate legacy trajectory-dialog segments without modifying them."""
+
+    if not segments:
+        raise ValueError("at least one segment is required")
+    durations = np.asarray([float(segment.get("seconds", 0.0)) for segment in segments])
+    if np.any(~np.isfinite(durations)) or np.any(durations <= 0.0):
+        raise ValueError("each legacy segment must have a positive finite duration")
+    boundaries = np.concatenate(([0.0], np.cumsum(durations)))
+    requested = np.asarray(time_s, dtype=np.float64)
+    flat_time = np.clip(requested.reshape(-1), 0.0, boundaries[-1])
+    result = np.empty((len(flat_time), 3), dtype=np.float64)
+
+    for index, segment in enumerate(segments):
+        is_last = index == len(segments) - 1
+        mask = (flat_time >= boundaries[index]) & (
+            (flat_time <= boundaries[index + 1]) if is_last else (flat_time < boundaries[index + 1])
+        )
+        local_time = flat_time[mask] - boundaries[index]
+        normalized = apply_easing(local_time / durations[index], segment.get("easing", "linear"))
+        azimuth = _segment_azimuth(segment, local_time)
+        distance = _segment_distance(segment.get("distance_m", 1.0), normalized)
+        angle = np.radians(azimuth)
+        result[mask] = np.stack((distance * np.cos(angle), distance * np.sin(angle), np.zeros_like(angle)), axis=-1)
+    return result.reshape(requested.shape + (3,))
+
+
+def _segment_azimuth(segment: dict, local_time: NDArray[np.float64]) -> NDArray[np.float64]:
+    mode = segment.get("mode", "rotate")
+    if mode == "rotate":
+        return float(segment.get("start_deg", 0.0)) + float(segment.get("speed_deg_per_s", 0.0)) * local_time
+    period_s = float(segment.get("period_s", 1.0))
+    if not math.isfinite(period_s) or period_s <= 0.0:
+        raise ValueError("legacy segment period_s must be finite and positive")
+    oscillation = float(segment.get("extent_deg", 0.0)) * np.sin(2.0 * np.pi * local_time / period_s)
+    if mode == "oscillate":
+        return float(segment.get("center_deg", 0.0)) + oscillation
+    if mode == "rotating_arc":
+        return float(segment.get("start_deg", 0.0)) + 360.0 * float(segment.get("rotate_freq_hz", 0.0)) * local_time + oscillation
+    raise ValueError(f"unsupported legacy segment mode: {mode!r}")
+
+
+def _segment_distance(value: object, progress: NDArray[np.float64]) -> NDArray[np.float64]:
+    if isinstance(value, (list, tuple)) and len(value) == 2:
+        start, end = map(float, value)
+        return start + (end - start) * progress
+    return np.full_like(progress, float(value), dtype=np.float64)

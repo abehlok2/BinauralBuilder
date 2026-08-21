@@ -45,5 +45,10 @@ __all__ = [
     "spectrogram_db",
     "speeds_m_s",
     "summarize_cues",
-    "trajectory_summary",
+    "trajectory_metrics",
+    "ComparisonResult",
+    "render_ab_comparison",
+    "render_legacy_migration_preview",
 ]
+from .trajectory_metrics import trajectory_metrics
+from .comparison import ComparisonResult, render_ab_comparison, render_legacy_migration_preview

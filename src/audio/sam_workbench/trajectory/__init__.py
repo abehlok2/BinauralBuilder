@@ -13,21 +13,7 @@ path formats into canonical metres without rewriting what is stored on disk.
 
 from __future__ import annotations
 
-from .geometry import (
-    ArcGeometry,
-    CircleGeometry,
-    EllipseGeometry,
-    GeometrySpec,
-    HelixGeometry,
-    LineGeometry,
-    LissajousGeometry,
-    PointCloudGeometry,
-    PolylineGeometry,
-    SpiralGeometry,
-    SplineGeometry,
-    geometry_from_dict,
-)
-from .legacy_paths import (
+from src.audio.sam_workbench.trajectory.legacy_paths import (
     SAM2_DEFAULT_SHAPES_BY_TYPE,
     custom_path_shape_and_scale,
     progress_closed,
@@ -119,4 +105,42 @@ __all__ = [
     "transform_from_dict",
     "traversal_from_dict",
     "upgrade_profile",
+]
+from .geometry import (
+    Arc,
+    Bezier,
+    Circle,
+    Ellipse,
+    Helix,
+    Line,
+    Lissajous,
+    PointCloud,
+    Polygon,
+    Polyline,
+    Spiral,
+    Spline,
+    TransformedGeometry,
+    arclength_table,
+    evaluate_arclength,
+    sample_polyline_arclength,
+)
+from .transforms import ListenerTransform, Transform, rotation_matrix_ypr
+from .traversal import (
+    CanonicalTrajectory,
+    KeyframedTraversal,
+    StochasticTraversal,
+    Traversal,
+    apply_easing,
+    segment_positions,
+)
+from .serialization import trajectory_from_dict
+
+__all__ = [
+    "Arc", "Bezier", "Circle", "Ellipse", "Helix", "Line", "Lissajous",
+    "PointCloud", "Polygon", "Polyline", "Spiral", "Spline", "TransformedGeometry",
+    "Transform", "ListenerTransform", "CanonicalTrajectory", "Traversal",
+    "KeyframedTraversal", "StochasticTraversal",
+    "apply_easing", "segment_positions", "arclength_table",
+    "evaluate_arclength", "sample_polyline_arclength", "rotation_matrix_ypr",
+    "trajectory_from_dict",
 ]

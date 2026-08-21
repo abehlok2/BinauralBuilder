@@ -28,7 +28,7 @@ from typing import Any, Mapping, Protocol, runtime_checkable
 import numpy as np
 from numpy.typing import NDArray
 
-from .waveforms import TWO_PI, WAVEFORMS, evaluate_waveform
+from src.audio.sam_workbench.waveforms import TWO_PI, WAVEFORMS, evaluate_waveform
 
 __all__ = [
     "WAVEFORMS",

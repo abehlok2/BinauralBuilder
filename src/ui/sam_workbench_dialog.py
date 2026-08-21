@@ -35,6 +35,7 @@ from src.audio.sam_workbench.parameters import (
     BASIC,
     EXPERT,
     SAM2_FIELDS,
+    fields_for_mode,
     validate_sam2_params,
 )
 from src.audio.sam_workbench.compat import sam2_spec_from_params, sam2_trajectory
@@ -42,8 +43,8 @@ from src.audio.sam_workbench.preview import PreviewResult, render_voice_preview,
 
 from .sam_analysis_panel import SamAnalysisPanel
 from .sam_basic_panel import SamBasicPanel
-from .sam_hrtf_lab import SamHrtfLab
 from .sam_path_panel import SamPathPanel
+from .sam_hrtf_lab import SamHrtfLab
 
 try:  # pragma: no cover - import guard mirrors the rest of the UI package
     from PyQt5.QtMultimedia import QAudio, QAudioDeviceInfo, QAudioFormat, QAudioOutput
@@ -91,7 +92,7 @@ class PreviewWorker(QObject):
 
 
 class SamWorkbenchDialog(QDialog):
-    """Basic SAM, Advanced, Analysis, and Compatibility tabs over one voice copy."""
+    """SAM parameters, analysis, and compatibility views over one voice copy."""
 
     voiceApplied = pyqtSignal(dict)
 
@@ -136,36 +137,45 @@ class SamWorkbenchDialog(QDialog):
 
         header = QHBoxLayout()
         header.addWidget(QLabel(f"Voice: {self._voice.get('synth_function_name', 'unknown')}"))
+        header.addWidget(QLabel("Renderer:"))
+        self.renderer_combo = QComboBox()
+        self.renderer_combo.addItem("Abstract phase modulation", "abstract_pm")
+        self.renderer_combo.addItem("Geometric binaural", "geometric")
+        self.renderer_combo.setToolTip("Select the algorithm used by both Python preview and export.")
+        self.renderer_combo.currentIndexChanged.connect(self._on_params_changed)
+        header.addWidget(self.renderer_combo)
         header.addStretch(1)
         header.addWidget(QLabel("Disclosure:"))
         self.mode_combo = QComboBox()
         self.mode_combo.addItems([BASIC, ADVANCED, EXPERT])
+        self.mode_combo.setCurrentText(EXPERT)
         self.mode_combo.setToolTip("How much of the parameter space to show.")
         self.mode_combo.currentTextChanged.connect(self._on_mode_changed)
         header.addWidget(self.mode_combo)
         layout.addLayout(header)
 
         self.tabs = QTabWidget()
-        self.basic_panel = SamBasicPanel(mode=BASIC, is_transition=self._is_transition)
-        self.advanced_panel = SamBasicPanel(mode=EXPERT, is_transition=self._is_transition)
-        self.path_panel = SamPathPanel()
-        self.path_panel.profileMigrated.connect(self._on_profile_migrated)
-        self.hrtf_lab = SamHrtfLab(sample_rate_hz=self._sample_rate)
-        self.hrtf_lab.assetSelected.connect(self._on_hrtf_asset_selected)
+        self.parameter_panel = SamBasicPanel(mode=EXPERT, is_transition=self._is_transition)
+        # Compatibility aliases for integrations that previously addressed the
+        # two duplicated panels directly. Both now refer to the same editor.
+        self.basic_panel = self.parameter_panel
+        self.advanced_panel = self.parameter_panel
         self.analysis_panel = SamAnalysisPanel()
+        self.path_panel = SamPathPanel()
+        self.hrtf_panel = SamHrtfLab()
         self.compatibility_view = QTextEdit()
         self.compatibility_view.setReadOnly(True)
 
-        self.tabs.addTab(self._scrolled(self.basic_panel), "Basic SAM")
-        self.tabs.addTab(self._scrolled(self.advanced_panel), "Advanced")
-        self.tabs.addTab(self.path_panel, "Path")
-        self.tabs.addTab(self.hrtf_lab, "HRTF Lab")
+        self.tabs.addTab(self._scrolled(self.parameter_panel), "Parameters")
+        self.tabs.addTab(self._scrolled(self.path_panel), "Path & Geometry")
+        self.tabs.addTab(self.hrtf_panel, "HRTF Lab")
         self.tabs.addTab(self.analysis_panel, "Analysis")
         self.tabs.addTab(self.compatibility_view, "Compatibility")
         layout.addWidget(self.tabs, 1)
 
-        for panel in (self.basic_panel, self.advanced_panel):
-            panel.paramsChanged.connect(self._on_params_changed)
+        self.parameter_panel.paramsChanged.connect(self._on_params_changed)
+        self.path_panel.paramsChanged.connect(self._on_params_changed)
+        self.hrtf_panel.paramsChanged.connect(self._on_params_changed)
 
         preview_row = QHBoxLayout()
         preview_row.addWidget(QLabel("Preview length:"))
@@ -211,14 +221,9 @@ class SamWorkbenchDialog(QDialog):
         return area
 
     def _on_mode_changed(self, mode: str) -> None:
-        """Basic hides the advanced tab; advanced and expert reveal it.
+        """Apply progressive disclosure within the shared parameter view."""
 
-        The Path, Analysis, and Compatibility tabs stay available in every
-        mode: they show what the current parameters do rather than adding more
-        of them.
-        """
-
-        self.tabs.setTabEnabled(1, mode in (ADVANCED, EXPERT))
+        self.parameter_panel.set_mode(mode)
 
     # --- parameters ---------------------------------------------------------
 
@@ -228,8 +233,11 @@ class SamWorkbenchDialog(QDialog):
 
     def _load_params(self) -> None:
         params = self.params
-        self.basic_panel.set_params(params)
-        self.advanced_panel.set_params(params)
+        renderer_index = self.renderer_combo.findData(params.get("rendererMode", "abstract_pm"))
+        self.renderer_combo.setCurrentIndex(max(0, renderer_index))
+        self.parameter_panel.set_params(params)
+        self.path_panel.set_params(params)
+        self.hrtf_panel.set_params(params)
         self._on_mode_changed(self.mode_combo.currentText())
         self._refresh_path()
 
@@ -282,9 +290,16 @@ class SamWorkbenchDialog(QDialog):
         """
 
         merged = dict(self._original.get("params", {}))
-        merged.update(self.basic_panel.params())
-        if self.mode_combo.currentText() in (ADVANCED, EXPERT):
-            merged.update(self.advanced_panel.params())
+        merged["rendererMode"] = self.renderer_combo.currentData()
+        panel_params = self.parameter_panel.params()
+        visible_names = {
+            name
+            for entry in fields_for_mode(self.mode_combo.currentText())
+            for name in entry.names_for(self._is_transition)
+        }
+        merged.update({name: value for name, value in panel_params.items() if name in visible_names})
+        merged.update(self.path_panel.params())
+        merged.update(self.hrtf_panel.params())
         return merged
 
     def voice_data(self) -> dict[str, Any]:
@@ -310,8 +325,7 @@ class SamWorkbenchDialog(QDialog):
 
     def _revalidate(self) -> None:
         issues = self.issues()
-        self.basic_panel.show_issues(issues)
-        self.advanced_panel.show_issues(issues)
+        self.parameter_panel.show_issues(issues)
 
         errors = [issue for issue in issues if issue.severity == "error"]
         self.buttons.button(QDialogButtonBox.Ok).setEnabled(not errors)
@@ -329,13 +343,15 @@ class SamWorkbenchDialog(QDialog):
         known = {name for entry in SAM2_FIELDS for name in (entry.name, *entry.aliases, entry.start_name, entry.end_name)}
         preserved = {key: value for key, value in params.items() if key not in known}
         lines = [
-            f"Renderer: canonical SAM core (src.audio.sam_workbench), sample rate {self._sample_rate} Hz",
+            f"Renderer: {params.get('rendererMode', 'abstract_pm')} via canonical SAM core (src.audio.sam_workbench), sample rate {self._sample_rate} Hz",
             f"Voice: {self._voice.get('synth_function_name', 'unknown')}"
             f" ({'transition' if self._is_transition else 'static'})",
             f"Schema version: {params.get('samSchemaVersion', 'unversioned (legacy ear polarity)')}",
             "",
             "Parameters preserved but not edited here:",
         ]
+        if params.get("rendererMode") == "hrtf":
+            lines += ["", "Migration preview is opt-in: this explicit-SOFA selection is compared by audition; it never rewrites legacy slab/KEMAR presets."]
         if preserved:
             lines.extend(f"  {key} = {value!r}" for key, value in sorted(preserved.items()))
         else:

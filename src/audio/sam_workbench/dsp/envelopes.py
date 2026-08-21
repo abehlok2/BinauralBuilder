@@ -13,7 +13,7 @@ import math
 import numpy as np
 from numpy.typing import NDArray
 
-from ..conventions import CHANNEL_COUNT
+from src.audio.sam_workbench.conventions import CHANNEL_COUNT
 
 __all__ = [
     "DEFAULT_CROSSFADE_MS",

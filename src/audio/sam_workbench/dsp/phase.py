@@ -25,7 +25,7 @@ from dataclasses import dataclass
 import numpy as np
 from numpy.typing import NDArray
 
-from ..waveforms import TWO_PI
+from src.audio.sam_workbench.waveforms import TWO_PI
 
 __all__ = [
     "PhaseAccumulator",

@@ -14,7 +14,7 @@ from typing import Any, Protocol, runtime_checkable
 import numpy as np
 from numpy.typing import NDArray
 
-from ..dsp.blocks import RenderBlock, RenderContext
+from src.audio.sam_workbench.dsp.blocks import RenderBlock, RenderContext
 
 __all__ = ["RenderBlock", "RenderContext", "RenderDiagnostics", "SpatialRenderer"]
 

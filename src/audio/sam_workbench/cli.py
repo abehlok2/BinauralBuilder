@@ -18,10 +18,18 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Sequence
 
-from .conventions import SUPPORTED_SAMPLE_RATES_HZ
-from .export import DEFAULT_SUBTYPE, export_wav
-from .model import Project, ProjectValidationError, Source, load_project, save_project
-from .version import PACKAGE_VERSION, SCHEMA_VERSION
+# When this file is executed directly (``python cli.py``), Python only adds the
+# workbench directory to ``sys.path``.  Add the repository root so the same
+# canonical absolute imports work both as a script and as a package module.
+if __package__ in {None, ""}:
+    repository_root = Path(__file__).resolve().parents[3]
+    if str(repository_root) not in sys.path:
+        sys.path.insert(0, str(repository_root))
+
+from src.audio.sam_workbench.conventions import SUPPORTED_SAMPLE_RATES_HZ
+from src.audio.sam_workbench.export import DEFAULT_SUBTYPE, export_wav
+from src.audio.sam_workbench.model import Project, ProjectValidationError, Source, load_project, save_project
+from src.audio.sam_workbench.version import PACKAGE_VERSION, SCHEMA_VERSION
 
 __all__ = ["main", "build_parser"]
 

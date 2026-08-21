@@ -1,241 +1,159 @@
-"""The HRTF renderer.
-
-The chain, per block:
-
-.. code-block:: text
-
-    mono source
-      -> trajectory gives a direction for this block
-      -> interpolator gives the filter pair for that direction
-      -> crossfading convolution, one pair of states per ear
-      -> external delay, when the delay policy kept it out of the responses
-      -> optional distance gain
-
-Direction is evaluated once per block, at control rate: a filter that changed
-every sample would be a different algorithm, and the crossfade is what makes a
-per-block change inaudible. Nothing here resets a convolution history when the
-direction changes - both the outgoing and incoming filters keep their own
-history through the fade, which is precisely what stops a moving source from
-clicking.
-
-This renderer never calls `slab` and never loads hidden demonstration data: the
-dataset arrives already prepared from an explicitly chosen SOFA asset.
-"""
-
+"""Time-varying explicit-SOFA binaural rendering."""
 from __future__ import annotations
-
-from dataclasses import dataclass, field
-from typing import Any
-
+from dataclasses import dataclass
+import math
+from pathlib import Path
+from typing import Literal
 import numpy as np
-from numpy.typing import NDArray
+from numpy.typing import ArrayLike
+from ..conventions import AUDIO_DTYPE
+from ..hrtf import DelayPolicy, default_hrtf_cache
+from ..hrtf.interpolation import interpolate_log_magnitude_delay, nearest_indices
+from ..trajectory.transforms import ListenerTransform
 
-from ..conventions import CHANNEL_COUNT, CHANNEL_LEFT
-from ..dsp.blocks import RenderBlock, RenderContext, iter_blocks
-from ..dsp.convolution import DEFAULT_FILTER_CROSSFADE_MS, CrossfadingConvolver
-from ..dsp.delay import FractionalDelayLine
-from ..hrtf.dataset import PreparedHrtf
-from ..hrtf.interpolation import NEAREST, HrirSelection, HrtfInterpolator
-from ..trajectory.spec import TrajectorySpec
-from ..trajectory.transforms import ListenerFrame
-
-__all__ = [
-    "RENDERER_NAME",
-    "HrtfRenderSpec",
-    "HrtfRenderer",
-    "render_hrtf",
-]
-
-RENDERER_NAME = "hrtf"
-
-#: Distance below which the distance gain stops growing.
-_MINIMUM_DISTANCE_M = 0.15
-
+InterpolationMode = Literal["nearest", "logmag_delay"]
 
 @dataclass(frozen=True)
-class HrtfRenderSpec:
-    """Everything the HRTF engine needs besides the source signal."""
+class HRTFRendererSpec:
+    """An explicit asset and every policy required for reproduction."""
+    sofa_path: str | Path
+    trajectory: object
+    interpolation: InterpolationMode = "nearest"
+    delay_policy: DelayPolicy | str = DelayPolicy.BAKE
+    crossfade_ms: float = 10.0
+    control_interval_samples: int = 128
+    listener: ListenerTransform = ListenerTransform()
+    expected_sha256: str | None = None
+    project_directory: str | Path | None = None
 
-    dataset: PreparedHrtf
-    trajectory: TrajectorySpec = field(default_factory=TrajectorySpec)
-    listener: ListenerFrame = field(default_factory=ListenerFrame)
-    interpolation: str = NEAREST
-    crossfade_ms: float = DEFAULT_FILTER_CROSSFADE_MS
-    neighbor_count: int = 3
-    harmonic_order: int = 4
-    #: Apply the dataset's external delay when the policy preserved it.
-    apply_external_delay: bool = True
-    #: Scale level with distance. Off by default: an HRTF encodes direction,
-    #: and a measured set is already normalized to its measurement radius.
-    apply_distance_gain: bool = False
-    reference_distance_m: float = 1.0
+    def __post_init__(self):
+        if self.interpolation not in ("nearest", "logmag_delay"):
+            raise ValueError(f"unsupported interpolation {self.interpolation!r}")
+        DelayPolicy(self.delay_policy)
+        if not math.isfinite(self.crossfade_ms) or self.crossfade_ms < 0:
+            raise ValueError("crossfade_ms must be finite and non-negative")
+        if self.control_interval_samples <= 0:
+            raise ValueError("control_interval_samples must be positive")
 
-    def interpolator(self) -> HrtfInterpolator:
-        return HrtfInterpolator(
-            self.dataset,
-            mode=self.interpolation,
-            neighbor_count=self.neighbor_count,
-            harmonic_order=self.harmonic_order,
+class HRTFRenderer:
+    """Streaming FIR renderer with continuous history and equal-power switches."""
+    def __init__(self, spec: HRTFRendererSpec):
+        self.spec = spec
+        self.dataset = None
+        self._sample_rate_hz = 44100
+        self._fade_frames = 1
+        self._diagnostics = {}
+        self.reset()
+
+    def prepare(self, context, source=None):
+        self._sample_rate_hz = int(context.sample_rate_hz)
+        self.dataset = default_hrtf_cache.get(
+            self.spec.sofa_path, self._sample_rate_hz, self.spec.delay_policy,
+            self.spec.project_directory,
         )
+        if self.spec.expected_sha256 and self.dataset.content_hash.lower() != self.spec.expected_sha256.lower():
+            raise ValueError("SOFA asset hash does not match hrtfAssetHash")
+        self._fade_frames = max(1, round(self.spec.crossfade_ms * self._sample_rate_hz / 1000))
+        if self.dataset.has_external_delay:
+            from scipy.ndimage import shift
+            padding = int(np.ceil(np.max(self.dataset.delay_samples))) + 4
+            delayed = np.pad(self.dataset.ir, ((0, 0), (0, 0), (0, padding)))
+            for measurement in range(self.dataset.measurements):
+                for ear in range(2):
+                    delayed[measurement, ear] = shift(delayed[measurement, ear],
+                        self.dataset.delay_samples[measurement, ear], order=3,
+                        mode="constant", cval=0.0, prefilter=True)
+            self._render_ir = delayed
+        else:
+            self._render_ir = self.dataset.ir
+        self.reset(0)
 
+    def reset(self, sample_index=0):
+        taps = self._render_ir.shape[-1] if hasattr(self, "_render_ir") else 1
+        self._history = np.zeros(max(0, taps - 1), dtype=np.float64)
+        self._next_sample = int(sample_index)
+        self._current_filter = self._previous_filter = None
+        self._filter_key = None
+        self._fade_position = self._fade_frames
 
-class HrtfRenderer:
-    """Convolve a mono source with direction-tracking HRTF filters."""
+    def latency_samples(self): return 0
+    def diagnostics(self): return dict(self._diagnostics)
 
-    def __init__(self, spec: HrtfRenderSpec | None = None) -> None:
-        self._spec = spec
-        self._context: RenderContext | None = None
-        self._interpolator: HrtfInterpolator | None = None
-        self._convolvers: list[CrossfadingConvolver] = []
-        self._delay_lines: list[FractionalDelayLine] = []
-        self._selection: HrirSelection | None = None
-        self._switches = 0
-        self._extrapolated_blocks = 0
-        self._blocks = 0
+    def _position(self, sample):
+        time = np.array([sample / self._sample_rate_hz])
+        trajectory = self.spec.trajectory
+        world = trajectory(time) if callable(trajectory) else trajectory.evaluate(time)
+        values = np.asarray(world, dtype=np.float64)
+        if values.shape != (1, 3) or not np.all(np.isfinite(values)):
+            raise ValueError("trajectory must return finite (frames, 3) positions")
+        return self.spec.listener.world_to_listener(values)[0]
 
-    # --- SpatialRenderer ----------------------------------------------------
+    def _target_filter(self, position):
+        nearest = int(nearest_indices(self.dataset.positions_m, position[None])[0])
+        if self.spec.interpolation == "nearest":
+            return ("nearest", nearest), self._render_ir[nearest]
+        direction = position / np.linalg.norm(position)
+        reference = self.dataset.positions_m[nearest]
+        reference = reference / np.linalg.norm(reference)
+        if np.dot(direction, reference) > 1.0 - 1e-12:
+            # Neutral reconstruction at a measured direction is exact rather
+            # than an avoidable minimum-phase approximation.
+            return ("logmag_delay", *np.round(direction, 6)), self._render_ir[nearest]
+        target = interpolate_log_magnitude_delay(self.dataset, position)
+        if target.shape[-1] < self._render_ir.shape[-1]:
+            target = np.pad(target, ((0, 0), (0, self._render_ir.shape[-1] - target.shape[-1])))
+        return ("logmag_delay", *np.round(direction, 6)), target
 
-    def prepare(self, context: RenderContext, source: HrtfRenderSpec | None = None) -> None:
-        if source is not None:
-            self._spec = source
-        if self._spec is None:
-            raise ValueError("an HRTF renderer needs a specification")
+    @staticmethod
+    def _fir(window, filt):
+        return np.sum(filt * window[::-1][None, :], axis=1)
 
-        self._context = context
-        self._interpolator = self._spec.interpolator()
-        self._convolvers = [
-            CrossfadingConvolver(
-                crossfade_ms=self._spec.crossfade_ms, sample_rate_hz=context.sample_rate_hz
-            )
-            for _ in range(CHANNEL_COUNT)
-        ]
-        maximum_delay = int(max(16, np.ceil(np.max(np.abs(self._spec.dataset.delays_samples)) + 8)))
-        self._delay_lines = [
-            FractionalDelayLine(max_delay_samples=maximum_delay) for _ in range(CHANNEL_COUNT)
-        ]
-        self._selection = None
-        self._switches = 0
-        self._extrapolated_blocks = 0
-        self._blocks = 0
+    def process(self, mono: ArrayLike, block):
+        if self.dataset is None: raise RuntimeError("prepare() must be called before process()")
+        source = np.asarray(mono, dtype=np.float64)
+        if source.shape != (block.frames,): raise ValueError(f"mono input must have shape ({block.frames},), got {source.shape}")
+        if int(block.start_sample) != self._next_sample: self.reset(int(block.start_sample))
+        output = np.zeros((2, block.frames), dtype=np.float64)
+        selected = np.empty(block.frames, dtype=np.int64)
+        for local, value in enumerate(source):
+            absolute = int(block.start_sample) + local
+            if self._current_filter is None or absolute % self.spec.control_interval_samples == 0:
+                key, target = self._target_filter(self._position(absolute))
+                if self._current_filter is None:
+                    self._current_filter, self._filter_key = np.asarray(target), key
+                elif key != self._filter_key:
+                    if self._previous_filter is not None and self._fade_position < self._fade_frames:
+                        progress = self._fade_position / self._fade_frames
+                        self._previous_filter = (
+                            np.cos(progress*np.pi/2) * self._previous_filter
+                            + np.sin(progress*np.pi/2) * self._current_filter
+                        )
+                    else:
+                        self._previous_filter = self._current_filter
+                    self._current_filter = np.asarray(target)
+                    self._filter_key, self._fade_position = key, 0
+            selected[local] = self._filter_key[1] if self._filter_key[0] == "nearest" else -1
+            window = np.concatenate((self._history, [value]))
+            current = self._fir(window, self._current_filter)
+            if self._previous_filter is not None and self._fade_position < self._fade_frames:
+                previous = self._fir(window, self._previous_filter)
+                progress = (self._fade_position + 1) / self._fade_frames
+                output[:, local] = np.cos(progress*np.pi/2)*previous + np.sin(progress*np.pi/2)*current
+                self._fade_position += 1
+                if self._fade_position >= self._fade_frames: self._previous_filter = None
+            else: output[:, local] = current
+            self._history = window[1:]
+        self._next_sample = int(block.start_sample) + block.frames
+        self._diagnostics = {"hrtf_index": selected, "asset_sha256": self.dataset.content_hash,
+            "interpolation": self.spec.interpolation, "delay_policy": DelayPolicy(self.spec.delay_policy).value}
+        return output.astype(AUDIO_DTYPE, copy=False)
 
-    def reset(self, sample_index: int = 0) -> None:
-        for convolver in self._convolvers:
-            convolver.reset()
-        for line in self._delay_lines:
-            line.reset()
-        self._selection = None
-
-    def process(self, mono: NDArray[np.floating], block: RenderBlock) -> NDArray[np.float64]:
-        """Render one block of a mono source into stereo."""
-
-        if self._context is None or self._interpolator is None or self._spec is None:
-            raise RuntimeError("prepare() must be called before process()")
-        samples = np.asarray(mono, dtype=np.float64).reshape(-1)
-        if samples.size != block.frames:
-            raise ValueError(f"expected {block.frames} mono samples, got {samples.size}")
-        if block.frames == 0:
-            return np.zeros((CHANNEL_COUNT, 0), dtype=np.float64)
-
-        sample_rate = self._context.sample_rate_hz
-        trajectory = self._spec.trajectory.positions_for_block(
-            block.start_sample, 1, sample_rate, listener=self._spec.listener
-        )
-        position = trajectory.positions_m[:, 0]
-
-        selection = self._interpolator.at(position)
-        for ear in range(CHANNEL_COUNT):
-            if self._convolvers[ear].set_filter(selection.hrirs[ear]) and ear == CHANNEL_LEFT:
-                self._switches += 1
-        self._selection = selection
-        self._blocks += 1
-        if selection.extrapolated:
-            self._extrapolated_blocks += 1
-
-        output = np.empty((CHANNEL_COUNT, block.frames), dtype=np.float64)
-        for ear in range(CHANNEL_COUNT):
-            signal = self._convolvers[ear].process(samples)
-            if self._spec.apply_external_delay and self._spec.dataset.has_external_delay:
-                signal = self._delay_lines[ear].process(
-                    signal, np.full(block.frames, float(selection.delays_samples[ear]))
-                )
-            output[ear] = signal
-
-        if self._spec.apply_distance_gain:
-            distance = max(float(np.linalg.norm(position)), _MINIMUM_DISTANCE_M)
-            output *= float(self._spec.reference_distance_m) / distance
-        return output
-
-    def latency_samples(self) -> int:
-        """Filter latency: where the responses put their energy.
-
-        Reported as the median onset of the dataset, so a scene can align this
-        stem against renderers that add none.
-        """
-
-        if self._spec is None:
-            return 0
-        hrirs = self._spec.dataset.hrirs
-        peaks = np.argmax(np.abs(hrirs), axis=2)
-        return int(np.median(peaks))
-
-    def diagnostics(self) -> dict[str, Any]:
-        if self._spec is None or self._selection is None:
-            return {}
-
-        dataset = self._spec.dataset
-        indices = self._selection.indices
-        azimuth = [float(dataset.azimuths_deg[index]) for index in indices]
-        elevation = [float(dataset.elevations_deg[index]) for index in indices]
-        return {
-            "renderer": RENDERER_NAME,
-            "interpolation": self._selection.mode,
-            "asset": dataset.asset.path,
-            "asset_sha256": dataset.asset.sha256,
-            "subject": dataset.asset.subject,
-            "delay_policy": dataset.delay_policy,
-            "measurement_indices": [int(index) for index in indices],
-            "measurement_azimuth_deg": azimuth,
-            "measurement_elevation_deg": elevation,
-            "direction_error_deg": float(self._selection.distance_deg),
-            "filter_switches": int(self._switches),
-            "blocks": int(self._blocks),
-            "extrapolated_blocks": int(self._extrapolated_blocks),
-            "crossfade_ms": float(self._spec.crossfade_ms),
-            "latency_samples": self.latency_samples(),
-            "channels": CHANNEL_COUNT,
-        }
-
-    @property
-    def selection(self) -> HrirSelection | None:
-        """The filter pair chosen for the most recent block."""
-
-        return self._selection
-
-
-def render_hrtf(
-    mono: NDArray[np.floating],
-    spec: HrtfRenderSpec,
-    sample_rate: float,
-    *,
-    block_size: int = 512,
-    start_sample: int = 0,
-) -> NDArray[np.float64]:
-    """Render a whole mono signal through the HRTF engine.
-
-    ``block_size`` is a real parameter here, not just a scheduling detail: the
-    direction is evaluated once per block, so a larger block tracks motion more
-    coarsely. The convolution and its crossfades are unaffected by it.
-    """
-
-    samples = np.asarray(mono, dtype=np.float64).reshape(-1)
-    context = RenderContext(sample_rate_hz=int(sample_rate), block_size=int(block_size))
-    renderer = HrtfRenderer(spec)
-    renderer.prepare(context, spec)
-
-    output = np.zeros((CHANNEL_COUNT, samples.size), dtype=np.float64)
-    for block in iter_blocks(samples.size, max(1, int(block_size)), start_sample=int(start_sample)):
-        offset = block.start_sample - int(start_sample)
-        output[:, offset : offset + block.frames] = renderer.process(
-            samples[offset : offset + block.frames], block
-        )
+def render_hrtf(mono, spec, sample_rate_hz, *, block_size=4096, start_sample=0):
+    from ..dsp.blocks import RenderContext, iter_blocks
+    source = np.asarray(mono, dtype=np.float64)
+    renderer = HRTFRenderer(spec); renderer.prepare(RenderContext(sample_rate_hz, block_size))
+    output = np.empty((2, len(source)), dtype=np.float32); position = 0
+    for block in iter_blocks(len(source), block_size, start_sample):
+        output[:, position:position+block.frames] = renderer.process(source[position:position+block.frames], block)
+        position += block.frames
     return output
