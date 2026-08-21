@@ -157,3 +157,137 @@ def render_hrtf(mono, spec, sample_rate_hz, *, block_size=4096, start_sample=0):
         output[:, position:position+block.frames] = renderer.process(source[position:position+block.frames], block)
         position += block.frames
     return output
+
+
+# ---------------------------------------------------------------------------
+# Direction-indexed renderer
+# ---------------------------------------------------------------------------
+#
+# The signal chain this implements, in order:
+#
+#     mono source -> trajectory and HRTF selection -> left/right HRIR
+#     convolution -> headphone correction -> limiter and output gain
+#
+# The limiter and output gain are the caller's stage; everything up to and
+# including headphone correction happens here.
+#
+# Direction is chosen once per block, not once per sample. When it changes, the
+# outgoing filter keeps convolving alongside the incoming one for the length of
+# the fade, so both convolution histories survive the switch and only their
+# mixture changes. That is what keeps a moving source from clicking without
+# ever averaging raw HRIR samples.
+
+from dataclasses import dataclass as _dataclass
+
+from ..dsp.convolution import CrossfadingConvolver, DEFAULT_FILTER_CROSSFADE_MS
+from ..hrtf.headphones import HeadphoneCorrection, apply_correction
+from ..hrtf.interpolation import HrtfInterpolator, INTERPOLATION_MODES, NEAREST
+
+
+@_dataclass(frozen=True)
+class SpatialHrtfSpec:
+    """Every policy the direction-indexed renderer needs."""
+
+    interpolation: str = NEAREST
+    crossfade_ms: float = DEFAULT_FILTER_CROSSFADE_MS
+    neighbor_count: int = 3
+    harmonic_order: int = 4
+    #: Applied after binaural rendering, never before it.
+    headphone: HeadphoneCorrection | None = None
+
+    def __post_init__(self) -> None:
+        if self.interpolation not in INTERPOLATION_MODES:
+            raise ValueError(
+                f"unsupported interpolation {self.interpolation!r}; "
+                f"expected one of {INTERPOLATION_MODES}"
+            )
+        if not np.isfinite(self.crossfade_ms) or self.crossfade_ms < 0:
+            raise ValueError("crossfade_ms must be finite and non-negative")
+
+
+class SpatialHrtfRenderer:
+    """Block-rate direction selection with per-ear crossfading convolution."""
+
+    def __init__(self, dataset, sample_rate_hz: float, spec: SpatialHrtfSpec | None = None) -> None:
+        self.spec = spec or SpatialHrtfSpec()
+        self.dataset = dataset
+        self.sample_rate_hz = float(sample_rate_hz)
+        self.interpolator = HrtfInterpolator(
+            dataset,
+            mode=self.spec.interpolation,
+            neighbor_count=self.spec.neighbor_count,
+            harmonic_order=self.spec.harmonic_order,
+        )
+        self._convolvers = [
+            CrossfadingConvolver(
+                crossfade_ms=self.spec.crossfade_ms, sample_rate_hz=self.sample_rate_hz
+            )
+            for _ in range(2)
+        ]
+        self._last_selection: object = None
+        self.reset()
+
+    def reset(self) -> None:
+        for convolver in self._convolvers:
+            convolver.reset()
+        self._last_selection = None
+
+    @property
+    def last_selection(self):
+        """The most recent :class:`HrirSelection`, for the inspector."""
+
+        return self._last_selection
+
+    def process_block(self, mono_block, direction):
+        """Render one block from a single direction.
+
+        Returns channel-major ``(2, frames)``. Headphone correction is applied
+        by :func:`render_spatial_hrtf` over the whole render rather than per
+        block, so a block-boundary does not truncate the correction filter.
+        """
+
+        samples = np.asarray(mono_block, dtype=np.float64).reshape(-1)
+        selection = self.interpolator.at(direction)
+        self._last_selection = selection
+        for ear, convolver in enumerate(self._convolvers):
+            convolver.set_filter(selection.hrirs[ear])
+        return np.vstack([convolver.process(samples) for convolver in self._convolvers])
+
+
+def render_spatial_hrtf(
+    mono,
+    directions,
+    dataset,
+    sample_rate_hz: float,
+    *,
+    block_size: int = 512,
+    spec: SpatialHrtfSpec | None = None,
+):
+    """Render a mono source along a direction trajectory.
+
+    ``directions`` is either one ``(3,)`` direction held for the whole render
+    or a ``(frames, 3)`` array; in the latter case the direction at each
+    block's first sample selects that block's filter.
+    """
+
+    source = np.asarray(mono, dtype=np.float64).reshape(-1)
+    spec = spec or SpatialHrtfSpec()
+    renderer = SpatialHrtfRenderer(dataset, sample_rate_hz, spec)
+
+    path = np.asarray(directions, dtype=np.float64)
+    if path.ndim == 1:
+        path = np.broadcast_to(path.reshape(1, 3), (source.size, 3))
+    if path.shape != (source.size, 3):
+        raise ValueError(
+            f"directions must be (3,) or ({source.size}, 3), got shape {path.shape}"
+        )
+
+    block_size = max(1, int(block_size))
+    output = np.zeros((2, source.size), dtype=np.float64)
+    for start in range(0, source.size, block_size):
+        stop = min(source.size, start + block_size)
+        output[:, start:stop] = renderer.process_block(source[start:stop], path[start])
+
+    if spec.headphone is not None and spec.headphone.is_active:
+        output = apply_correction(output, spec.headphone)
+    return output
