@@ -43,6 +43,12 @@ and a clean-environment import in a subprocess with those modules blocked.
 | `render/hybrid.py` | Physical HRTF, then creative cue transform, then output - kept separate | 5 |
 | `render/anchor.py` | The optional broadband spatial anchor | 5 |
 | `analysis/hrtf_curves.py` | Impulse, magnitude, phase, group delay, ITD and ILD curves for the HRTF Lab | 5 |
+| `stages.py` | Named stages over the existing step timeline, with bindings by stable id | 6 |
+| `modulation.py` | Modulation matrix with cycle detection, and parameter search | 6 |
+| `cost.py` | Render-cost estimate and the real-time or offline decision | 6 |
+| `dsp/crossover.py` | Linkwitz-Riley band splitting that reconstructs | 6 |
+| `render/routing.py` | Buses, stems, per-band routing, deterministic seeds | 6 |
+| `trajectory/coupling.py` | How one source's path follows another's | 6 |
 
 Phase 4 adds explicit-SOFA loading, validation, coordinate conversion,
 resampling, delay policies, caching, nearest/crossfaded rendering, and aligned
@@ -68,6 +74,23 @@ creative stage and the output stage apart, so a comparison between them differs
 in exactly one thing, and the optional broadband anchor gives a low-frequency
 carrier the high-frequency energy it needs to be localised at all. The anchor
 is off by default at -30 dB and is never enabled silently.
+
+Phase 6 covers scenes with more than one source. Stages are named spans over
+the existing steps rather than a second scheduler - the specification is
+explicit that a competing lane system added too early would fight the step
+model it duplicates - and automation binds to a stable object identifier plus a
+parameter path, never to a display name or a list index. Stage weights, coupled
+paths and resolved bindings are all pure functions of absolute time, so a
+staged multi-source render can be chunked and still match a whole one.
+
+Sources split into bands through Linkwitz-Riley crossovers that reconstruct
+flat, mix through named buses keeping every stem, and may follow one another -
+shared, offset, mirrored, orbiting, repelled, attracted or phase-locked. Seeds
+come from source identity rather than list position, so muting one source
+cannot shift another's random stream. A modulation matrix connects modulators
+to parameters and refuses any route that would close a loop. Because bands
+multiply by sources, `cost.py` states what a scene will cost before it is paid
+and routes an expensive one to an offline render.
 
 SOFA assets may be absolute, project-relative, or resolved through
 `SAM_WORKBENCH_HRTF_DIR`; their hashes are checked when supplied. Static HRTF
