@@ -38,7 +38,9 @@ and a clean-environment import in a subprocess with those modules blocked.
 Phase 4 adds explicit-SOFA loading, validation, coordinate conversion,
 resampling, delay policies, caching, nearest/crossfaded rendering, and aligned
 log-magnitude/delay interpolation under `hrtf/` and `render/hrtf.py`. Install
-`requirements-hrtf.txt` to enable it; non-HRTF modes remain dependency-free.
+the standard `requirements.txt` for SOFA loading. The optional
+`requirements-hrtf.txt` adds standards verification and advanced HRTF tooling;
+non-HRTF modes still do not import those optional packages.
 SOFA assets may be absolute, project-relative, or resolved through
 `SAM_WORKBENCH_HRTF_DIR`; their hashes are checked when supplied. Static HRTF
 voice chunks reconstruct state from the absolute voice origin so Python export
