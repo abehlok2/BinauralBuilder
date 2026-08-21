@@ -1,23 +1,9 @@
-"""Two-dimensional custom path editor.
-
-The interaction model is unchanged: double-click to add points, drag to
-refine, Ctrl to close a loop. What Phase 3 adds is a bridge to the canonical
-metric frame - a live preview of what the drawn pixels mean in metres, and an
-opt-in coordinate-metadata block so a profile can say so on disk.
-
-The metadata is opt-in on purpose. A profile written before it existed still
-loads and renders exactly as it did, and only says where it lives once a user
-commits the migration.
-"""
-
 import math
 from typing import List, Tuple
 
-import numpy as np
 from PyQt5.QtCore import QPointF, Qt
 from PyQt5.QtGui import QPainter, QPainterPath, QPen
 from PyQt5.QtWidgets import (
-    QCheckBox,
     QComboBox,
     QDialog,
     QGraphicsEllipseItem,
@@ -30,14 +16,6 @@ from PyQt5.QtWidgets import (
     QVBoxLayout,
     QSpinBox,
     QDoubleSpinBox,
-)
-
-from src.audio.sam_workbench.trajectory import (
-    LegacyPathTransform,
-    PROFILE_VERSION,
-    profile_schema_version,
-    profile_to_geometry,
-    profile_transform,
 )
 
 
@@ -318,36 +296,6 @@ class CustomPathCreatorDialog(QDialog):
         self.path_kind_combo.currentTextChanged.connect(self.view.set_path_kind)
         main_layout.addWidget(self.view)
 
-        coordinate_row = QHBoxLayout()
-        self.store_metadata_check = QCheckBox("Store coordinate metadata (schema 2)")
-        self.store_metadata_check.setToolTip(
-            "Record what these scene pixels mean in metres. Leave it off to keep the "
-            "profile in its original form; existing profiles render identically either way."
-        )
-        self.store_metadata_check.toggled.connect(self._update_canonical_preview)
-        coordinate_row.addWidget(self.store_metadata_check)
-        coordinate_row.addSpacing(12)
-        coordinate_row.addWidget(QLabel("Scene units per metre:"))
-        self.scene_units_spin = QDoubleSpinBox()
-        self.scene_units_spin.setDecimals(2)
-        self.scene_units_spin.setRange(1.0, 100000.0)
-        self.scene_units_spin.setSingleStep(10.0)
-        self.scene_units_spin.setValue(LegacyPathTransform().scene_units_per_metre)
-        self.scene_units_spin.setToolTip(
-            "The default places this editor's ear markers at the listener's head radius."
-        )
-        self.scene_units_spin.valueChanged.connect(self._update_canonical_preview)
-        coordinate_row.addWidget(self.scene_units_spin)
-        coordinate_row.addStretch(1)
-        main_layout.addLayout(coordinate_row)
-
-        self.canonical_label = QLabel("")
-        self.canonical_label.setWordWrap(True)
-        self.canonical_label.setToolTip(
-            "The path in canonical listener coordinates: +x forward, +y left, metres."
-        )
-        main_layout.addWidget(self.canonical_label)
-
         help_label = QLabel(
             "Double-click to add points. Drag points to refine. Press Delete to remove selected points. "
             "Hold Ctrl to enter endpoint connect mode, then click both endpoints or drag one endpoint onto the other to close a loop."
@@ -366,50 +314,6 @@ class CustomPathCreatorDialog(QDialog):
         main_layout.addLayout(buttons)
 
         self._load_profile()
-        self._update_canonical_preview()
-
-    # --- canonical bridge ---------------------------------------------------
-
-    def coordinate_transform(self) -> LegacyPathTransform:
-        """The scene-to-metres bridge currently declared in the editor."""
-
-        base = profile_transform(self.profile)
-        return LegacyPathTransform(
-            centre_scene=base.centre_scene,
-            axis_convention=base.axis_convention,
-            scene_units_per_metre=float(self.scene_units_spin.value()),
-            normalization_extent=base.normalization_extent,
-            elevation_m=base.elevation_m,
-        )
-
-    def _update_canonical_preview(self) -> None:
-        """Describe the drawn path in metres, live, as the user edits it."""
-
-        geometry = profile_to_geometry(self._raw_profile(), self.coordinate_transform())
-        if geometry is None:
-            self.canonical_label.setText(
-                "Add at least two points to see the path in canonical coordinates."
-            )
-            return
-        points = geometry.evaluate(np.linspace(0.0, 1.0, 256))
-        forward, left = points[0], points[1]
-        radius = np.hypot(forward, left)
-        self.canonical_label.setText(
-            f"Canonical extent: forward {forward.min():+.2f} to {forward.max():+.2f} m, "
-            f"left {left.min():+.2f} to {left.max():+.2f} m  ·  distance "
-            f"{radius.min():.2f}-{radius.max():.2f} m  ·  path length {geometry.length_m():.2f} m"
-        )
-
-    def _raw_profile(self) -> dict:
-        """The profile as drawn, without any coordinate metadata."""
-
-        return {
-            "kind": self.path_kind_combo.currentText(),
-            "closedLoop": self.view.is_closed_loop(),
-            "smoothingPasses": int(self.smoothing_passes.value()),
-            "smoothingRatio": float(self.smoothing_ratio.value()),
-            "points": [[x, y] for x, y in self.view.get_points()],
-        }
 
     def _load_profile(self) -> None:
         kind = str(self.profile.get("kind", "linear"))

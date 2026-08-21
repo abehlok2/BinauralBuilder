@@ -114,8 +114,7 @@ def estimate_itd_seconds(
 ) -> float:
     """Estimate the broadband interaural time difference by cross-correlation.
 
-    Positive means the **left** ear leads, the usual ITD convention: a source
-    on the listener's left gives a positive ITD. The search is bounded to a
+    A positive result means the left channel leads. The search is bounded to a
     physically plausible range so an unrelated correlation peak cannot win.
     """
 
@@ -134,9 +133,7 @@ def estimate_itd_seconds(
     if not np.any(inside):
         return 0.0
     best = int(lags[inside][int(np.argmax(correlation[inside]))])
-    # A left-leading pair correlates at a negative lag, so flip the sign to
-    # report the conventional "left leads is positive" ITD.
-    return -best / float(sample_rate)
+    return best / float(sample_rate)
 
 
 def summarize_cues(
