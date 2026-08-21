@@ -11,9 +11,9 @@ from __future__ import annotations
 import numpy as np
 from numpy.typing import NDArray
 
-from ..controls import ControlBase, as_control
-from ..waveforms import evaluate_waveform
-from .phase import PhaseAccumulator, integrate_phase, phase_from_constant_frequency
+from src.audio.sam_workbench.controls import ControlBase, as_control
+from src.audio.sam_workbench.waveforms import evaluate_waveform
+from src.audio.sam_workbench.dsp.phase import PhaseAccumulator, integrate_phase, phase_from_constant_frequency
 
 __all__ = ["carrier_phase", "render_oscillator"]
 

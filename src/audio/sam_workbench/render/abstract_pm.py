@@ -14,11 +14,11 @@ from typing import Any
 import numpy as np
 from numpy.typing import NDArray
 
-from ..controls import RampControl, as_control, instantaneous_frequency_deviation_hz
-from ..conventions import CHANNEL_COUNT
-from ..dsp.blocks import RenderBlock, RenderContext
-from ..dsp.modulators import ModulatorSpec
-from ..dsp.source import (
+from src.audio.sam_workbench.controls import RampControl, as_control, instantaneous_frequency_deviation_hz
+from src.audio.sam_workbench.conventions import CHANNEL_COUNT
+from src.audio.sam_workbench.dsp.blocks import RenderBlock, RenderContext
+from src.audio.sam_workbench.dsp.modulators import ModulatorSpec
+from src.audio.sam_workbench.dsp.source import (
     EAR_POLARITY_CANONICAL,
     EAR_POLARITY_LEGACY,
     CompiledSource,

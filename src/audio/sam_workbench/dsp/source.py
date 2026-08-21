@@ -23,13 +23,13 @@ from dataclasses import dataclass, field, replace
 import numpy as np
 from numpy.typing import NDArray
 
-from ..controls import ControlBase, as_control
-from ..conventions import AUDIO_DTYPE, CHANNEL_COUNT, CHANNEL_LEFT, CHANNEL_RIGHT
-from ..waveforms import evaluate_waveform
-from .blocks import iter_blocks
-from .modulators import ModulatorSpec, modulation_sum
-from .oscillators import carrier_phase
-from .phase import PhaseAccumulator
+from src.audio.sam_workbench.controls import ControlBase, as_control
+from src.audio.sam_workbench.conventions import AUDIO_DTYPE, CHANNEL_COUNT, CHANNEL_LEFT, CHANNEL_RIGHT
+from src.audio.sam_workbench.waveforms import evaluate_waveform
+from src.audio.sam_workbench.dsp.blocks import iter_blocks
+from src.audio.sam_workbench.dsp.modulators import ModulatorSpec, modulation_sum
+from src.audio.sam_workbench.dsp.oscillators import carrier_phase
+from src.audio.sam_workbench.dsp.phase import PhaseAccumulator
 
 __all__ = [
     "CompiledSource",

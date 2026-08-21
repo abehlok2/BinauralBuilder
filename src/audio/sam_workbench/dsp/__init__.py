@@ -7,8 +7,8 @@ envelopes, mixing, and limiting, and `render` builds renderers on top.
 
 from __future__ import annotations
 
-from .blocks import RenderBlock, RenderContext, iter_blocks
-from .envelopes import (
+from src.audio.sam_workbench.dsp.blocks import RenderBlock, RenderContext, iter_blocks
+from src.audio.sam_workbench.dsp.envelopes import (
     DEFAULT_CROSSFADE_MS,
     apply_fade_in,
     apply_fade_out,
@@ -17,12 +17,12 @@ from .envelopes import (
     linear_fade,
     milliseconds_to_frames,
 )
-from .limiter import LimiterReport, limit_lookahead, safety_clamp, true_peak_estimate_db
-from .mixer import apply_shared_gain, mix_stems, peak_level, shared_normalization_gain
-from .modulators import ModulatorSpec, modulation_sum, render_modulator
-from .oscillators import carrier_phase, render_oscillator
-from .phase import PhaseAccumulator, integrate_phase, phase_from_constant_frequency, wrap_phase
-from .source import (
+from src.audio.sam_workbench.dsp.limiter import LimiterReport, limit_lookahead, safety_clamp, true_peak_estimate_db
+from src.audio.sam_workbench.dsp.mixer import apply_shared_gain, mix_stems, peak_level, shared_normalization_gain
+from src.audio.sam_workbench.dsp.modulators import ModulatorSpec, modulation_sum, render_modulator
+from src.audio.sam_workbench.dsp.oscillators import carrier_phase, render_oscillator
+from src.audio.sam_workbench.dsp.phase import PhaseAccumulator, integrate_phase, phase_from_constant_frequency, wrap_phase
+from src.audio.sam_workbench.dsp.source import (
     EAR_POLARITY_CANONICAL,
     EAR_POLARITY_LEGACY,
     EAR_POLARITY_SAME,

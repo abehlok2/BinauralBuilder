@@ -17,7 +17,7 @@ compatibility adapter that both public synthesis trees delegate to.
 
 from __future__ import annotations
 
-from .conventions import (
+from src.audio.sam_workbench.conventions import (
     AUDIO_DTYPE,
     CHANNEL_LEFT,
     CHANNEL_RIGHT,
@@ -31,8 +31,8 @@ from .conventions import (
     to_channel_major,
     to_frame_major,
 )
-from .compat import Sam2Spec, render_sam2, render_sam2_voice, sam2_spec_from_params
-from .controls import (
+from src.audio.sam_workbench.compat import Sam2Spec, render_sam2, render_sam2_voice, sam2_spec_from_params
+from src.audio.sam_workbench.controls import (
     ConstantControl,
     ControlBase,
     KeyframeControl,
@@ -41,7 +41,7 @@ from .controls import (
     compile_control,
     linear_transition_control,
 )
-from .dsp import (
+from src.audio.sam_workbench.dsp import (
     EAR_POLARITY_CANONICAL,
     EAR_POLARITY_LEGACY,
     EAR_POLARITY_SAME,
@@ -51,9 +51,9 @@ from .dsp import (
     compile_source,
     render_source,
 )
-from .export import build_manifest, export_wav, project_sha256
-from .migrations import migrate_project_dict
-from .model import (
+from src.audio.sam_workbench.export import build_manifest, export_wav, project_sha256
+from src.audio.sam_workbench.migrations import migrate_project_dict
+from src.audio.sam_workbench.model import (
     AudioSettings,
     ListenerSettings,
     OutputSettings,
@@ -67,9 +67,9 @@ from .model import (
     save_project,
     validate_project,
 )
-from .render import AbstractPMRenderer, SceneReport, render_project
-from .validation import ValidationCollector, ValidationIssue
-from .version import PACKAGE_VERSION, SCHEMA_VERSION, SUPPORTED_SCHEMA_VERSIONS
+from src.audio.sam_workbench.render import AbstractPMRenderer, SceneReport, render_project
+from src.audio.sam_workbench.validation import ValidationCollector, ValidationIssue
+from src.audio.sam_workbench.version import PACKAGE_VERSION, SCHEMA_VERSION, SUPPORTED_SCHEMA_VERSIONS
 
 __all__ = [
     "AUDIO_DTYPE",

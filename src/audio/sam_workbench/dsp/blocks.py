@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Iterator
 
-from ..conventions import DEFAULT_OFFLINE_BLOCK_SIZE
+from src.audio.sam_workbench.conventions import DEFAULT_OFFLINE_BLOCK_SIZE
 
 __all__ = ["RenderBlock", "RenderContext", "iter_blocks"]
 

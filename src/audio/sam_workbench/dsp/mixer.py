@@ -10,7 +10,7 @@ from __future__ import annotations
 import numpy as np
 from numpy.typing import NDArray
 
-from ..conventions import CHANNEL_COUNT, db_to_linear
+from src.audio.sam_workbench.conventions import CHANNEL_COUNT, db_to_linear
 
 __all__ = ["mix_stems", "apply_shared_gain", "peak_level", "shared_normalization_gain"]
 

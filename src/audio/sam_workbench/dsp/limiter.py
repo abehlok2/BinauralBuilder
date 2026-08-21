@@ -13,7 +13,7 @@ import numpy as np
 from numpy.typing import NDArray
 from scipy.ndimage import minimum_filter1d
 
-from ..conventions import CHANNEL_COUNT, DEFAULT_LIMITER_CEILING_DBFS, db_to_linear, linear_to_db
+from src.audio.sam_workbench.conventions import CHANNEL_COUNT, DEFAULT_LIMITER_CEILING_DBFS, db_to_linear, linear_to_db
 
 __all__ = ["LimiterReport", "limit_lookahead", "safety_clamp", "true_peak_estimate_db"]
 

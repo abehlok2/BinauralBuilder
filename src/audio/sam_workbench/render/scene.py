@@ -12,17 +12,17 @@ from typing import Any
 import numpy as np
 from numpy.typing import NDArray
 
-from ..conventions import CHANNEL_COUNT, seconds_to_samples
-from ..dsp.limiter import LimiterReport, limit_lookahead, true_peak_estimate_db
-from ..dsp.mixer import apply_shared_gain, mix_stems, peak_level
-from ..dsp.source import (
+from src.audio.sam_workbench.conventions import CHANNEL_COUNT, seconds_to_samples
+from src.audio.sam_workbench.dsp.limiter import LimiterReport, limit_lookahead, true_peak_estimate_db
+from src.audio.sam_workbench.dsp.mixer import apply_shared_gain, mix_stems, peak_level
+from src.audio.sam_workbench.dsp.source import (
     EAR_POLARITY_CANONICAL,
     CompiledSource,
     compile_source,
     render_source,
 )
-from ..validation import ValidationIssue
-from .abstract_pm import RENDERER_NAME, peak_frequency_deviation_hz
+from src.audio.sam_workbench.validation import ValidationIssue
+from src.audio.sam_workbench.render.abstract_pm import RENDERER_NAME, peak_frequency_deviation_hz
 
 __all__ = ["SceneReport", "SourceRender", "render_project", "render_warnings"]
 
