@@ -38,16 +38,16 @@ from typing import Any, Mapping
 import numpy as np
 from numpy.typing import NDArray
 
-from .conventions import AUDIO_DTYPE, seconds_to_samples, to_frame_major
-from .dsp.source import (
+from src.audio.sam_workbench.conventions import AUDIO_DTYPE, seconds_to_samples, to_frame_major
+from src.audio.sam_workbench.dsp.source import (
     EAR_POLARITY_CANONICAL,
     EAR_POLARITY_LEGACY,
     EAR_POLARITY_SAME,
     CompiledSource,
     render_source,
 )
-from .trajectory.legacy_paths import SAM2_DEFAULT_SHAPES_BY_TYPE, resolve_sam2_shape
-from .waveforms import TWO_PI
+from src.audio.sam_workbench.trajectory.legacy_paths import SAM2_DEFAULT_SHAPES_BY_TYPE, resolve_sam2_shape
+from src.audio.sam_workbench.waveforms import TWO_PI
 
 __all__ = [
     "SAM2_PARAMETER_DEFAULTS",

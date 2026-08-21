@@ -37,7 +37,7 @@ from typing import Final, Iterable, Sequence
 import numpy as np
 from numpy.typing import NDArray
 
-from .version import SCHEMA_VERSION
+from src.audio.sam_workbench.version import SCHEMA_VERSION
 
 # --- audio -----------------------------------------------------------------
 

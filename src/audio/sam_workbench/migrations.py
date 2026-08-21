@@ -9,8 +9,8 @@ from __future__ import annotations
 
 from typing import Any, Callable, Mapping
 
-from .validation import ProjectValidationError, ValidationIssue
-from .version import SCHEMA_VERSION
+from src.audio.sam_workbench.validation import ProjectValidationError, ValidationIssue
+from src.audio.sam_workbench.version import SCHEMA_VERSION
 
 __all__ = [
     "UNVERSIONED",
