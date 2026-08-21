@@ -35,6 +35,7 @@ from .dsp.source import EAR_POLARITY_CANONICAL, EAR_POLARITY_LEGACY, EAR_POLARIT
 from .validation import ValidationIssue
 
 __all__ = [
+    "WORKBENCH_OWNED_KEYS",
     "BASIC",
     "ADVANCED",
     "EXPERT",
@@ -441,6 +442,19 @@ def transition_names(is_transition: bool = True) -> tuple[str, ...]:
     )
 
 
+#: Keys the workbench itself owns: not SAM synthesis parameters, but not
+#: unknown extension data either. Kept in one place so the validator and the
+#: compatibility view cannot drift apart about what counts as "not edited here".
+WORKBENCH_OWNED_KEYS = frozenset({
+    "samSchemaVersion",
+    "rendererMode",
+    "hrtfAsset",
+    "hrtfAssetHash",
+    "hrtfOptions",
+    "hrtfSubject",
+})
+
+
 def validate_sam2_params(
     params: Mapping[str, Any], *, is_transition: bool = False, sample_rate_hz: int | None = None
 ) -> tuple[ValidationIssue, ...]:
@@ -455,7 +469,7 @@ def validate_sam2_params(
     issues: list[ValidationIssue] = []
     known = set(transition_names(is_transition)) | set(transition_names(not is_transition))
     known |= {alias for entry in SAM2_FIELDS for alias in entry.aliases}
-    known |= {"samSchemaVersion", "rendererMode", "hrtfAsset", "hrtfAssetHash", "hrtfOptions"}
+    known |= WORKBENCH_OWNED_KEYS
 
     for key, value in params.items():
         entry = field_for(key)

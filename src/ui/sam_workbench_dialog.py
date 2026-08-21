@@ -35,6 +35,7 @@ from src.audio.sam_workbench.parameters import (
     BASIC,
     EXPERT,
     SAM2_FIELDS,
+    WORKBENCH_OWNED_KEYS,
     fields_for_mode,
     validate_sam2_params,
 )
@@ -140,7 +141,11 @@ class SamWorkbenchDialog(QDialog):
         self.renderer_combo = QComboBox()
         self.renderer_combo.addItem("Abstract phase modulation", "abstract_pm")
         self.renderer_combo.addItem("Geometric binaural", "geometric")
-        self.renderer_combo.setToolTip("Select the algorithm used by both Python preview and export.")
+        self.renderer_combo.addItem("HRTF (explicit SOFA)", "hrtf")
+        self.renderer_combo.setToolTip(
+            "Select the algorithm used by both Python preview and export.\n"
+            "HRTF needs a SOFA asset chosen in the HRTF Lab tab."
+        )
         self.renderer_combo.currentIndexChanged.connect(self._on_params_changed)
         header.addWidget(self.renderer_combo)
         header.addStretch(1)
@@ -175,6 +180,8 @@ class SamWorkbenchDialog(QDialog):
         self.parameter_panel.paramsChanged.connect(self._on_params_changed)
         self.path_panel.paramsChanged.connect(self._on_params_changed)
         self.hrtf_panel.paramsChanged.connect(self._on_params_changed)
+        # Auditions play through the dialog's output rather than a second one.
+        self.hrtf_panel.auditionRendered.connect(self._on_audition_rendered)
 
         preview_row = QHBoxLayout()
         preview_row.addWidget(QLabel("Preview length:"))
@@ -298,6 +305,9 @@ class SamWorkbenchDialog(QDialog):
     def _refresh_compatibility(self, issues: tuple[Any, ...]) -> None:
         params = self.collect_params()
         known = {name for entry in SAM2_FIELDS for name in (entry.name, *entry.aliases, entry.start_name, entry.end_name)}
+        # The workbench edits its own keys through the tabs above, so listing
+        # them as "preserved but not edited here" would be untrue.
+        known |= WORKBENCH_OWNED_KEYS
         preserved = {key: value for key, value in params.items() if key not in known}
         lines = [
             f"Renderer: {params.get('rendererMode', 'abstract_pm')} via canonical SAM core (src.audio.sam_workbench), sample rate {self._sample_rate} Hz",
@@ -347,6 +357,9 @@ class SamWorkbenchDialog(QDialog):
     def _on_preview_rendered(self, result: PreviewResult) -> None:
         self._last_preview = result
         self.analysis_panel.set_audio(result.audio, result.sample_rate_hz)
+        # The HRTF Lab can audition a subject on this voice's own material,
+        # not just on test signals.
+        self.hrtf_panel.set_session_material(result.audio, result.sample_rate_hz)
         self.play_button.setEnabled(AUDIO_OUTPUT_AVAILABLE)
         message = (
             f"Preview ready: {result.duration_s:.2f} s, peak {result.peak:.3f}"
@@ -379,13 +392,29 @@ class SamWorkbenchDialog(QDialog):
         if self._last_preview is None:
             self.status_label.setText("Render a preview first.")
             return
+        self.play_audio(self._last_preview.audio, self._last_preview.sample_rate_hz)
+
+    @pyqtSlot(object)
+    def _on_audition_rendered(self, payload) -> None:
+        """Play an HRTF Lab audition through the same output as the preview."""
+
+        audio, sample_rate = payload
+        self.play_audio(audio, int(sample_rate))
+
+    def play_audio(self, audio, sample_rate_hz: int) -> None:
+        """Play channel-major stereo audio through the one QtMultimedia path.
+
+        Both the preview and the HRTF Lab's auditions come through here rather
+        than each opening their own output device.
+        """
+
         if not AUDIO_OUTPUT_AVAILABLE:
             self.status_label.setText("Audio output is unavailable in this environment.")
             return
 
         audio_format = QAudioFormat()
         audio_format.setCodec("audio/pcm")
-        audio_format.setSampleRate(self._last_preview.sample_rate_hz)
+        audio_format.setSampleRate(int(sample_rate_hz))
         audio_format.setSampleSize(16)
         audio_format.setChannelCount(2)
         audio_format.setByteOrder(QAudioFormat.LittleEndian)
@@ -400,13 +429,13 @@ class SamWorkbenchDialog(QDialog):
 
         self.stop_preview()
         self._audio_buffer = QBuffer(self)
-        self._audio_buffer.setData(to_pcm16_bytes(self._last_preview.audio))
+        self._audio_buffer.setData(to_pcm16_bytes(audio))
         self._audio_buffer.open(QIODevice.ReadOnly)
         self._audio_output = QAudioOutput(audio_format, self)
         self._audio_output.stateChanged.connect(self._on_audio_state_changed)
         self._audio_output.start(self._audio_buffer)
         self.stop_button.setEnabled(True)
-        self.status_label.setText("Playing preview…")
+        self.status_label.setText("Playing…")
 
     def stop_preview(self) -> None:
         if self._audio_output is not None:

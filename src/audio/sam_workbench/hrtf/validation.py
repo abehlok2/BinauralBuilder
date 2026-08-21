@@ -77,3 +77,45 @@ def validate_dataset(dataset) -> tuple[HRTFValidationIssue, ...]:
             "warning",
         ))
     return tuple(issues)
+
+
+# ---------------------------------------------------------------------------
+# Quality status
+# ---------------------------------------------------------------------------
+
+#: The three states the workbench reports for a selected asset.
+NORMAL = "normal"
+SUSPECTED_OUTLIER = "suspected outlier"
+MISSING_RESOURCES = "missing resources"
+
+QUALITY_STATES = (NORMAL, SUSPECTED_OUTLIER, MISSING_RESOURCES)
+
+
+def quality_from_issues(
+    issues: "tuple[HRTFValidationIssue, ...]", *, resources_available: bool = True
+) -> str:
+    """Classify an asset for the workbench's quality indicator.
+
+    Missing resources outrank everything: an asset that could not be read at
+    all is not an outlier, it is absent, and telling the two apart is the
+    difference between "check this subject" and "install the dataset".
+    """
+
+    if not resources_available:
+        return MISSING_RESOURCES
+    if any(issue.severity == "error" for issue in issues):
+        return MISSING_RESOURCES
+    if issues:
+        return SUSPECTED_OUTLIER
+    return NORMAL
+
+
+__all__ = [
+    "HRTFValidationIssue",
+    "MISSING_RESOURCES",
+    "NORMAL",
+    "QUALITY_STATES",
+    "SUSPECTED_OUTLIER",
+    "quality_from_issues",
+    "validate_dataset",
+]
