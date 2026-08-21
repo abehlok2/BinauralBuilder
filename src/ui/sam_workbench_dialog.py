@@ -35,6 +35,7 @@ from src.audio.sam_workbench.parameters import (
     BASIC,
     EXPERT,
     SAM2_FIELDS,
+    fields_for_mode,
     validate_sam2_params,
 )
 from src.audio.sam_workbench.preview import PreviewResult, render_voice_preview, to_pcm16_bytes
@@ -89,7 +90,7 @@ class PreviewWorker(QObject):
 
 
 class SamWorkbenchDialog(QDialog):
-    """Basic SAM, Advanced, Analysis, and Compatibility tabs over one voice copy."""
+    """SAM parameters, analysis, and compatibility views over one voice copy."""
 
     voiceApplied = pyqtSignal(dict)
 
@@ -138,28 +139,30 @@ class SamWorkbenchDialog(QDialog):
         header.addWidget(QLabel("Disclosure:"))
         self.mode_combo = QComboBox()
         self.mode_combo.addItems([BASIC, ADVANCED, EXPERT])
+        self.mode_combo.setCurrentText(EXPERT)
         self.mode_combo.setToolTip("How much of the parameter space to show.")
         self.mode_combo.currentTextChanged.connect(self._on_mode_changed)
         header.addWidget(self.mode_combo)
         layout.addLayout(header)
 
         self.tabs = QTabWidget()
-        self.basic_panel = SamBasicPanel(mode=BASIC, is_transition=self._is_transition)
-        self.advanced_panel = SamBasicPanel(mode=EXPERT, is_transition=self._is_transition)
+        self.parameter_panel = SamBasicPanel(mode=EXPERT, is_transition=self._is_transition)
+        # Compatibility aliases for integrations that previously addressed the
+        # two duplicated panels directly. Both now refer to the same editor.
+        self.basic_panel = self.parameter_panel
+        self.advanced_panel = self.parameter_panel
         self.analysis_panel = SamAnalysisPanel()
         self.path_panel = SamPathPanel()
         self.compatibility_view = QTextEdit()
         self.compatibility_view.setReadOnly(True)
 
-        self.tabs.addTab(self._scrolled(self.basic_panel), "Basic SAM")
-        self.tabs.addTab(self._scrolled(self.advanced_panel), "Advanced")
+        self.tabs.addTab(self._scrolled(self.parameter_panel), "Parameters")
         self.tabs.addTab(self._scrolled(self.path_panel), "Path & Geometry")
         self.tabs.addTab(self.analysis_panel, "Analysis")
         self.tabs.addTab(self.compatibility_view, "Compatibility")
         layout.addWidget(self.tabs, 1)
 
-        for panel in (self.basic_panel, self.advanced_panel):
-            panel.paramsChanged.connect(self._on_params_changed)
+        self.parameter_panel.paramsChanged.connect(self._on_params_changed)
         self.path_panel.paramsChanged.connect(self._on_params_changed)
 
         preview_row = QHBoxLayout()
@@ -206,9 +209,9 @@ class SamWorkbenchDialog(QDialog):
         return area
 
     def _on_mode_changed(self, mode: str) -> None:
-        """Basic hides the advanced tab; advanced and expert reveal it."""
+        """Apply progressive disclosure within the shared parameter view."""
 
-        self.tabs.setTabEnabled(1, mode in (ADVANCED, EXPERT))
+        self.parameter_panel.set_mode(mode)
 
     # --- parameters ---------------------------------------------------------
 
@@ -218,8 +221,7 @@ class SamWorkbenchDialog(QDialog):
 
     def _load_params(self) -> None:
         params = self.params
-        self.basic_panel.set_params(params)
-        self.advanced_panel.set_params(params)
+        self.parameter_panel.set_params(params)
         self.path_panel.set_params(params)
         self._on_mode_changed(self.mode_combo.currentText())
 
@@ -232,9 +234,13 @@ class SamWorkbenchDialog(QDialog):
         """
 
         merged = dict(self._original.get("params", {}))
-        merged.update(self.basic_panel.params())
-        if self.mode_combo.currentText() in (ADVANCED, EXPERT):
-            merged.update(self.advanced_panel.params())
+        panel_params = self.parameter_panel.params()
+        visible_names = {
+            name
+            for entry in fields_for_mode(self.mode_combo.currentText())
+            for name in entry.names_for(self._is_transition)
+        }
+        merged.update({name: value for name, value in panel_params.items() if name in visible_names})
         merged.update(self.path_panel.params())
         return merged
 
@@ -260,8 +266,7 @@ class SamWorkbenchDialog(QDialog):
 
     def _revalidate(self) -> None:
         issues = self.issues()
-        self.basic_panel.show_issues(issues)
-        self.advanced_panel.show_issues(issues)
+        self.parameter_panel.show_issues(issues)
 
         errors = [issue for issue in issues if issue.severity == "error"]
         self.buttons.button(QDialogButtonBox.Ok).setEnabled(not errors)
