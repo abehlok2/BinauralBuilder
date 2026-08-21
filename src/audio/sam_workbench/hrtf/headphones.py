@@ -55,24 +55,22 @@ DEFAULT_REGULARIZATION_DB = -20.0
 DEFAULT_BAND_HZ = (20.0, 20_000.0)
 
 
-def inverse_filter_from_response(
+def _inverse_magnitude(
     response: NDArray[np.floating],
     sample_rate_hz: float,
     *,
-    taps: int = 512,
-    regularization_db: float = DEFAULT_REGULARIZATION_DB,
-    band_hz: tuple[float, float] = DEFAULT_BAND_HZ,
-) -> NDArray[np.float64]:
-    """Build a correction filter that flattens a measured headphone response.
+    taps: int,
+    regularization_db: float,
+    band_hz: tuple[float, float],
+) -> NDArray[np.float64] | None:
+    """The regularized, band-limited inverse magnitude, before any scaling.
 
-    The inverse is regularized and band-limited: a headphone measurement has
-    deep, narrow notches whose exact inverse would be a huge, ringing boost of
-    something the transducer cannot reproduce anyway.
+    Returns ``None`` for an empty measurement, which has no inverse.
     """
 
     measured = np.asarray(response, dtype=np.float64).reshape(-1)
     if measured.size == 0:
-        return np.array([1.0])
+        return None
 
     length = int(2 ** np.ceil(np.log2(max(measured.size, taps) * 2)))
     spectrum = np.fft.rfft(measured, length)
@@ -80,9 +78,48 @@ def inverse_filter_from_response(
 
     ceiling = np.max(magnitude) if np.max(magnitude) > 0 else 1.0
     floor = ceiling * (10.0 ** (regularization_db / 20.0))
-    inverse = 1.0 / np.maximum(magnitude, floor)
-    inverse /= np.max(inverse) if np.max(inverse) > 0 else 1.0
+    return 1.0 / np.maximum(magnitude, floor)
 
+
+def inverse_filter_from_response(
+    response: NDArray[np.floating],
+    sample_rate_hz: float,
+    *,
+    taps: int = 512,
+    regularization_db: float = DEFAULT_REGULARIZATION_DB,
+    band_hz: tuple[float, float] = DEFAULT_BAND_HZ,
+    normalization: float | None = None,
+) -> NDArray[np.float64]:
+    """Build a correction filter that flattens a measured headphone response.
+
+    The inverse is regularized and band-limited: a headphone measurement has
+    deep, narrow notches whose exact inverse would be a huge, ringing boost of
+    something the transducer cannot reproduce anyway.
+
+    ``normalization`` divides the inverse before it is realised as a filter.
+    Pass the same value for both ears of a pair - see
+    :meth:`HeadphoneCorrection.from_measurement` - so the correction keeps the
+    interaural level relationship the HRTF established. Left to ``None`` the
+    response is scaled by its own peak, which is only correct for a single
+    channel considered on its own.
+    """
+
+    inverse = _inverse_magnitude(
+        response,
+        sample_rate_hz,
+        taps=taps,
+        regularization_db=regularization_db,
+        band_hz=band_hz,
+    )
+    if inverse is None:
+        return np.array([1.0])
+
+    if normalization is None:
+        normalization = np.max(inverse)
+    scale = float(normalization) if normalization > 0 else 1.0
+    inverse = inverse / scale
+
+    length = 2 * (inverse.size - 1)
     frequencies = np.fft.rfftfreq(length, d=1.0 / float(sample_rate_hz))
     low, high = band_hz
     inside = (frequencies >= low) & (frequencies <= min(high, 0.5 * sample_rate_hz))
@@ -146,14 +183,36 @@ class HeadphoneCorrection:
         source_path: str = "",
         taps: int = 512,
     ) -> "HeadphoneCorrection":
-        """Invert a measured ``(2, taps)`` headphone response, per ear."""
+        """Invert a measured ``(2, taps)`` headphone response.
+
+        Each ear gets its own filter - headphones are not symmetric - but both
+        are scaled by one shared factor. Normalizing each ear to its own peak
+        would flatten the level difference between them, discarding part of
+        the interaural relationship the HRTF just established.
+        """
 
         measured = np.asarray(responses, dtype=np.float64)
         if measured.ndim != 2 or measured.shape[0] != CHANNEL_COUNT:
             raise ValueError(f"expected ({CHANNEL_COUNT}, taps) responses, got shape {measured.shape}")
+
+        inverses = [
+            _inverse_magnitude(
+                measured[ear],
+                sample_rate_hz,
+                taps=taps,
+                regularization_db=DEFAULT_REGULARIZATION_DB,
+                band_hz=DEFAULT_BAND_HZ,
+            )
+            for ear in range(CHANNEL_COUNT)
+        ]
+        peaks = [float(np.max(inverse)) for inverse in inverses if inverse is not None]
+        shared = max(peaks) if peaks else 1.0
+
         filters = np.vstack(
             [
-                inverse_filter_from_response(measured[ear], sample_rate_hz, taps=taps)
+                inverse_filter_from_response(
+                    measured[ear], sample_rate_hz, taps=taps, normalization=shared
+                )
                 for ear in range(CHANNEL_COUNT)
             ]
         )

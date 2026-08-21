@@ -231,6 +231,7 @@ class SpatialHrtfRenderer:
         for convolver in self._convolvers:
             convolver.reset()
         self._last_selection = None
+        self._primed = False
 
     @property
     def last_selection(self):
@@ -250,7 +251,14 @@ class SpatialHrtfRenderer:
         selection = self.interpolator.at(direction)
         self._last_selection = selection
         for ear, convolver in enumerate(self._convolvers):
-            convolver.set_filter(selection.hrirs[ear])
+            if self._primed:
+                convolver.set_filter(selection.hrirs[ear])
+            else:
+                # The first block installs its filter outright. Fading into it
+                # would fade up from the convolver's default passthrough, so a
+                # render would open with the dry mono source bleeding through.
+                convolver.reset(selection.hrirs[ear])
+        self._primed = True
         return np.vstack([convolver.process(samples) for convolver in self._convolvers])
 
 
