@@ -419,6 +419,22 @@ def test_preview_audio_matches_the_export_renderer(workbench):
     np.testing.assert_allclose(preview.audio, exported, rtol=0, atol=1e-6)
 
 
+def test_preview_can_audition_an_automated_absolute_time(qtbot, workbench):
+    dialog, _ = workbench
+    dialog.preview_start_seconds.setValue(0.5)
+    dialog.preview_seconds.setValue(0.1)
+    dialog.start_preview()
+    qtbot.waitUntil(lambda: dialog.last_preview is not None, timeout=15_000)
+
+    expected = render_voice_preview(
+        dialog.voice_data(),
+        sample_rate_hz=SAMPLE_RATE,
+        start_time_s=0.5,
+        duration_s=0.1,
+    )
+    np.testing.assert_array_equal(dialog.last_preview.audio, expected.audio)
+
+
 def test_worker_reports_failure_without_crashing(qtbot, monkeypatch):
     """A render error becomes a message, not a traceback in a dead thread."""
 

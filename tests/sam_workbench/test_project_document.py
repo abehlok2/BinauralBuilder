@@ -113,7 +113,7 @@ def test_populated_project_round_trips_through_json():
                 start_s=1.5,
                 duration_s=30.0,
                 amplitude_linear=0.4,
-                signal=SignalSpec(carrier_frequency_hz=432.0, phase_rad=0.25),
+                signal=SignalSpec(carrier_frequency_hz=432.0, phase_rad=0.25, waveform="triangle"),
                 sam=SamModulationSpec(rate_hz=6.0, depth_rad=1.4, phase_rad=-0.5),
                 tags=("lead",),
             ),
@@ -175,6 +175,13 @@ def test_carrier_above_nyquist_is_reported():
     with pytest.raises(ProjectValidationError) as caught:
         project.validate()
     assert any(issue.path == "sources[0].signal.carrier_frequency_hz" for issue in caught.value.issues)
+
+
+def test_unknown_carrier_waveform_is_reported():
+    project = Project(sources=(Source(signal=SignalSpec(waveform="unsafe")),))
+    with pytest.raises(ProjectValidationError) as caught:
+        project.validate()
+    assert any(issue.path == "sources[0].signal.waveform" for issue in caught.value.issues)
 
 
 def test_malformed_documents_report_paths_rather_than_crashing():
