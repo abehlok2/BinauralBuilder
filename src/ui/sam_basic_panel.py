@@ -239,6 +239,7 @@ class SamBasicPanel(QWidget):
         self._mode = mode
         self._is_transition = bool(is_transition)
         self._controls: dict[str, _ControlBase] = {}
+        self._groups: dict[str, QGroupBox] = {}
 
         self._coalesce = QTimer(self)
         self._coalesce.setSingleShot(True)
@@ -251,6 +252,7 @@ class SamBasicPanel(QWidget):
             if not entries:
                 continue
             box = QGroupBox(title)
+            self._groups[group_mode] = box
             form = QFormLayout(box)
             for entry in entries:
                 for name in entry.names_for(self._is_transition):
@@ -263,6 +265,14 @@ class SamBasicPanel(QWidget):
                     form.addRow(label, control)
             layout.addWidget(box)
         layout.addStretch(1)
+
+    def set_mode(self, mode: str) -> None:
+        """Show parameter groups at or below ``mode`` in this one panel."""
+
+        visible_modes = {entry.mode for entry in fields_for_mode(mode)}
+        for group_mode, group in self._groups.items():
+            group.setVisible(group_mode in visible_modes)
+        self._mode = mode
 
     # --- construction -------------------------------------------------------
 

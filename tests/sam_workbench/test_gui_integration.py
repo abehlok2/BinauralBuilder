@@ -312,13 +312,29 @@ def test_validation_messages_are_bound_to_their_fields(qtbot):
     assert dialog.buttons.button(dialog.buttons.Ok).isEnabled()
 
 
-def test_disclosure_mode_reveals_the_advanced_tab(workbench):
+def test_disclosure_mode_filters_the_shared_parameter_tab(workbench):
     dialog, _ = workbench
+    labels = [dialog.tabs.tabText(index) for index in range(dialog.tabs.count())]
+    assert labels.count("Parameters") == 1
+    assert "Basic SAM" not in labels
+    assert "Advanced" not in labels
+
     dialog.mode_combo.setCurrentText(BASIC)
-    assert not dialog.tabs.isTabEnabled(1)
+    assert dialog.parameter_panel._groups[ADVANCED].isHidden()
+    assert dialog.parameter_panel._groups[EXPERT].isHidden()
+
+    dialog.mode_combo.setCurrentText(ADVANCED)
+    assert not dialog.parameter_panel._groups[ADVANCED].isHidden()
+    assert dialog.parameter_panel._groups[EXPERT].isHidden()
+
     dialog.mode_combo.setCurrentText(EXPERT)
-    assert dialog.tabs.isTabEnabled(1)
-    assert "earPolarity" in dialog.advanced_panel.parameter_names
+    assert not dialog.parameter_panel._groups[EXPERT].isHidden()
+    assert "earPolarity" in dialog.parameter_panel.parameter_names
+
+
+def test_disclosure_defaults_to_expert(workbench):
+    dialog, _ = workbench
+    assert dialog.mode_combo.currentText() == EXPERT
 
 
 def test_phase_three_path_tools_are_part_of_the_standard_workbench(workbench):
