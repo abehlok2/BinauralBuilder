@@ -225,6 +225,16 @@ def test_workbench_loads_the_voice_into_its_controls(workbench):
     assert dialog.basic_panel.control_for("pathType").value() == "open"
 
 
+def test_workbench_can_be_resized_vertically(workbench):
+    dialog, _ = workbench
+    original_width = dialog.width()
+    dialog.resize(original_width, 500)
+    assert dialog.height() == 500
+    dialog.resize(original_width, 850)
+    assert dialog.height() == 850
+    assert dialog.isSizeGripEnabled()
+
+
 def test_workbench_parameter_tooltips_explain_output_and_metadata(workbench):
     """The label and editor both expose the same informative hover card."""
 
@@ -247,7 +257,9 @@ def test_transition_tooltip_explains_which_endpoint_is_changed(qtbot):
 
     panel = SamBasicPanel(mode=BASIC, is_transition=True)
     qtbot.addWidget(panel)
-    assert "beginning of the transition" in panel.control_for("startCarrierFreq").toolTip()
+    assert (
+        "beginning of the transition" in panel.control_for("startCarrierFreq").toolTip()
+    )
     assert "end of the transition" in panel.control_for("endCarrierFreq").toolTip()
 
 
@@ -372,6 +384,24 @@ def test_visual_path_designer_writes_canonical_and_compatibility_models(qtbot):
     assert profile["schemaVersion"] == 2
     assert profile["coordinateSpace"] == "normalized_listener_2d"
     assert profile["sceneUnitsPerMetre"] == pytest.approx(100.0)
+
+
+def test_visual_path_designer_supports_mathematical_geometry(qtbot):
+    from src.audio.sam_workbench.trajectory import trajectory_from_dict
+    from src.ui.sam_path_editor_dialog import SamPathEditorDialog
+
+    dialog = SamPathEditorDialog()
+    qtbot.addWidget(dialog)
+    dialog.primitive_combo.setCurrentText("mathematical")
+    dialog.expression_edits["x"].setText("1 + 0.5*cos(6*pi*u)")
+    dialog.expression_edits["y"].setText("sin(4*pi*u)")
+    dialog.expression_edits["z"].setText("0.25*sin(2*pi*u)")
+    dialog._mathematical_changed()
+
+    spec = dialog.trajectory_spec()
+    assert spec["geometry"]["type"] == "mathematical"
+    assert spec["geometry"]["expressions"]["z"] == "0.25*sin(2*pi*u)"
+    assert trajectory_from_dict(spec).evaluate(np.linspace(0, 1, 5)).shape == (5, 3)
 
 
 def test_visual_designer_does_not_import_legacy_editors():

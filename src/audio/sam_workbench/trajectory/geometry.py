@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import ast
 from dataclasses import dataclass
+import math
 from typing import Protocol, Sequence, runtime_checkable
 
 import numpy as np
@@ -13,6 +15,87 @@ from .transforms import Transform
 
 Point3 = tuple[float, float, float]
 
+_EXPRESSION_FUNCTIONS = {
+    "sin": np.sin,
+    "cos": np.cos,
+    "tan": np.tan,
+    "sqrt": np.sqrt,
+    "abs": np.abs,
+    "exp": np.exp,
+    "log": np.log,
+    "sinh": np.sinh,
+    "cosh": np.cosh,
+    "tanh": np.tanh,
+}
+_EXPRESSION_CONSTANTS = {"pi": math.pi, "e": math.e}
+
+
+def _evaluate_expression(
+    expression: str, u: NDArray[np.float64]
+) -> NDArray[np.float64]:
+    """Evaluate a small, deterministic mathematical path expression.
+
+    This intentionally accepts arithmetic and a documented set of NumPy
+    functions only.  In particular it never uses Python ``eval``.
+    """
+
+    def visit(node):
+        if isinstance(node, ast.Expression):
+            return visit(node.body)
+        if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
+            return float(node.value)
+        if isinstance(node, ast.Name):
+            if node.id == "u":
+                return u
+            if node.id in _EXPRESSION_CONSTANTS:
+                return _EXPRESSION_CONSTANTS[node.id]
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
+            value = visit(node.operand)
+            return value if isinstance(node.op, ast.UAdd) else -value
+        if isinstance(node, ast.BinOp) and isinstance(
+            node.op, (ast.Add, ast.Sub, ast.Mult, ast.Div, ast.Pow, ast.Mod)
+        ):
+            left, right = visit(node.left), visit(node.right)
+            operations = {
+                ast.Add: np.add,
+                ast.Sub: np.subtract,
+                ast.Mult: np.multiply,
+                ast.Div: np.divide,
+                ast.Pow: np.power,
+                ast.Mod: np.mod,
+            }
+            return operations[type(node.op)](left, right)
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id in _EXPRESSION_FUNCTIONS
+            and len(node.args) == 1
+            and not node.keywords
+        ):
+            return _EXPRESSION_FUNCTIONS[node.func.id](visit(node.args[0]))
+        raise ValueError(
+            f"unsupported path expression element: {ast.dump(node, include_attributes=False)}"
+        )
+
+    try:
+        result = np.asarray(visit(ast.parse(expression, mode="eval")), dtype=np.float64)
+        result = np.broadcast_to(result, u.shape)
+    except (
+        SyntaxError,
+        TypeError,
+        ValueError,
+        ZeroDivisionError,
+        FloatingPointError,
+    ) as error:
+        raise ValueError(
+            f"invalid mathematical path expression {expression!r}: {error}"
+        ) from error
+    if not np.all(np.isfinite(result)):
+        raise ValueError(
+            f"mathematical path expression {expression!r} produced non-finite values"
+        )
+    return result
+
 
 def _parameter(value: ArrayLike) -> NDArray[np.float64]:
     result = np.asarray(value, dtype=np.float64)
@@ -21,7 +104,9 @@ def _parameter(value: ArrayLike) -> NDArray[np.float64]:
     return result
 
 
-def _points(value: Sequence[Sequence[float]], *, minimum: int = 1) -> NDArray[np.float64]:
+def _points(
+    value: Sequence[Sequence[float]], *, minimum: int = 1
+) -> NDArray[np.float64]:
     result = np.asarray(value, dtype=np.float64)
     if result.ndim != 2 or result.shape[1] != 3 or len(result) < minimum:
         raise ValueError(f"expected at least {minimum} three-dimensional points")
@@ -54,7 +139,9 @@ class Arc:
     center_m: Point3 = (0.0, 0.0, 0.0)
 
     def evaluate(self, u: ArrayLike) -> NDArray[np.float64]:
-        angle = np.radians(self.start_deg + (self.end_deg - self.start_deg) * _parameter(u))
+        angle = np.radians(
+            self.start_deg + (self.end_deg - self.start_deg) * _parameter(u)
+        )
         return _polar_points(angle, np.full_like(angle, self.radius_m), self.center_m)
 
 
@@ -96,7 +183,9 @@ class Spiral:
 
     def evaluate(self, u: ArrayLike) -> NDArray[np.float64]:
         progress = _parameter(u)
-        radius = self.start_radius_m + (self.end_radius_m - self.start_radius_m) * progress
+        radius = (
+            self.start_radius_m + (self.end_radius_m - self.start_radius_m) * progress
+        )
         return _polar_points(2.0 * np.pi * self.turns * progress, radius, self.center_m)
 
 
@@ -109,7 +198,11 @@ class Helix:
 
     def evaluate(self, u: ArrayLike) -> NDArray[np.float64]:
         progress = _parameter(u)
-        result = _polar_points(2.0 * np.pi * self.turns * progress, np.full_like(progress, self.radius_m), self.center_m)
+        result = _polar_points(
+            2.0 * np.pi * self.turns * progress,
+            np.full_like(progress, self.radius_m),
+            self.center_m,
+        )
         result[..., 2] += self.height_m * (progress - 0.5)
         return result
 
@@ -130,6 +223,29 @@ class Lissajous:
 
 
 @dataclass(frozen=True)
+class Mathematical:
+    """Parametric geometry defined by safe expressions of ``u`` in [0, 1]."""
+
+    x_expression: str = "cos(2*pi*u)"
+    y_expression: str = "sin(2*pi*u)"
+    z_expression: str = "0"
+
+    def evaluate(self, u: ArrayLike) -> NDArray[np.float64]:
+        progress = _parameter(u)
+        return np.stack(
+            tuple(
+                _evaluate_expression(expression, progress)
+                for expression in (
+                    self.x_expression,
+                    self.y_expression,
+                    self.z_expression,
+                )
+            ),
+            axis=-1,
+        )
+
+
+@dataclass(frozen=True)
 class Bezier:
     control_points_m: tuple[Point3, ...]
 
@@ -138,12 +254,14 @@ class Bezier:
 
     def evaluate(self, u: ArrayLike) -> NDArray[np.float64]:
         progress = np.clip(_parameter(u), 0.0, 1.0)
-        values = np.broadcast_to(_points(self.control_points_m), progress.shape + (len(self.control_points_m), 3)).copy()
+        values = np.broadcast_to(
+            _points(self.control_points_m),
+            progress.shape + (len(self.control_points_m), 3),
+        ).copy()
         for remaining in range(len(self.control_points_m) - 1, 0, -1):
-            values[..., :remaining, :] = (
-                (1.0 - progress[..., None, None]) * values[..., :remaining, :]
-                + progress[..., None, None] * values[..., 1 : remaining + 1, :]
-            )
+            values[..., :remaining, :] = (1.0 - progress[..., None, None]) * values[
+                ..., :remaining, :
+            ] + progress[..., None, None] * values[..., 1 : remaining + 1, :]
         return values[..., 0, :]
 
 
@@ -215,15 +333,23 @@ class TransformedGeometry:
         return self.transform.apply(self.geometry.evaluate(u))
 
 
-def _polar_points(angle: NDArray[np.float64], radius: NDArray[np.float64], center: Point3) -> NDArray[np.float64]:
+def _polar_points(
+    angle: NDArray[np.float64], radius: NDArray[np.float64], center: Point3
+) -> NDArray[np.float64]:
     origin = np.asarray(center, dtype=np.float64)
     return np.stack(
-        (origin[0] + radius * np.cos(angle), origin[1] + radius * np.sin(angle), np.full_like(angle, origin[2])),
+        (
+            origin[0] + radius * np.cos(angle),
+            origin[1] + radius * np.sin(angle),
+            np.full_like(angle, origin[2]),
+        ),
         axis=-1,
     )
 
 
-def sample_polyline_arclength(points: Sequence[Sequence[float]], u: ArrayLike, closed: bool = False) -> NDArray[np.float64]:
+def sample_polyline_arclength(
+    points: Sequence[Sequence[float]], u: ArrayLike, closed: bool = False
+) -> NDArray[np.float64]:
     """Sample a polyline by physical distance rather than vertex index."""
 
     vertices = _points(points, minimum=2)
@@ -241,7 +367,9 @@ def sample_polyline_arclength(points: Sequence[Sequence[float]], u: ArrayLike, c
     return result
 
 
-def arclength_table(geometry: Geometry, samples: int = 2049) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+def arclength_table(
+    geometry: Geometry, samples: int = 2049
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
     """Build a monotonic ``(parameter, cumulative metres)`` lookup table."""
 
     if samples < 2:
@@ -250,11 +378,15 @@ def arclength_table(geometry: Geometry, samples: int = 2049) -> tuple[NDArray[np
     positions = np.asarray(geometry.evaluate(parameter), dtype=np.float64)
     if positions.shape != (samples, 3):
         raise ValueError(f"geometry returned invalid shape {positions.shape}")
-    cumulative = np.concatenate(([0.0], np.cumsum(np.linalg.norm(np.diff(positions, axis=0), axis=1))))
+    cumulative = np.concatenate(
+        ([0.0], np.cumsum(np.linalg.norm(np.diff(positions, axis=0), axis=1)))
+    )
     return parameter, cumulative
 
 
-def evaluate_arclength(geometry: Geometry, progress: ArrayLike, samples: int = 2049) -> NDArray[np.float64]:
+def evaluate_arclength(
+    geometry: Geometry, progress: ArrayLike, samples: int = 2049
+) -> NDArray[np.float64]:
     """Evaluate arbitrary geometry at normalized physical distance."""
 
     parameter, cumulative = arclength_table(geometry, samples)

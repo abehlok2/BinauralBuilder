@@ -4,7 +4,17 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
-from .geometry import Polyline, Spline
+from .geometry import (
+    Bezier,
+    Circle,
+    Ellipse,
+    Helix,
+    Lissajous,
+    Mathematical,
+    Polyline,
+    Spiral,
+    Spline,
+)
 from .traversal import CanonicalTrajectory, Traversal
 
 
@@ -18,13 +28,35 @@ def trajectory_from_dict(payload: Mapping[str, Any]) -> CanonicalTrajectory:
     geometry_data = payload.get("geometry")
     if not isinstance(geometry_data, Mapping):
         raise ValueError("canonicalTrajectory.geometry must be an object")
-    points = tuple(tuple(float(axis) for axis in point) for point in geometry_data.get("controlPointsM", ()))
+    points = tuple(
+        tuple(float(axis) for axis in point)
+        for point in geometry_data.get("controlPointsM", ())
+    )
     kind = str(geometry_data.get("type", "polyline")).lower()
     closed = bool(geometry_data.get("closed", False))
-    if kind == "spline":
+    if kind == "mathematical":
+        expressions = geometry_data.get("expressions", {})
+        geometry = Mathematical(
+            str(expressions.get("x", "cos(2*pi*u)")),
+            str(expressions.get("y", "sin(2*pi*u)")),
+            str(expressions.get("z", "0")),
+        )
+    elif kind == "spline":
         geometry = Spline(points, closed)
+    elif kind == "bezier":
+        geometry = Bezier(points)
     elif kind == "polyline":
         geometry = Polyline(points, closed)
+    elif kind == "circle":
+        geometry = Circle()
+    elif kind == "ellipse":
+        geometry = Ellipse()
+    elif kind == "spiral":
+        geometry = Spiral()
+    elif kind == "helix":
+        geometry = Helix()
+    elif kind == "lissajous":
+        geometry = Lissajous()
     else:
         raise ValueError(f"unsupported serialized geometry type: {kind!r}")
 
