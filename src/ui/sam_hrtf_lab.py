@@ -1,11 +1,13 @@
-"""The HRTF Lab: choose a subject, audition it, and rank what you heard.
+"""The HRTF Lab: choose a subject, audition it, modify it, and rank what you heard.
 
-Three tabs, matching the order the work actually happens in:
+Four tabs, matching the order the work actually happens in:
 
 * **Asset** - point at a SONICOM library, narrow it down to one SOFA file, and
   set the policies that decide how it is rendered.
 * **Audition** - listen to that subject at the directions and on the material
   that reveal whether it suits *you*, and score it.
+* **Modify** - scale the cues the measurement encodes, see what that does, and
+  write the result out as a derived asset.
 * **Ranking** - see which subjects your own scores favour, per profile.
 
 The dataset is large and licensed, so nothing here bundles or downloads it.
@@ -50,6 +52,7 @@ from PyQt5.QtWidgets import (
 )
 
 from .hrtf_coverage_plot import CoveragePlotWidget
+from .sam_hrtf_modify_panel import SamHrtfModifyPanel
 
 __all__ = ["SamHrtfLab", "AuditionWorker", "application_data_root"]
 
@@ -259,6 +262,10 @@ class SamHrtfLab(QWidget):
         self.tabs = QTabWidget()
         self.tabs.addTab(self._build_asset_tab(), "Asset")
         self.tabs.addTab(self._build_audition_tab(), "Audition")
+        self.modify_panel = SamHrtfModifyPanel()
+        self.modify_panel.paramsChanged.connect(self._on_modify_changed)
+        self.modify_panel.auditionRendered.connect(self.auditionRendered)
+        self.tabs.addTab(self.modify_panel, "Modify")
         self.tabs.addTab(self._build_ranking_tab(), "Ranking")
         layout.addWidget(self.tabs, 1)
 
@@ -734,6 +741,7 @@ class SamHrtfLab(QWidget):
             dataset = load_sofa(path, delay_policy=self.delay_combo.currentData())
         except Exception as error:
             self._dataset_cache = None
+            self.modify_panel.set_dataset(None)
             self._set_quality("missing resources")
             self.coverage_plot.clear("This asset could not be read.")
             self.report_view.setPlainText(
@@ -743,6 +751,7 @@ class SamHrtfLab(QWidget):
             return
 
         self._dataset_cache = dataset
+        self.modify_panel.set_dataset(dataset)
         self._params["hrtfAssetHash"] = dataset.content_hash
         issues = validate_dataset(dataset)
         self._set_quality(quality_from_issues(issues))
@@ -992,6 +1001,8 @@ class SamHrtfLab(QWidget):
                 str(headphone_asset) if headphone_asset else "No correction file selected"
             )
 
+            self.modify_panel.set_params(self._params)
+
             subject = self._params.get("hrtfSubject")
             if subject:
                 index = self.subject_combo.findText(str(subject), Qt.MatchStartsWith)
@@ -1036,6 +1047,9 @@ class SamHrtfLab(QWidget):
         if root:
             options["libraryRoot"] = root
 
+        # The modify panel owns the cue and anchor sub-objects.
+        options.update(self.modify_panel.params().get("hrtfOptions", {}))
+
         result: dict[str, Any] = {"hrtfOptions": options}
         if self._params.get("hrtfAsset"):
             result["hrtfAsset"] = self._params["hrtfAsset"]
@@ -1045,6 +1059,10 @@ class SamHrtfLab(QWidget):
         if subject:
             result["hrtfSubject"] = subject
         return result
+
+    def _on_modify_changed(self, _params) -> None:
+        if not self._loading:
+            self.paramsChanged.emit(self.params())
 
     def _on_control_changed(self, *_args) -> None:
         if self._loading:

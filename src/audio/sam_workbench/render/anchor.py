@@ -88,6 +88,33 @@ class AnchorSpec:
 
         return float(db_to_linear(self.level_db)) if self.enabled else 0.0
 
+    @classmethod
+    def from_mapping(cls, data: object) -> "AnchorSpec":
+        """Rebuild from stored options, ignoring keys this build does not know."""
+
+        values = dict(data or {})  # type: ignore[arg-type]
+        known: dict[str, object] = {}
+        if "enabled" in values:
+            known["enabled"] = bool(values["enabled"])
+        if "sourceType" in values:
+            known["source_type"] = str(values["sourceType"])
+        if "levelDb" in values:
+            known["level_db"] = float(values["levelDb"])
+        if "bandHz" in values:
+            band = values["bandHz"]
+            known["band_hz"] = (float(band[0]), float(band[1]))
+        if "coherence" in values:
+            known["coherence"] = float(values["coherence"])
+        if "pathMode" in values:
+            known["path_mode"] = str(values["pathMode"])
+        if "pathOffsetDeg" in values:
+            known["path_offset_deg"] = float(values["pathOffsetDeg"])
+        if "fadeMs" in values:
+            known["fade_ms"] = float(values["fadeMs"])
+        if "seed" in values:
+            known["seed"] = int(values["seed"])
+        return cls(**known)  # type: ignore[arg-type]
+
     def describe(self) -> dict[str, object]:
         return {
             "enabled": bool(self.enabled),

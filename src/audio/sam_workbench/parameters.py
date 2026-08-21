@@ -25,6 +25,8 @@ unaffected.
 
 from __future__ import annotations
 
+import math
+
 import copy
 from dataclasses import dataclass
 from typing import Any, Mapping
@@ -522,13 +524,79 @@ def validate_sam2_params(
         issues.append(ValidationIssue("rendererMode", "must be abstract_pm, geometric, hrtf, or hybrid"))
     if renderer_mode in ("hrtf", "hybrid") and not params.get("hrtfAsset"):
         issues.append(ValidationIssue("hrtfAsset", "an explicit SOFA asset is required for this renderer"))
-    if renderer_mode == "hybrid":
-        issues.append(ValidationIssue(
-            "rendererMode", "hybrid rendering is a Phase 5 feature and is not available yet"
-        ))
     options = params.get("hrtfOptions", {})
     if options is not None and not isinstance(options, dict):
         issues.append(ValidationIssue("hrtfOptions", "must be a versioned object"))
-    elif isinstance(options, dict) and int(options.get("schemaVersion", 1)) != 1:
-        issues.append(ValidationIssue("hrtfOptions.schemaVersion", "unsupported HRTF options schema version"))
+    elif isinstance(options, dict):
+        if int(options.get("schemaVersion", 1)) != 1:
+            issues.append(ValidationIssue("hrtfOptions.schemaVersion", "unsupported HRTF options schema version"))
+        issues.extend(_validate_cue_options(options))
     return tuple(issues)
+
+
+def _validate_cue_options(options: Mapping[str, Any]) -> list[ValidationIssue]:
+    """Check the cue transform and spatial anchor a project asks for.
+
+    Out-of-range cue scales are reported as warnings rather than errors: the
+    expert ranges are interaction limits, not physical laws, and a project that
+    deliberately went past one must still open.
+    """
+
+    from .hrtf.modification import CUE_PARAMETERS, EXPERT_RANGES
+    from .render.anchor import ANCHOR_PATH_MODES, ANCHOR_SOURCE_TYPES
+
+    found: list[ValidationIssue] = []
+
+    cue = options.get("cue")
+    if cue is not None and not isinstance(cue, dict):
+        found.append(ValidationIssue("hrtfOptions.cue", "must be an object of cue scales"))
+    elif isinstance(cue, dict):
+        for name in CUE_PARAMETERS:
+            if name not in cue:
+                continue
+            try:
+                value = float(cue[name])
+            except (TypeError, ValueError):
+                found.append(ValidationIssue(f"hrtfOptions.cue.{name}", "must be a number"))
+                continue
+            if not math.isfinite(value):
+                found.append(ValidationIssue(f"hrtfOptions.cue.{name}", "must be finite"))
+                continue
+            if name == "coherence" and not 0.0 <= value <= 1.0:
+                # A hard bound, not a soft range: coherence outside [0, 1] has
+                # no meaning, so it is an error and needs no range warning too.
+                found.append(ValidationIssue(
+                    "hrtfOptions.cue.coherence", "must lie between 0 and 1"
+                ))
+                continue
+            low, high = EXPERT_RANGES[name]
+            if not low <= value <= high:
+                found.append(ValidationIssue(
+                    f"hrtfOptions.cue.{name}",
+                    f"is outside the expert range {low} to {high}",
+                    "warning",
+                ))
+
+    anchor = options.get("anchor")
+    if anchor is not None and not isinstance(anchor, dict):
+        found.append(ValidationIssue("hrtfOptions.anchor", "must be an object"))
+    elif isinstance(anchor, dict):
+        source_type = anchor.get("sourceType")
+        if source_type is not None and source_type not in ANCHOR_SOURCE_TYPES:
+            found.append(ValidationIssue(
+                "hrtfOptions.anchor.sourceType",
+                f"must be one of {', '.join(ANCHOR_SOURCE_TYPES)}",
+            ))
+        path_mode = anchor.get("pathMode")
+        if path_mode is not None and path_mode not in ANCHOR_PATH_MODES:
+            found.append(ValidationIssue(
+                "hrtfOptions.anchor.pathMode",
+                f"must be one of {', '.join(ANCHOR_PATH_MODES)}",
+            ))
+        if anchor.get("enabled") and float(anchor.get("levelDb", -30.0)) > 0.0:
+            found.append(ValidationIssue(
+                "hrtfOptions.anchor.levelDb",
+                "the anchor is meant to support the source, not overtake it",
+                "warning",
+            ))
+    return found

@@ -70,6 +70,31 @@ class HybridSpec:
 
         return replace(self, cue=CueTransform(), anchor=replace(self.anchor, enabled=False))
 
+    @classmethod
+    def from_options(
+        cls, options: Any, *, headphone: HeadphoneCorrection | None = None
+    ) -> "HybridSpec":
+        """Rebuild from a project's ``hrtfOptions``.
+
+        Unknown keys are ignored rather than rejected: a project written by a
+        newer build must still open, and the workbench preserves what it does
+        not understand rather than dropping it.
+        """
+
+        values = dict(options or {})
+        known: dict[str, Any] = {}
+        if "interpolation" in values:
+            known["interpolation"] = str(values["interpolation"])
+        if "crossfadeMs" in values:
+            known["crossfade_ms"] = float(values["crossfadeMs"])
+        if "outputGainDb" in values:
+            known["output_gain_db"] = float(values["outputGainDb"])
+        known["cue"] = CueTransform.from_mapping(values.get("cue") or {})
+        known["anchor"] = AnchorSpec.from_mapping(values.get("anchor") or {})
+        if headphone is not None:
+            known["headphone"] = headphone
+        return cls(**known)
+
     def describe(self) -> dict[str, Any]:
         return {
             "interpolation": self.interpolation,
