@@ -2,7 +2,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-h5py = pytest.importorskip("h5py")
+import h5py
 
 from src.audio.sam_workbench.compat import render_sam2_voice
 from src.audio.sam_workbench.hrtf import DelayPolicy, load_sofa
@@ -18,6 +18,10 @@ def test_sofa_load_validate_resample_and_hash():
     assert dataset.sample_rate_hz == 48_000
     assert len(dataset.content_hash) == 64
     assert dataset.metadata_report()["delay_policy"] == "bake_delay_into_ir"
+
+def test_standard_requirements_include_sofa_reader():
+    requirements = (Path(__file__).parents[2] / "requirements.txt").read_text()
+    assert any(line.strip().lower().startswith("h5py") for line in requirements.splitlines())
 
 def test_nonzero_data_delay_is_baked_or_preserved(tmp_path):
     path = tmp_path / "delayed.sofa"

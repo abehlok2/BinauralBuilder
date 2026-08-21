@@ -479,7 +479,12 @@ def render_sam2_voice(
     )
     start_sample = 0 if is_transition else seconds_to_samples(initial_offset, sample_rate)
     renderer_mode = str(voice_params.get("rendererMode", "abstract_pm")).lower()
-    if renderer_mode == "geometric":
+    if renderer_mode == "hrtf":
+        audio = _render_hrtf_voice(
+            voice_params, frames, sample_rate, start_sample=start_sample,
+            block_size=block_size,
+        )
+    elif renderer_mode == "geometric":
         audio = _render_geometric_voice(
             spec, voice_params, frames, sample_rate, start_sample=start_sample,
             block_size=block_size,
@@ -489,6 +494,64 @@ def render_sam2_voice(
     else:
         raise ValueError(f"rendererMode {renderer_mode!r} is not available in this build")
     return to_frame_major(audio).astype(AUDIO_DTYPE, copy=False)
+
+
+def _render_hrtf_voice(
+    params: Mapping[str, Any],
+    frames: int,
+    sample_rate: float,
+    *,
+    start_sample: int,
+    block_size: int | None,
+) -> NDArray[np.float64]:
+    """Translate the versioned voice envelope into the explicit-SOFA renderer."""
+
+    asset = params.get("hrtfAsset")
+    if not asset:
+        raise ValueError("rendererMode 'hrtf' requires an explicit hrtfAsset SOFA path")
+    options = dict(params.get("hrtfOptions") or {})
+    if int(options.get("schemaVersion", 1)) != 1:
+        raise ValueError("unsupported hrtfOptions schemaVersion")
+    from .render.hrtf import HRTFRendererSpec, render_hrtf
+
+    carrier = float(params.get("carrierFreq", 440.0))
+    amplitude = float(params.get("amp", 0.7))
+    rate = float(params.get("modFreq", 4.0))
+    width = float(params.get("arcWidthDeg", 90.0))
+    direction = float(params.get("directionOffsetDeg", 0.0))
+    radius = float(options.get("distanceM", 1.0))
+
+    def trajectory(times):
+        azimuth = direction + 0.5 * width * np.sin(TWO_PI * rate * np.asarray(times))
+        radians = np.radians(azimuth)
+        elevation = np.radians(float(options.get("elevationDeg", 0.0)))
+        return np.column_stack((
+            radius * np.cos(elevation) * np.cos(radians),
+            radius * np.cos(elevation) * np.sin(radians),
+            np.full_like(radians, radius * np.sin(elevation)),
+        ))
+
+    renderer_spec = HRTFRendererSpec(
+        sofa_path=asset,
+        trajectory=trajectory,
+        interpolation=str(options.get("interpolation", "nearest")),
+        delay_policy=str(options.get("delayPolicy", "bake_delay_into_ir")),
+        crossfade_ms=float(options.get("crossfadeMs", 10.0)),
+        control_interval_samples=int(options.get("controlIntervalSamples", 128)),
+        expected_sha256=params.get("hrtfAssetHash"),
+        project_directory=options.get("projectDirectory"),
+    )
+    # Reconstruct the convolution and crossfade history from the voice origin,
+    # since the legacy synth boundary cannot return checkpointed renderer state.
+    discard = int(start_sample)
+    render_frames = frames + discard
+    samples = np.arange(render_frames, dtype=np.float64)
+    mono = amplitude * np.sin(TWO_PI * carrier * samples / float(sample_rate))
+    rendered = render_hrtf(
+        mono, renderer_spec, int(sample_rate), block_size=block_size or 4096,
+        start_sample=0,
+    )
+    return rendered[:, discard:discard + frames].astype(np.float64, copy=False)
 
 
 def _render_geometric_voice(

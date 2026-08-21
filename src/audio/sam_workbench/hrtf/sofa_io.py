@@ -109,7 +109,8 @@ def _read_hdf5(path: Path):
         import h5py
     except ImportError as error:
         raise SofaDependencyError(
-            "SOFA support requires the optional HRTF dependencies; install requirements-hrtf.txt"
+            "SOFA loading requires h5py. Reinstall the application's standard "
+            "dependencies with `python -m pip install -r requirements.txt`."
         ) from error
     with h5py.File(path, "r") as handle:
         def data(*names):
