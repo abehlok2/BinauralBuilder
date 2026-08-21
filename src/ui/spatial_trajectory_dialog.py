@@ -157,7 +157,11 @@ class SpatialTrajectoryDialog(QDialog):
     def __init__(self, parent=None, segments=None):
         super().__init__(parent)
         self.setWindowTitle("Spatial Trajectory")
-        self.segments = copy.deepcopy(segments) if segments else []
+        self._source_payload = copy.deepcopy(segments)
+        if isinstance(segments, dict):
+            self.segments = copy.deepcopy(segments.get("segments", []))
+        else:
+            self.segments = copy.deepcopy(segments) if segments else []
         self._setup_ui()
         self._refresh_list()
 
@@ -177,6 +181,16 @@ class SpatialTrajectoryDialog(QDialog):
         btn_row.addWidget(edit_btn)
         btn_row.addWidget(remove_btn)
         layout.addLayout(btn_row)
+
+        self.canonical_metadata_check = QCheckBox(
+            "Accept canonical coordinates (+x forward, +y left, +z up; metres)"
+        )
+        self.canonical_metadata_check.setToolTip(
+            "Opt in to adding coordinate metadata. The original segment dictionaries are not changed."
+        )
+        if isinstance(self._source_payload, dict) and self._source_payload.get("coordinateMetadata"):
+            self.canonical_metadata_check.setChecked(True)
+        layout.addWidget(self.canonical_metadata_check)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self.accept)
@@ -232,4 +246,23 @@ class SpatialTrajectoryDialog(QDialog):
         self._refresh_list()
 
     def get_segments(self):
-        return self.segments
+        return copy.deepcopy(self.segments)
+
+    def get_payload(self):
+        """Return the actual dialog payload without implicitly migrating it."""
+
+        segments = self.get_segments()
+        if not self.canonical_metadata_check.isChecked():
+            return segments
+        return {
+            "schemaVersion": 1,
+            "segments": segments,
+            "coordinateMetadata": {
+                "frame": "listener",
+                "units": "metres",
+                "xAxis": "forward",
+                "yAxis": "left",
+                "zAxis": "up",
+                "azimuthPositive": "left",
+            },
+        }

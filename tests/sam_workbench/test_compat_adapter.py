@@ -7,6 +7,7 @@ and the consolidation of the two public synthesis trees onto one implementation.
 from __future__ import annotations
 
 import math
+import copy
 
 import numpy as np
 import pytest
@@ -20,6 +21,27 @@ from src.audio.sam_workbench.compat import (
     render_sam2_voice,
     sam2_spec_from_params,
 )
+
+
+def test_geometric_dispatch_consumes_canonical_trajectory_and_seek_has_preroll():
+    params = {
+        "rendererMode": "geometric",
+        "carrierFreq": 330.0,
+        "amp": 0.3,
+        "maximumDistanceM": 3.0,
+        "canonicalTrajectory": {
+            "geometry": {"type": "polyline", "controlPointsM": [[1, -0.5, 0], [1, 0.5, 0]]},
+            "traversal": {"durationS": 1.0, "mode": "ping_pong"},
+            "arcLength": True,
+        },
+    }
+    sample_rate = 8_000
+    whole = render_sam2_voice(1.0, sample_rate, params=params, block_size=127)
+    sought = render_sam2_voice(0.25, sample_rate, params=params, initial_offset=0.5, block_size=91)
+    assert np.allclose(sought, whole[4000:6000], atol=2e-7)
+    changed = copy.deepcopy(params)
+    changed["canonicalTrajectory"]["geometry"]["controlPointsM"] = [[2, -0.5, 0], [2, 0.5, 0]]
+    assert not np.allclose(render_sam2_voice(1.0, sample_rate, params=changed), whole)
 from src.audio.sam_workbench.conventions import to_channel_major, to_frame_major
 from src.audio.sam_workbench.dsp import (
     EAR_POLARITY_CANONICAL,

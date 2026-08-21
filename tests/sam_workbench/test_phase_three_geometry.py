@@ -84,6 +84,7 @@ def test_discontinuous_trajectory_crossfade_moves_between_adjacent_steps():
         Line((0.0, 0.0, 0.0), (1.0, 0.0, 0.0)),
         Traversal(duration_s=1.0, mode="discontinuous", steps=4, crossfade_s=0.1),
         arc_length=False,
+        coordinate_smoothing=True,
     )
     positions = trajectory.evaluate(np.array([0.15, 0.225, 0.249]))
     assert positions[0, 0] == 0.0
@@ -139,3 +140,23 @@ def test_keyframed_and_stochastic_traversals_are_absolute_time_deterministic():
     whole = stochastic.progress(times)
     blocked = np.concatenate([stochastic.progress(times[:37]), stochastic.progress(times[37:])])
     assert np.array_equal(whole, blocked)
+
+
+def test_discontinuous_geometric_crossfade_spatializes_two_audio_branches():
+    sample_rate = 8_000
+    trajectory = CanonicalTrajectory(
+        Line((0.3, -1.0, 0.0), (2.0, 1.0, 0.0)),
+        Traversal(duration_s=1.0, mode="discontinuous", steps=2, crossfade_s=0.2),
+        arc_length=False,
+    )
+    renderer = GeometricBinauralRenderer(GeometricSpec(trajectory, distance_law="none"))
+    renderer.prepare(RenderContext(sample_rate, 256))
+    source = np.sin(2 * np.pi * 440 * np.arange(2048) / sample_rate)
+    audio = renderer.process(source, RenderBlock(0, len(source)))
+    # Coordinates remain stepped; audio is finite and both delayed branches
+    # contribute during the fade before the half-cycle jump.
+    assert np.allclose(trajectory.evaluate([0.45, 0.49])[:, 1], -1.0)
+    assert np.isfinite(audio).all()
+    old, new, old_gain, new_gain = trajectory.audio_branches(np.array([0.45, 0.49]))
+    assert not np.allclose(old, new)
+    assert np.all((old_gain > 0) & (new_gain > 0))

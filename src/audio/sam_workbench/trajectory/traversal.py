@@ -190,6 +190,7 @@ class CanonicalTrajectory:
     traversal: Traversal = Traversal()
     arc_length: bool = True
     arclength_samples: int = 2049
+    coordinate_smoothing: bool = False
 
     def _positions(self, progress: NDArray[np.float64]) -> NDArray[np.float64]:
         if self.arc_length:
@@ -199,7 +200,12 @@ class CanonicalTrajectory:
         return self.geometry.evaluate(progress)
 
     def evaluate(self, time_s: ArrayLike) -> NDArray[np.float64]:
-        if not isinstance(self.traversal, Traversal) or self.traversal.mode != "discontinuous" or self.traversal.crossfade_s == 0.0:
+        if (
+            not self.coordinate_smoothing
+            or not isinstance(self.traversal, Traversal)
+            or self.traversal.mode != "discontinuous"
+            or self.traversal.crossfade_s == 0.0
+        ):
             return self._positions(self.traversal.progress(time_s))
         blend = self.traversal.discontinuity_blend(time_s)
         previous = self._positions(blend.previous_progress)
@@ -213,6 +219,24 @@ class CanonicalTrajectory:
         ) / total[..., None]
 
     __call__ = evaluate
+
+    def audio_branches(self, time_s: ArrayLike):
+        """Return positions and gains for renderer-level jump crossfading.
+
+        Unlike :meth:`evaluate`, this never blends coordinates.  A geometric
+        renderer can spatialize both positions independently (including their
+        different delays and levels) and then equal-power mix the audio.
+        """
+
+        if not isinstance(self.traversal, Traversal):
+            return None
+        blend = self.traversal.discontinuity_blend(time_s)
+        return (
+            self._positions(blend.previous_progress),
+            self._positions(blend.next_progress),
+            blend.previous_gain,
+            blend.next_gain,
+        )
 
 
 def segment_positions(segments: Sequence[dict], time_s: ArrayLike) -> NDArray[np.float64]:
