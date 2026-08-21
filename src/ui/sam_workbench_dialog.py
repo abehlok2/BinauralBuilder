@@ -39,7 +39,11 @@ from src.audio.sam_workbench.parameters import (
     fields_for_mode,
     validate_sam2_params,
 )
-from src.audio.sam_workbench.preview import PreviewResult, render_voice_preview, to_pcm16_bytes
+from src.audio.sam_workbench.preview import (
+    PreviewResult,
+    render_voice_preview,
+    to_pcm16_bytes,
+)
 
 from .sam_analysis_panel import SamAnalysisPanel
 from .sam_basic_panel import SamBasicPanel
@@ -115,6 +119,8 @@ class SamWorkbenchDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("SAM/HRTF Workbench")
         self.resize(940, 720)
+        self.setMinimumSize(680, 420)
+        self.setSizeGripEnabled(True)
         if parent is not None:
             self.setPalette(parent.palette())
             self.setStyleSheet(parent.styleSheet())
@@ -144,7 +150,9 @@ class SamWorkbenchDialog(QDialog):
         layout = QVBoxLayout(self)
 
         header = QHBoxLayout()
-        header.addWidget(QLabel(f"Voice: {self._voice.get('synth_function_name', 'unknown')}"))
+        header.addWidget(
+            QLabel(f"Voice: {self._voice.get('synth_function_name', 'unknown')}")
+        )
         header.addWidget(QLabel("Renderer:"))
         self.renderer_combo = QComboBox()
         self.renderer_combo.addItem("Abstract phase modulation", "abstract_pm")
@@ -167,7 +175,9 @@ class SamWorkbenchDialog(QDialog):
         layout.addLayout(header)
 
         self.tabs = QTabWidget()
-        self.parameter_panel = SamBasicPanel(mode=EXPERT, is_transition=self._is_transition)
+        self.parameter_panel = SamBasicPanel(
+            mode=EXPERT, is_transition=self._is_transition
+        )
         # Compatibility aliases for integrations that previously addressed the
         # two duplicated panels directly. Both now refer to the same editor.
         self.basic_panel = self.parameter_panel
@@ -256,7 +266,9 @@ class SamWorkbenchDialog(QDialog):
 
     def _load_params(self) -> None:
         params = self.params
-        renderer_index = self.renderer_combo.findData(params.get("rendererMode", "abstract_pm"))
+        renderer_index = self.renderer_combo.findData(
+            params.get("rendererMode", "abstract_pm")
+        )
         self.renderer_combo.setCurrentIndex(max(0, renderer_index))
         self.parameter_panel.set_params(params)
         self.path_panel.set_params(params)
@@ -279,7 +291,13 @@ class SamWorkbenchDialog(QDialog):
             for entry in fields_for_mode(self.mode_combo.currentText())
             for name in entry.names_for(self._is_transition)
         }
-        merged.update({name: value for name, value in panel_params.items() if name in visible_names})
+        merged.update(
+            {
+                name: value
+                for name, value in panel_params.items()
+                if name in visible_names
+            }
+        )
         merged.update(self.path_panel.params())
         merged.update(self.hrtf_panel.params())
         return merged
@@ -313,7 +331,8 @@ class SamWorkbenchDialog(QDialog):
         self.buttons.button(QDialogButtonBox.Apply).setEnabled(not errors)
         if errors:
             self.status_label.setText(
-                "Cannot apply: " + "; ".join(f"{issue.path}: {issue.message}" for issue in errors)
+                "Cannot apply: "
+                + "; ".join(f"{issue.path}: {issue.message}" for issue in errors)
             )
         elif self.status_label.text().startswith("Cannot apply"):
             self.status_label.setText("")
@@ -321,7 +340,11 @@ class SamWorkbenchDialog(QDialog):
 
     def _refresh_compatibility(self, issues: tuple[Any, ...]) -> None:
         params = self.collect_params()
-        known = {name for entry in SAM2_FIELDS for name in (entry.name, *entry.aliases, entry.start_name, entry.end_name)}
+        known = {
+            name
+            for entry in SAM2_FIELDS
+            for name in (entry.name, *entry.aliases, entry.start_name, entry.end_name)
+        }
         # The workbench edits its own keys through the tabs above, so listing
         # them as "preserved but not edited here" would be untrue.
         known |= WORKBENCH_OWNED_KEYS
@@ -335,14 +358,22 @@ class SamWorkbenchDialog(QDialog):
             "Parameters preserved but not edited here:",
         ]
         if params.get("rendererMode") == "hrtf":
-            lines += ["", "Migration preview is opt-in: this explicit-SOFA selection is compared by audition; it never rewrites legacy slab/KEMAR presets."]
+            lines += [
+                "",
+                "Migration preview is opt-in: this explicit-SOFA selection is compared by audition; it never rewrites legacy slab/KEMAR presets.",
+            ]
         if preserved:
-            lines.extend(f"  {key} = {value!r}" for key, value in sorted(preserved.items()))
+            lines.extend(
+                f"  {key} = {value!r}" for key, value in sorted(preserved.items())
+            )
         else:
             lines.append("  (none)")
         if issues:
             lines.extend(["", "Validation:"])
-            lines.extend(f"  [{issue.severity}] {issue.path}: {issue.message}" for issue in issues)
+            lines.extend(
+                f"  [{issue.severity}] {issue.path}: {issue.message}"
+                for issue in issues
+            )
         self.compatibility_view.setPlainText("\n".join(lines))
 
     # --- preview ------------------------------------------------------------
@@ -431,7 +462,9 @@ class SamWorkbenchDialog(QDialog):
         """
 
         if not AUDIO_OUTPUT_AVAILABLE:
-            self.status_label.setText("Audio output is unavailable in this environment.")
+            self.status_label.setText(
+                "Audio output is unavailable in this environment."
+            )
             return
 
         audio_format = QAudioFormat()
@@ -471,7 +504,9 @@ class SamWorkbenchDialog(QDialog):
             self._audio_buffer = None
         self.stop_button.setEnabled(False)
 
-    def _on_audio_state_changed(self, state) -> None:  # pragma: no cover - needs a device
+    def _on_audio_state_changed(
+        self, state
+    ) -> None:  # pragma: no cover - needs a device
         if AUDIO_OUTPUT_AVAILABLE and state in (QAudio.IdleState, QAudio.StoppedState):
             self.stop_preview()
 

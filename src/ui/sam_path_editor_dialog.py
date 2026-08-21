@@ -12,6 +12,7 @@ import copy
 import math
 from typing import Sequence
 
+import numpy as np
 from PyQt5.QtCore import QPointF, Qt, pyqtSignal
 from PyQt5.QtGui import QBrush, QPainter, QPainterPath, QPen
 from PyQt5.QtWidgets import (
@@ -28,6 +29,7 @@ from PyQt5.QtWidgets import (
     QGraphicsView,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QPushButton,
     QSpinBox,
     QTableWidget,
@@ -193,7 +195,18 @@ class SamPathEditorDialog(QDialog):
         header = QHBoxLayout()
         self.primitive_combo = QComboBox()
         self.primitive_combo.addItems(
-            ["polyline", "spline", "line", "circle", "ellipse"]
+            [
+                "polyline",
+                "spline",
+                "bezier",
+                "line",
+                "circle",
+                "ellipse",
+                "spiral",
+                "helix",
+                "lissajous",
+                "mathematical",
+            ]
         )
         self.primitive_combo.currentTextChanged.connect(self.seed_primitive)
         self.closed_check = QCheckBox("Closed path")
@@ -227,6 +240,21 @@ class SamPathEditorDialog(QDialog):
         point_buttons.addWidget(add)
         point_buttons.addWidget(remove)
         side.addLayout(point_buttons)
+
+        self.expression_widget = QWidget()
+        expression_form = QFormLayout(self.expression_widget)
+        self.expression_edits = {}
+        defaults = {"x": "cos(2*pi*u)", "y": "sin(2*pi*u)", "z": "0"}
+        for axis in ("x", "y", "z"):
+            editor = QLineEdit(defaults[axis])
+            editor.setToolTip(
+                "Expression in normalized progress u (0..1). Allowed: +, -, *, /, %, **, "
+                "pi, e, sin, cos, tan, sqrt, abs, exp, log, sinh, cosh, tanh."
+            )
+            editor.editingFinished.connect(self._mathematical_changed)
+            expression_form.addRow(f"{axis}(u)", editor)
+            self.expression_edits[axis] = editor
+        side.addWidget(self.expression_widget)
 
         traversal = QWidget()
         form = QFormLayout(traversal)
@@ -276,6 +304,10 @@ class SamPathEditorDialog(QDialog):
         self.primitive_combo.blockSignals(True)
         self.primitive_combo.setCurrentText(primitive)
         self.primitive_combo.blockSignals(False)
+        expressions = geometry.get("expressions", {})
+        for axis, editor in self.expression_edits.items():
+            if axis in expressions:
+                editor.setText(str(expressions[axis]))
         self.closed_check.setChecked(
             bool(geometry.get("closed", self._profile.get("closedLoop", False)))
         )
@@ -292,6 +324,11 @@ class SamPathEditorDialog(QDialog):
         self._sync_views()
 
     def _sync_views(self):
+        self.expression_widget.setVisible(
+            self.primitive_combo.currentText() == "mathematical"
+        )
+        if self.primitive_combo.currentText() == "mathematical":
+            self._sample_mathematical_path()
         self._updating = True
         self.table.setRowCount(len(self._points))
         for row, point in enumerate(self._points):
@@ -301,13 +338,13 @@ class SamPathEditorDialog(QDialog):
         self.canvas.set_path(
             self._points,
             closed=self.closed_check.isChecked(),
-            smooth=self.primitive_combo.currentText() == "spline",
+            smooth=self.primitive_combo.currentText() in ("spline", "bezier"),
         )
 
     def _shape_changed(self):
         self.canvas.set_shape(
             closed=self.closed_check.isChecked(),
-            smooth=self.primitive_combo.currentText() == "spline",
+            smooth=self.primitive_combo.currentText() in ("spline", "bezier"),
         )
 
     def _node_moved(self, row, point):
@@ -353,21 +390,68 @@ class SamPathEditorDialog(QDialog):
                 for t in [2 * math.pi * i / 12 for i in range(12)]
             ]
             self.closed_check.setChecked(True)
+        elif primitive == "spiral":
+            self._points = [
+                [(0.15 + 0.07 * i) * math.cos(i), (0.15 + 0.07 * i) * math.sin(i), 0]
+                for i in range(24)
+            ]
+            self.closed_check.setChecked(False)
+        elif primitive == "helix":
+            self._points = [
+                [math.cos(t), math.sin(t), t / (2 * math.pi) - 0.5]
+                for t in [4 * math.pi * i / 31 for i in range(32)]
+            ]
+            self.closed_check.setChecked(False)
+        elif primitive == "lissajous":
+            self._points = [
+                [math.cos(3 * t), math.sin(2 * t), 0.25 * math.sin(t)]
+                for t in [2 * math.pi * i / 47 for i in range(48)]
+            ]
+            self.closed_check.setChecked(True)
+        elif primitive == "mathematical":
+            self.closed_check.setChecked(True)
+            self._sample_mathematical_path()
         elif primitive == "spline":
             self._points = [[1, 1, 0], [1.7, 0.4, 0.2], [0.8, -0.5, 0.1], [1.2, -1, 0]]
         else:
             self._points = [[1, 1, 0], [1.5, 0, 0], [1, -1, 0]]
         self._sync_views()
 
+    def _mathematical_changed(self):
+        if self.primitive_combo.currentText() == "mathematical":
+            self._sample_mathematical_path()
+            self._sync_views()
+
+    def _sample_mathematical_path(self):
+        """Sample expressions through the Qt-free, restricted core evaluator."""
+        from src.audio.sam_workbench.trajectory import Mathematical
+
+        geometry = Mathematical(
+            *(self.expression_edits[a].text() for a in ("x", "y", "z"))
+        )
+        try:
+            self._points = geometry.evaluate(np.linspace(0.0, 1.0, 65)).tolist()
+            for editor in self.expression_edits.values():
+                editor.setStyleSheet("")
+        except ValueError as error:
+            for editor in self.expression_edits.values():
+                editor.setStyleSheet("border: 1px solid #c33;")
+                editor.setToolTip(str(error))
+
     def trajectory_spec(self):
+        geometry = {
+            "type": self.primitive_combo.currentText(),
+            "controlPointsM": copy.deepcopy(self._points),
+            "closed": self.closed_check.isChecked(),
+        }
+        if self.primitive_combo.currentText() == "mathematical":
+            geometry["expressions"] = {
+                axis: editor.text() for axis, editor in self.expression_edits.items()
+            }
         return {
             "schemaVersion": 1,
             "coordinateFrame": "listener",
-            "geometry": {
-                "type": self.primitive_combo.currentText(),
-                "controlPointsM": copy.deepcopy(self._points),
-                "closed": self.closed_check.isChecked(),
-            },
+            "geometry": geometry,
             "traversal": {
                 "mode": self.mode_combo.currentText(),
                 "durationS": self.duration_spin.value(),
@@ -392,9 +476,11 @@ class SamPathEditorDialog(QDialog):
                 "sceneUnitsPerMetre": _METRES_TO_SCENE,
                 "axisConvention": "x_right_y_down",
                 "sceneCentre": [0.0, 0.0],
-                "kind": "spline"
-                if self.primitive_combo.currentText() == "spline"
-                else "linear",
+                "kind": (
+                    "spline"
+                    if self.primitive_combo.currentText() in ("spline", "bezier")
+                    else "linear"
+                ),
                 "closedLoop": self.closed_check.isChecked(),
                 "points": scene_points,
             }
