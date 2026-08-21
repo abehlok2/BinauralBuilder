@@ -54,6 +54,8 @@ from src.audio.sam_workbench.waveforms import TWO_PI
 
 __all__ = [
     "SAM2_PARAMETER_DEFAULTS",
+    "NOMINAL_PATH_RADIUS_M",
+    "sam2_trajectory",
     "SAM2_TRANSITION_PARAMETER_DEFAULTS",
     "SAM_SCHEMA_VERSION",
     "Sam2Spec",

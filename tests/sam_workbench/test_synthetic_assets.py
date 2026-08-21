@@ -64,10 +64,16 @@ def test_regenerating_the_fixtures_is_deterministic(tmp_path):
         np.testing.assert_array_equal(fresh["positions_deg"], stored["positions_deg"])
 
 
+def _attribute_text(value) -> str:
+    """SOFA writers store global attributes as bytes or as str."""
+
+    return value.decode("utf-8") if isinstance(value, bytes) else str(value)
+
+
 def test_synthetic_sofa_declares_canonical_receiver_geometry():
     h5py = pytest.importorskip("h5py")
     with h5py.File(SOFA_PATH, "r") as handle:
-        assert handle.attrs["SOFAConventions"] == "SimpleFreeFieldHRIR"
+        assert _attribute_text(handle.attrs["SOFAConventions"]) == "SimpleFreeFieldHRIR"
         assert handle["Data.IR"].shape == (8, 2, 48)
         assert float(handle["Data.SamplingRate"][0]) == 44_100.0
         receivers = np.asarray(handle["ReceiverPosition"]).reshape(2, 3)

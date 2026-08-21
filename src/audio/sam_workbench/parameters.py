@@ -32,6 +32,9 @@ from typing import Any, Mapping
 from .compat import SAM2_PARAMETER_DEFAULTS
 from .conventions import MAX_SAMPLE_RATE_HZ
 from .dsp.source import EAR_POLARITY_CANONICAL, EAR_POLARITY_LEGACY, EAR_POLARITY_SAME
+from .hrtf.dataset import BAKE_DELAY, DELAY_POLICIES
+from .hrtf.headphones import CORRECTION_MODES, OFF as HEADPHONE_OFF
+from .hrtf.interpolation import INTERPOLATION_MODES, NEAREST
 from .validation import ValidationIssue
 
 __all__ = [
@@ -40,6 +43,7 @@ __all__ = [
     "EXPERT",
     "PATH_SHAPES",
     "PATH_TYPES",
+    "RENDERER_MODES",
     "ROTATION_DIRECTIONS",
     "EAR_POLARITIES",
     "SAM2_FIELDS",
@@ -67,6 +71,10 @@ EAR_POLARITIES: tuple[str, ...] = (
     EAR_POLARITY_SAME,
 )
 
+#: How a voice is rendered. An existing voice names none of these and keeps
+#: rendering as abstract phase modulation, which is what it always was.
+RENDERER_MODES: tuple[str, ...] = ("abstract_pm", "geometric", "hrtf", "hybrid")
+
 #: The legacy default custom-path profile written by the existing editor.
 DEFAULT_CUSTOM_PATH_PROFILE: dict[str, Any] = {
     "kind": "linear",
@@ -89,7 +97,7 @@ class ParameterField:
     decimals: int = 2
     tooltip: str = ""
     mode: str = BASIC
-    kind: str = "float"  # float | int | choice | bool | json
+    kind: str = "float"  # float | int | choice | bool | json | path | text
     choices: tuple[str, ...] = ()
     aliases: tuple[str, ...] = ()
     #: "pair" - the transition form is `start<Name>`/`end<Name>`;
@@ -341,6 +349,127 @@ SAM2_FIELDS: tuple[ParameterField, ...] = (
         live_safe=False,
     ),
     ParameterField(
+        name="rendererMode",
+        label="Renderer",
+        default="abstract_pm",
+        tooltip=(
+            "Which engine renders this voice: abstract phase modulation, geometric "
+            "binaural, HRTF convolution, or the hybrid of the last two."
+        ),
+        mode=ADVANCED,
+        kind="choice",
+        choices=RENDERER_MODES,
+        transition="shared",
+        automatable=False,
+        in_legacy_editor=False,
+        live_safe=False,
+    ),
+    ParameterField(
+        name="hrtfAsset",
+        label="HRTF asset",
+        default="",
+        tooltip=(
+            "Path to the SOFA file this voice renders through. Stored with the project "
+            "so a render can be reproduced; the dataset itself lives outside the project."
+        ),
+        mode=ADVANCED,
+        kind="path",
+        transition="shared",
+        automatable=False,
+        in_legacy_editor=False,
+        live_safe=False,
+    ),
+    ParameterField(
+        name="hrtfSubject",
+        label="HRTF subject",
+        default="",
+        tooltip="Subject identifier within the dataset, such as P0001 or KB0065 (KEMAR).",
+        mode=ADVANCED,
+        kind="text",
+        transition="shared",
+        automatable=False,
+        in_legacy_editor=False,
+        live_safe=False,
+    ),
+    ParameterField(
+        name="hrtfInterpolation",
+        label="HRTF interpolation",
+        default=NEAREST,
+        tooltip=(
+            "Nearest with crossfade is the safe default: it never blends raw responses, "
+            "so it cannot smear a transient. The others blend after delay alignment."
+        ),
+        mode=ADVANCED,
+        kind="choice",
+        choices=INTERPOLATION_MODES,
+        transition="shared",
+        automatable=False,
+        in_legacy_editor=False,
+        live_safe=False,
+    ),
+    ParameterField(
+        name="hrtfDelayPolicy",
+        label="Interaural delay",
+        default=BAKE_DELAY,
+        tooltip=(
+            "Whether the asset's Data_Delay is applied to the responses on load or kept "
+            "and applied at render time. A nonzero delay is never ignored."
+        ),
+        mode=ADVANCED,
+        kind="choice",
+        choices=DELAY_POLICIES,
+        transition="shared",
+        automatable=False,
+        in_legacy_editor=False,
+        live_safe=False,
+    ),
+    ParameterField(
+        name="hrtfCrossfadeMs",
+        label="HRTF crossfade",
+        default=12.0,
+        unit="ms",
+        minimum=5.0,
+        maximum=20.0,
+        decimals=1,
+        tooltip=(
+            "How long to fade between filters when the direction changes. Both "
+            "convolution states keep running through the fade."
+        ),
+        mode=ADVANCED,
+        transition="shared",
+        automatable=False,
+        in_legacy_editor=False,
+        live_safe=False,
+    ),
+    ParameterField(
+        name="headphoneCorrection",
+        label="Headphone correction",
+        default=HEADPHONE_OFF,
+        tooltip=(
+            "Applied after binaural rendering, never before. The HD650 measurement is "
+            "correct only for HD650 headphones, so nothing is applied unless chosen."
+        ),
+        mode=ADVANCED,
+        kind="choice",
+        choices=CORRECTION_MODES,
+        transition="shared",
+        automatable=False,
+        in_legacy_editor=False,
+        live_safe=False,
+    ),
+    ParameterField(
+        name="headphoneAsset",
+        label="Headphone measurement",
+        default="",
+        tooltip="Path to a headphone impulse response or equalization curve, when one is used.",
+        mode=ADVANCED,
+        kind="path",
+        transition="shared",
+        automatable=False,
+        in_legacy_editor=False,
+        live_safe=False,
+    ),
+    ParameterField(
         name="initial_offset",
         label="Transition start",
         default=0.0,
@@ -478,6 +607,10 @@ def validate_sam2_params(
         if entry.kind == "json":
             if value is not None and not isinstance(value, (dict, str)):
                 issues.append(ValidationIssue(key, "must be a path profile object"))
+            continue
+        if entry.kind in ("path", "text"):
+            if value is not None and not isinstance(value, str):
+                issues.append(ValidationIssue(key, "must be text"))
             continue
         if entry.kind == "bool":
             if not isinstance(value, bool):
