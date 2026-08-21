@@ -27,7 +27,6 @@ import ast
 import copy
 from collections import OrderedDict
 import json
-import math
 import inspect
 import traceback
 from src.synth_functions import sound_creator  # Updated import path
@@ -38,6 +37,17 @@ from src.utils.voice_file import (
     VOICE_FILE_EXTENSION,
 )
 from src.utils.amp_utils import amplitude_to_db, db_to_amplitude, is_amp_key
+from src.audio.sam_workbench.parameters import (
+    PATH_SHAPES as SAM2_PATH_SHAPES,
+    SAM2_FIELDS,
+    sam2_parameter_defaults,
+)
+
+# Voices the SAM/HRTF workbench can edit.
+SAM_WORKBENCH_FUNCTIONS = (
+    "spatial_angle_modulation_sam2",
+    "spatial_angle_modulation_sam2_transition",
+)
 from .spatial_trajectory_dialog import SpatialTrajectoryDialog
 from .custom_path_creator_dialog import CustomPathCreatorDialog
 
@@ -107,23 +117,30 @@ PARAM_TOOLTIPS = {
         'phaseOscFreq': 'Frequency of phase modulation applied to both channels.',
         'phaseOscRange': 'Range of phase modulation in radians.',
     },
-    'spatial_angle_modulation_sam2': {
-        'carrierFreq': 'Carrier frequency in Hz (audible tone frequency).',
-        'modFreq': 'Modulation frequency in Hz (spatial oscillation / entrainment target).',
-        'arcWidthDeg': 'Arc width in degrees swept by the virtual source.',
-        'directionOffsetDeg': 'Midpoint direction of the sound path in degrees.',
-        'spatialScale': 'Multiplier for interaural phase (spatial depth/intensity).',
-        'amp': 'Signal amplitude.',
-        'pathType': 'Path type: open, closed, discontinuous, or custom.',
-        'pathShape': 'Shape used for open/closed/discontinuous path traversal (e.g., sinusoidal, ramp, square, triangle).',
-        'customPathSmoothingPasses': 'Chaikin smoothing passes applied to custom-path points (0-6).',
-        'customPathSmoothingRatio': 'Chaikin smoothing ratio for custom-path refinement (0.001-0.499).',
-        'customPathProfile': 'Saved custom path profile used when pathType is set to custom.',
-    }
 }
 
 
-SAM2_PATH_SHAPES = ['sinusoidal', 'triangle', 'ramp', 'saw', 'square']
+def _sam2_registry_tooltips() -> dict:
+    """SAM/SAM2 tooltips come from the one parameter registry.
+
+    They used to be declared here as well as in the parameter tables; the
+    registry is now the only place a SAM field is described.
+    """
+
+    tooltips = {}
+    for entry in SAM2_FIELDS:
+        if not entry.tooltip:
+            continue
+        for name in (entry.name, entry.start_name, entry.end_name):
+            tooltips[name] = entry.tooltip
+    return tooltips
+
+
+PARAM_TOOLTIPS['spatial_angle_modulation_sam2'] = _sam2_registry_tooltips()
+PARAM_TOOLTIPS['spatial_angle_modulation_sam2_transition'] = PARAM_TOOLTIPS[
+    'spatial_angle_modulation_sam2'
+]
+
 
 # Tooltips for flanger parameters
 FLANGE_TOOLTIPS = {
@@ -704,7 +721,8 @@ class VoiceEditorDialog(QDialog): # Standard class name
             self.populate_parameters() # Populates synth parameters based on current_voice_data
             self._populate_envelope_controls() # Populates envelope controls
         self._update_swap_button_visibility()
-        
+        self._update_workbench_button()
+
         self._populate_reference_step_combo()
 
         # Set initial reference selection (if possible)
@@ -910,11 +928,17 @@ class VoiceEditorDialog(QDialog): # Standard class name
         self.save_button.setStyleSheet("QPushButton { background-color: #0078D7; color: white; padding: 6px; font-weight: bold; border-radius: 3px; } QPushButton:hover { background-color: #005A9E; } QPushButton:pressed { background-color: #003C6A; }")
         self.load_preset_button = QPushButton("Load Preset")
         self.save_preset_button = QPushButton("Save Preset")
+        self.workbench_button = QPushButton("Open SAM/HRTF Workbench…")
+        self.workbench_button.setToolTip(
+            "Edit this SAM voice with dedicated controls, preview, and analysis views."
+        )
         self.cancel_button.clicked.connect(self.reject) # QDialog's built-in reject
         self.save_button.clicked.connect(self.save_voice)
         self.load_preset_button.clicked.connect(self.load_preset)
         self.save_preset_button.clicked.connect(self.save_preset)
+        self.workbench_button.clicked.connect(self.open_sam_workbench)
         self.save_button.setDefault(True)
+        button_layout.addWidget(self.workbench_button)
         button_layout.addWidget(self.load_preset_button)
         button_layout.addWidget(self.save_preset_button)
         button_layout.addWidget(self.cancel_button)
@@ -938,6 +962,7 @@ class VoiceEditorDialog(QDialog): # Standard class name
         self._clear_layout(self.params_scroll_layout)
         self.param_widgets = {}
         self._hidden_params = {}
+        self._preserved_params = {}
 
         func_name = self.synth_func_combo.currentText()
         is_transition = self.transition_check.isChecked()
@@ -975,6 +1000,15 @@ class VoiceEditorDialog(QDialog): # Standard class name
         params_to_display = OrderedDict()
         for name, default_value in default_params_ordered.items():
             params_to_display[name] = current_saved_params.get(name, default_value)
+
+        # Parameters this editor has no widget for - keys from an older build,
+        # from the SAM workbench's extended set, or from an external extension.
+        # They are carried through the save unchanged rather than dropped.
+        self._preserved_params = {
+            name: value
+            for name, value in current_saved_params.items()
+            if name not in default_params_ordered and name not in self._hidden_params
+        }
 
         processed_end_params = set()
         transition_pairs = {}
@@ -1509,7 +1543,7 @@ class VoiceEditorDialog(QDialog): # Standard class name
             widget = QComboBox()
             sam_shapes = list(getattr(sound_creator, 'VALID_SAM_PATHS', []))
             shape_options = []
-            for shape_name in (sam_shapes + SAM2_PATH_SHAPES):
+            for shape_name in (sam_shapes + list(SAM2_PATH_SHAPES)):
                 if shape_name not in shape_options:
                     shape_options.append(shape_name)
             if not shape_options:
@@ -1860,6 +1894,7 @@ class VoiceEditorDialog(QDialog): # Standard class name
     @pyqtSlot()
     def on_synth_function_change(self):
         selected_func = self.synth_func_combo.currentText()
+        self._update_workbench_button()
         if not selected_func or selected_func.startswith("Error:"):
             return
 
@@ -2169,6 +2204,14 @@ class VoiceEditorDialog(QDialog): # Standard class name
             if env_params:
                 envelope_data = {"type": selected_env_type, "params": env_params}
         
+        # Keep parameters the editor never displayed - hidden by preference, or
+        # simply unknown to this build - so a preset round trip does not erase
+        # them either.
+        for name, value in getattr(self, "_hidden_params", {}).items():
+            synth_params.setdefault(name, value)
+        for name, value in getattr(self, "_preserved_params", {}).items():
+            synth_params.setdefault(name, value)
+
         return {
             "synth_function_name": self.synth_func_combo.currentText(),
             "is_transition": self.transition_check.isChecked(),
@@ -2207,6 +2250,54 @@ class VoiceEditorDialog(QDialog): # Standard class name
 
 
         return '' # No specific hint
+
+    def _update_workbench_button(self):
+        """The workbench edits SAM voices; leave it disabled for anything else."""
+
+        button = getattr(self, "workbench_button", None)
+        if button is None:
+            return
+        func_name = self.synth_func_combo.currentText()
+        supported = func_name in SAM_WORKBENCH_FUNCTIONS
+        button.setEnabled(supported)
+        button.setToolTip(
+            "Edit this SAM voice with dedicated controls, preview, and analysis views."
+            if supported
+            else "Select a SAM2 voice to open the workbench."
+        )
+
+    @pyqtSlot()
+    def open_sam_workbench(self):
+        """Open the SAM workbench on a copy of the current voice.
+
+        The workbench never touches the live project: it edits a copy and its
+        result is written back into this dialog's fields, which the existing
+        Save Voice path then commits.
+        """
+
+        from .sam_workbench_dialog import SamWorkbenchDialog
+
+        voice_data = self._collect_data_from_ui()
+        sample_rate = 44100
+        try:
+            sample_rate = int(self.app.track_data["global_settings"]["sample_rate"])
+        except (AttributeError, KeyError, TypeError, ValueError):
+            pass
+
+        dialog = SamWorkbenchDialog(voice_data, sample_rate=sample_rate, parent=self)
+        if dialog.exec_() == QDialog.Accepted:
+            self.apply_workbench_result(dialog.voice_data())
+
+    def apply_workbench_result(self, voice_data):
+        """Load a workbench result back into this editor's fields."""
+
+        params = dict(voice_data.get("params", {}))
+        self.current_voice_data["params"] = params
+        if self.transition_check.isChecked():
+            self._transition_params = OrderedDict(params)
+        else:
+            self._standard_params = OrderedDict(params)
+        self.populate_parameters()
 
     def _get_param_tooltip(self, func_name, param_name):
         """Return a tooltip description for a given parameter name."""
@@ -2315,6 +2406,10 @@ class VoiceEditorDialog(QDialog): # Standard class name
         if getattr(self, "_hidden_params", None):
             for name, value in self._hidden_params.items():
                 new_synth_params.setdefault(name, value)
+
+        # Preserve parameters this editor never displayed
+        for name, value in getattr(self, "_preserved_params", {}).items():
+            new_synth_params.setdefault(name, value)
 
         # Collect Envelope Parameters
         new_envelope_data = None
@@ -2558,86 +2653,6 @@ def get_default_params_for_function(func_name_from_combo: str, is_transition_mod
                 ('initial_offset', 0.0), ('duration', 0.0), ('transition_curve', 'linear')
             ]
         },
-        "stereo_am_independent": { # This is an example, ensure it's correct
-            "standard": [
-                ('amp', 0.25), ('carrierFreq', 200.0), ('modFreqL', 4.0),
-                ('modDepthL', 0.8), ('modPhaseL', 0), ('modFreqR', 4.0),
-                ('modDepthR', 0.8), ('modPhaseR', 0), ('stereo_width_hz', 0.2)
-            ],
-            "transition": [
-                ('amp', 0.25), ('startCarrierFreq', 200), ('endCarrierFreq', 250),
-                ('startModFreqL', 4), ('endModFreqL', 6),
-                ('startModDepthL', 0.8), ('endModDepthL', 0.8),
-                ('startModPhaseL', 0),
-                ('startModFreqR', 4.1), ('endModFreqR', 5.9),
-                ('startModDepthR', 0.8), ('endModDepthR', 0.8),
-                ('startModPhaseR', 0),
-                ('startStereoWidthHz', 0.2), ('endStereoWidthHz', 0.2),
-                ('initial_offset', 0.0), ('duration', 0.0), ('transition_curve', 'linear')
-            ]
-        },
-        "wave_shape_stereo_am": { # This is an example, ensure it's correct
-            "standard": [
-                ('amp', 0.15), ('carrierFreq', 200), ('shapeModFreq', 4),
-                ('shapeModDepth', 0.8), ('shapeAmount', 0.5),
-                ('stereoModFreqL', 4.1), ('stereoModDepthL', 0.8),
-                ('stereoModPhaseL', 0), ('stereoModFreqR', 4.0),
-                ('stereoModDepthR', 0.8), ('stereoModPhaseR', math.pi / 2)
-            ],
-            "transition": [
-                ('amp', 0.15), ('startCarrierFreq', 200), ('endCarrierFreq', 100),
-                ('startShapeModFreq', 4), ('endShapeModFreq', 8),
-                ('startShapeModDepth', 0.8), ('endShapeModDepth', 0.8),
-                ('startShapeAmount', 0.5), ('endShapeAmount', 0.5),
-                ('startStereoModFreqL', 4.1), ('endStereoModFreqL', 6.0),
-                ('startStereoModDepthL', 0.8), ('endStereoModDepthL', 0.8),
-                ('startStereoModPhaseL', 0),
-                ('startStereoModFreqR', 4.0), ('endStereoModFreqR', 6.1),
-                ('startStereoModDepthR', 0.9), ('endStereoModDepthR', 0.9),
-                ('startStereoModPhaseR', math.pi / 2),
-                ('initial_offset', 0.0), ('duration', 0.0), ('transition_curve', 'linear')
-            ]
-        },
-        "spatial_angle_modulation": {
-            "standard": [
-                ('amp', 0.7), ('carrierFreq', 440.0), ('beatFreq', 4.0),
-                ('pathShape', 'circle'), ('pathRadius', 1.0),
-                ('arcStartDeg', 0.0), ('arcEndDeg', 360.0),
-                ('frame_dur_ms', 46.4), ('overlap_factor', 8)
-            ],
-            "transition": [
-                ('amp', 0.7),
-                ('startCarrierFreq', 440.0), ('endCarrierFreq', 440.0),
-                ('startBeatFreq', 4.0), ('endBeatFreq', 4.0),
-                ('startPathShape', 'circle'), ('endPathShape', 'circle'),
-                ('startPathRadius', 1.0), ('endPathRadius', 1.0),
-                ('startArcStartDeg', 0.0), ('endArcStartDeg', 0.0),
-                ('startArcEndDeg', 360.0), ('endArcEndDeg', 360.0),
-                ('frame_dur_ms', 46.4), ('overlap_factor', 8),
-                ('initial_offset', 0.0), ('duration', 0.0), ('transition_curve', 'linear')
-            ]
-        },
-        "spatial_angle_modulation_sam2": {
-            "standard": [
-                ('amp', 0.7), ('carrierFreq', 440.0), ('modFreq', 4.0),
-                ('arcWidthDeg', 90.0), ('directionOffsetDeg', 0.0),
-                ('spatialScale', 1.0), ('pathType', 'open'), ('pathShape', 'sinusoidal'),
-                ('customPathSmoothingPasses', 1), ('customPathSmoothingRatio', 0.25),
-                ('customPathProfile', {'kind': 'linear', 'points': [], 'smoothingPasses': 1, 'smoothingRatio': 0.25})
-            ],
-            "transition": [
-                ('amp', 0.7),
-                ('startCarrierFreq', 440.0), ('endCarrierFreq', 440.0),
-                ('startModFreq', 4.0), ('endModFreq', 4.0),
-                ('startArcWidthDeg', 90.0), ('endArcWidthDeg', 90.0),
-                ('startDirectionOffsetDeg', 0.0), ('endDirectionOffsetDeg', 0.0),
-                ('startSpatialScale', 1.0), ('endSpatialScale', 1.0),
-                ('pathType', 'open'), ('pathShape', 'sinusoidal'),
-                ('customPathSmoothingPasses', 1), ('customPathSmoothingRatio', 0.25),
-                ('customPathProfile', {'kind': 'linear', 'points': [], 'smoothingPasses': 1, 'smoothingRatio': 0.25}),
-                ('initial_offset', 0.0), ('duration', 0.0), ('transition_curve', 'linear')
-            ]
-        },
         "binaural_beat": {
             "standard": [
                 ('ampL', 0.5), ('ampR', 0.5),
@@ -2690,64 +2705,6 @@ def get_default_params_for_function(func_name_from_combo: str, is_transition_mod
                 ('start_ampOscDepth', 0.0), ('end_ampOscDepth', 0.0),
                 ('start_ampOscFreq', 0.0), ('end_ampOscFreq', 0.0),
                 ('start_ampOscPhaseOffset', 0.0), ('end_ampOscPhaseOffset', 0.0),
-                ('initial_offset', 0.0), ('duration', 0.0), ('transition_curve', 'linear')
-            ]
-        },
-        "isochronic_tone": {
-            "standard": [
-                ('ampL', 0.5), ('ampR', 0.5),
-                ('baseFreq', 200.0), ('beatFreq', 4.0),
-                ('forceMono', False),
-                ('startPhaseL', 0.0), ('startPhaseR', 0.0),
-                ('ampOscDepthL', 0.0), ('ampOscFreqL', 0.0),
-                ('ampOscDepthR', 0.0), ('ampOscFreqR', 0.0),
-                ('freqOscRangeL', 0.0), ('freqOscFreqL', 0.0),
-                ('freqOscRangeR', 0.0), ('freqOscFreqR', 0.0),
-                ('freqOscSkewL', 0.0), ('freqOscSkewR', 0.0),
-                ('freqOscPhaseOffsetL', 0.0), ('freqOscPhaseOffsetR', 0.0),
-                ('ampOscPhaseOffsetL', 0.0), ('ampOscPhaseOffsetR', 0.0),
-                ('ampOscSkewL', 0.0), ('ampOscSkewR', 0.0),
-                ('phaseOscFreq', 0.0), ('phaseOscRange', 0.0),
-                ('rampPercent', 0.2), ('gapPercent', 0.15),
-                ('harmonicSuppression', False),
-                ('pan', 0.0), ('panRangeMin', 0.0), ('panRangeMax', 0.0),
-                ('panType', 'linear'), ('panFreq', 0.0), ('panPhase', 0.0)
-            ],
-            "transition": [
-                ('startAmpL', 0.5), ('endAmpL', 0.5),
-                ('startAmpR', 0.5), ('endAmpR', 0.5),
-                ('startBaseFreq', 200.0), ('endBaseFreq', 200.0),
-                ('startBeatFreq', 4.0), ('endBeatFreq', 4.0),
-                ('startForceMono', False), ('endForceMono', False),
-                ('startStartPhaseL', 0.0), ('endStartPhaseL', 0.0),
-                ('startStartPhaseR', 0.0), ('endStartPhaseR', 0.0),
-                ('startAmpOscDepthL', 0.0), ('endAmpOscDepthL', 0.0),
-                ('startAmpOscFreqL', 0.0), ('endAmpOscFreqL', 0.0),
-                ('startAmpOscDepthR', 0.0), ('endAmpOscDepthR', 0.0),
-                ('startAmpOscFreqR', 0.0), ('endAmpOscFreqR', 0.0),
-                ('startFreqOscRangeL', 0.0), ('endFreqOscRangeL', 0.0),
-                ('startFreqOscFreqL', 0.0), ('endFreqOscFreqL', 0.0),
-                ('startFreqOscRangeR', 0.0), ('endFreqOscRangeR', 0.0),
-                ('startFreqOscFreqR', 0.0), ('endFreqOscFreqR', 0.0),
-                ('startFreqOscSkewL', 0.0), ('endFreqOscSkewL', 0.0),
-                ('startFreqOscSkewR', 0.0), ('endFreqOscSkewR', 0.0),
-                ('startFreqOscPhaseOffsetL', 0.0), ('endFreqOscPhaseOffsetL', 0.0),
-                ('startFreqOscPhaseOffsetR', 0.0), ('endFreqOscPhaseOffsetR', 0.0),
-                ('startAmpOscPhaseOffsetL', 0.0), ('endAmpOscPhaseOffsetL', 0.0),
-                ('startAmpOscPhaseOffsetR', 0.0), ('endAmpOscPhaseOffsetR', 0.0),
-                ('startAmpOscSkewL', 0.0), ('endAmpOscSkewL', 0.0),
-                ('startAmpOscSkewR', 0.0), ('endAmpOscSkewR', 0.0),
-                ('startPhaseOscFreq', 0.0), ('endPhaseOscFreq', 0.0),
-                ('startPhaseOscRange', 0.0), ('endPhaseOscRange', 0.0),
-                ('startRampPercent', 0.2), ('endRampPercent', 0.2),
-                ('startGapPercent', 0.15), ('endGapPercent', 0.15),
-                ('startHarmonicSuppression', False), ('endHarmonicSuppression', False),
-                ('startPan', 0.0), ('endPan', 0.0),
-                ('startPanRangeMin', 0.0), ('endPanRangeMin', 0.0),
-                ('startPanRangeMax', 0.0), ('endPanRangeMax', 0.0),
-                ('startPanType', 'linear'), ('endPanType', 'linear'),
-                ('startPanFreq', 0.0), ('endPanFreq', 0.0),
-                ('startPanPhase', 0.0), ('endPanPhase', 0.0),
                 ('initial_offset', 0.0), ('duration', 0.0), ('transition_curve', 'linear')
             ]
         },
@@ -2915,26 +2872,12 @@ def get_default_params_for_function(func_name_from_combo: str, is_transition_mod
                 ('initial_offset', 0.0), ('duration', 0.0), ('transition_curve', 'linear')
             ]
         },
+        # SAM2 parameters come from the one registry in
+        # ``src.audio.sam_workbench.parameters`` so the standard and transition
+        # tables cannot drift apart, here or in any other dialog.
         "spatial_angle_modulation_sam2": {
-            "standard": [
-                ('amp', 0.7), ('carrierFreq', 440.0), ('modFreq', 4.0),
-                ('arcWidthDeg', 90.0), ('directionOffsetDeg', 0.0),
-                ('spatialScale', 1.0), ('pathType', 'open'), ('pathShape', 'sinusoidal'),
-                ('customPathSmoothingPasses', 1), ('customPathSmoothingRatio', 0.25),
-                ('customPathProfile', {'kind': 'linear', 'points': [], 'smoothingPasses': 1, 'smoothingRatio': 0.25})
-            ],
-            "transition": [
-                ('amp', 0.7),
-                ('startCarrierFreq', 440.0), ('endCarrierFreq', 440.0),
-                ('startModFreq', 4.0), ('endModFreq', 4.0),
-                ('startArcWidthDeg', 90.0), ('endArcWidthDeg', 90.0),
-                ('startDirectionOffsetDeg', 0.0), ('endDirectionOffsetDeg', 0.0),
-                ('startSpatialScale', 1.0), ('endSpatialScale', 1.0),
-                ('pathType', 'open'), ('pathShape', 'sinusoidal'),
-                ('customPathSmoothingPasses', 1), ('customPathSmoothingRatio', 0.25),
-                ('customPathProfile', {'kind': 'linear', 'points': [], 'smoothingPasses': 1, 'smoothingRatio': 0.25}),
-                ('initial_offset', 0.0), ('duration', 0.0), ('transition_curve', 'linear')
-            ]
+            "standard": sam2_parameter_defaults(False),
+            "transition": sam2_parameter_defaults(True),
         },
         "wave_shape_stereo_am": {
             "standard": [
