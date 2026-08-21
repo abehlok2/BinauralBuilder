@@ -34,7 +34,76 @@ __all__ = [
     "resolve_custom_path_xy",
     "resolve_sam2_shape",
     "shape_from_progress",
+    "LegacyPathTransform",
+    "canonical_profile_points",
+    "migrate_legacy_profile",
+    "legacy_profile_geometry",
 ]
+
+
+class LegacyPathTransform:
+    """Reproducible conversion from GUI x-right/y-down scene units.
+
+    The editor's vertical screen coordinate maps to canonical forward ``+x``
+    and screen-right maps to canonical right (``-y``).  No legacy dictionary
+    is changed by conversion.
+    """
+    def __init__(self, scene_units_per_metre=100.0, centre=(0.0, 0.0), axis_convention="x_right_y_down"):
+        if float(scene_units_per_metre) <= 0: raise ValueError("scene_units_per_metre must be positive")
+        self.scene_units_per_metre=float(scene_units_per_metre); self.centre=tuple(map(float,centre)); self.axis_convention=axis_convention
+
+    def to_canonical(self, points):
+        p=np.asarray(points,dtype=np.float64); sx=(p[...,0]-self.centre[0])/self.scene_units_per_metre; sy=(p[...,1]-self.centre[1])/self.scene_units_per_metre
+        if self.axis_convention=="x_right_y_down": return np.stack((-sy,-sx,np.zeros_like(sx)),axis=-1)
+        if self.axis_convention=="x_forward_y_left": return np.stack((sx,sy,np.zeros_like(sx)),axis=-1)
+        raise ValueError(f"unsupported axis convention: {self.axis_convention}")
+
+    def from_canonical(self, points):
+        p=np.asarray(points,dtype=np.float64)
+        if self.axis_convention=="x_right_y_down": x=-p[...,1]*self.scene_units_per_metre+self.centre[0]; y=-p[...,0]*self.scene_units_per_metre+self.centre[1]
+        elif self.axis_convention=="x_forward_y_left": x=p[...,0]*self.scene_units_per_metre+self.centre[0]; y=p[...,1]*self.scene_units_per_metre+self.centre[1]
+        else: raise ValueError(f"unsupported axis convention: {self.axis_convention}")
+        return np.stack((x,y),axis=-1)
+
+
+def canonical_profile_points(profile):
+    """Translate a profile while preserving the supplied object byte-for-byte."""
+    metadata=profile if isinstance(profile,dict) else {}
+    transform=LegacyPathTransform(metadata.get("sceneUnitsPerMetre",100.), metadata.get("sceneCentre",(0.,0.)), metadata.get("axisConvention","x_right_y_down"))
+    return transform.to_canonical(metadata.get("points",[]))
+
+
+def migrate_legacy_profile(profile, scene_units_per_metre=100.0):
+    """Return an explicitly versioned copy; migration is never implicit."""
+    migrated=dict(profile or {})
+    migrated.update({"schemaVersion":2,"coordinateSpace":"normalized_listener_2d","sceneUnitsPerMetre":float(scene_units_per_metre),"axisConvention":"x_right_y_down","sceneCentre":[0.,0.]})
+    return migrated
+
+
+def legacy_profile_geometry(profile):
+    """Compile a legacy profile to canonical geometry without modifying it.
+
+    This reuses the legacy spline/Chaikin evaluator so the physical path and
+    the old 2D preview follow the same curve rather than merely connecting the
+    raw control points.
+    """
+
+    from .geometry import Polyline
+
+    sample_count = max(64, len(profile.get("points", ())) * 24)
+    phase = np.linspace(0.0, 2.0 * math.pi, sample_count, endpoint=False)
+    scene_x, scene_y = resolve_custom_path_xy(phase, profile)
+    if scene_x is None:
+        raise ValueError("legacy profile requires at least two distinct points")
+    scene_points = np.stack((scene_x, scene_y), axis=-1)
+    metadata = profile if isinstance(profile, dict) else {}
+    transform = LegacyPathTransform(
+        metadata.get("sceneUnitsPerMetre", 100.0),
+        metadata.get("sceneCentre", (0.0, 0.0)),
+        metadata.get("axisConvention", "x_right_y_down"),
+    )
+    canonical = transform.to_canonical(scene_points)
+    return Polyline(tuple(map(tuple, canonical)), closed=bool(metadata.get("closedLoop", False)))
 
 
 def progress_open(phase: np.ndarray) -> np.ndarray:

@@ -29,3 +29,39 @@ __all__ = [
     "resolve_sam2_shape",
     "shape_from_progress",
 ]
+from .geometry import (
+    Arc,
+    Bezier,
+    Circle,
+    Ellipse,
+    Helix,
+    Line,
+    Lissajous,
+    PointCloud,
+    Polygon,
+    Polyline,
+    Spiral,
+    Spline,
+    TransformedGeometry,
+    arclength_table,
+    evaluate_arclength,
+    sample_polyline_arclength,
+)
+from .transforms import ListenerTransform, Transform, rotation_matrix_ypr
+from .traversal import (
+    CanonicalTrajectory,
+    KeyframedTraversal,
+    StochasticTraversal,
+    Traversal,
+    apply_easing,
+    segment_positions,
+)
+
+__all__ = [
+    "Arc", "Bezier", "Circle", "Ellipse", "Helix", "Line", "Lissajous",
+    "PointCloud", "Polygon", "Polyline", "Spiral", "Spline", "TransformedGeometry",
+    "Transform", "ListenerTransform", "CanonicalTrajectory", "Traversal",
+    "KeyframedTraversal", "StochasticTraversal",
+    "apply_easing", "segment_positions", "arclength_table",
+    "evaluate_arclength", "sample_polyline_arclength", "rotation_matrix_ypr",
+]
