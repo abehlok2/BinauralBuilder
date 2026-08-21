@@ -26,6 +26,7 @@ from src.audio.sam_workbench.trajectory import (
     Spline,
     Traversal,
     segment_positions,
+    trajectory_from_dict,
 )
 from .sam_analysis_panel import PlotSeries, PlotWidget
 from .sam_path_editor_dialog import SamPathEditorDialog
@@ -85,7 +86,7 @@ class SamPathPanel(QWidget):
         buttons = QHBoxLayout()
         self.designer_button = QPushButton("Open visual path designer…")
         self.designer_button.setToolTip(
-            "Edit canonical x/y/z geometry and traversal on an interactive metre grid."
+            "Edit x/y from a top-down metre grid and enter elevation (z) numerically. This is not a full 3D viewer."
         )
         self.designer_button.clicked.connect(self.open_designer)
         buttons.addWidget(self.designer_button)
@@ -154,31 +155,7 @@ class SamPathPanel(QWidget):
                 traversal_data = self._trajectory_spec.get("traversal", {})
                 duration = float(traversal_data.get("durationS", 5.0))
                 times = np.linspace(0.0, duration, 512)
-                geometry_data = self._trajectory_spec.get("geometry", {})
-                control_points = tuple(
-                    tuple(map(float, point))
-                    for point in geometry_data.get("controlPointsM", ())
-                )
-                if geometry_data.get("type") == "spline":
-                    geometry = Spline(
-                        control_points, bool(geometry_data.get("closed", False))
-                    )
-                else:
-                    geometry = Polyline(
-                        control_points, bool(geometry_data.get("closed", False))
-                    )
-                trajectory = CanonicalTrajectory(
-                    geometry,
-                    Traversal(
-                        duration_s=duration,
-                        mode=traversal_data.get("mode", "loop"),
-                        direction=int(traversal_data.get("direction", 1)),
-                        easing=traversal_data.get("easing", "linear"),
-                        steps=int(traversal_data.get("steps", 8)),
-                        crossfade_s=float(traversal_data.get("crossfadeS", 0.0)),
-                    ),
-                    arc_length=bool(self._trajectory_spec.get("arcLength", True)),
-                )
+                trajectory = trajectory_from_dict(self._trajectory_spec)
                 points = trajectory.evaluate(times)
             elif self._segments:
                 times = np.linspace(

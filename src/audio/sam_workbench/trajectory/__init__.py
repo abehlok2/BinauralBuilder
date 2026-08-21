@@ -56,6 +56,7 @@ from .traversal import (
     apply_easing,
     segment_positions,
 )
+from .serialization import trajectory_from_dict
 
 __all__ = [
     "Arc", "Bezier", "Circle", "Ellipse", "Helix", "Line", "Lissajous",
@@ -64,4 +65,5 @@ __all__ = [
     "KeyframedTraversal", "StochasticTraversal",
     "apply_easing", "segment_positions", "arclength_table",
     "evaluate_arclength", "sample_polyline_arclength", "rotation_matrix_ypr",
+    "trajectory_from_dict",
 ]

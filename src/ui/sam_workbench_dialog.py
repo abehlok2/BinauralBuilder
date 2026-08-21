@@ -135,6 +135,13 @@ class SamWorkbenchDialog(QDialog):
 
         header = QHBoxLayout()
         header.addWidget(QLabel(f"Voice: {self._voice.get('synth_function_name', 'unknown')}"))
+        header.addWidget(QLabel("Renderer:"))
+        self.renderer_combo = QComboBox()
+        self.renderer_combo.addItem("Abstract phase modulation", "abstract_pm")
+        self.renderer_combo.addItem("Geometric binaural", "geometric")
+        self.renderer_combo.setToolTip("Select the algorithm used by both Python preview and export.")
+        self.renderer_combo.currentIndexChanged.connect(self._on_params_changed)
+        header.addWidget(self.renderer_combo)
         header.addStretch(1)
         header.addWidget(QLabel("Disclosure:"))
         self.mode_combo = QComboBox()
@@ -221,6 +228,8 @@ class SamWorkbenchDialog(QDialog):
 
     def _load_params(self) -> None:
         params = self.params
+        renderer_index = self.renderer_combo.findData(params.get("rendererMode", "abstract_pm"))
+        self.renderer_combo.setCurrentIndex(max(0, renderer_index))
         self.parameter_panel.set_params(params)
         self.path_panel.set_params(params)
         self._on_mode_changed(self.mode_combo.currentText())
@@ -234,6 +243,7 @@ class SamWorkbenchDialog(QDialog):
         """
 
         merged = dict(self._original.get("params", {}))
+        merged["rendererMode"] = self.renderer_combo.currentData()
         panel_params = self.parameter_panel.params()
         visible_names = {
             name
