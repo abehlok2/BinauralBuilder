@@ -1,0 +1,216 @@
+{
+  "array_layout": "frame_major_(frames, 2)",
+  "cases": {
+    "binauralbuilder_core.static_closed_circular": {
+      "dtype": "float32",
+      "function": "spatial_angle_modulation_sam2",
+      "module": "binauralbuilder_core.synth_functions.spatial_angle_modulation",
+      "params": {
+        "amp": 0.5,
+        "arcWidthDeg": 120.0,
+        "carrierFreq": 180.0,
+        "directionOffsetDeg": -20.0,
+        "modFreq": 5.0,
+        "pathType": "closed",
+        "rotationDirection": "cw",
+        "spatialScale": 0.8
+      },
+      "sha256": "5a75f04a9c00c1424bbc875e1075a4221d679532aec6d5e8f54a7860ca007694",
+      "shape": [
+        441,
+        2
+      ],
+      "tree": "binauralbuilder_core"
+    },
+    "binauralbuilder_core.static_constant_angle_polarity": {
+      "dtype": "float32",
+      "function": "spatial_angle_modulation_sam2",
+      "module": "binauralbuilder_core.synth_functions.spatial_angle_modulation",
+      "params": {
+        "amp": 0.5,
+        "arcWidthDeg": 0.0,
+        "carrierFreq": 220.0,
+        "directionOffsetDeg": 90.0,
+        "modFreq": 4.0,
+        "pathShape": "sinusoidal",
+        "pathType": "open",
+        "spatialScale": 1.0
+      },
+      "sha256": "89d2b84a34677b7b5bd582876f454933829379d0bfbcf47d2cd6131ba6e6f9e3",
+      "shape": [
+        441,
+        2
+      ],
+      "tree": "binauralbuilder_core"
+    },
+    "binauralbuilder_core.static_discontinuous": {
+      "dtype": "float32",
+      "function": "spatial_angle_modulation_sam2",
+      "module": "binauralbuilder_core.synth_functions.spatial_angle_modulation",
+      "params": {
+        "amp": 0.4,
+        "arcWidthDeg": 60.0,
+        "carrierFreq": 300.0,
+        "discontinuousSteps": 6,
+        "modFreq": 2.0,
+        "pathType": "discontinuous"
+      },
+      "sha256": "0acc4a6c5f9d0e7bd13b00cfe38b3e844bc50c4fe26e3e5699fb6cd847a81e61",
+      "shape": [
+        441,
+        2
+      ],
+      "tree": "binauralbuilder_core"
+    },
+    "binauralbuilder_core.static_open_sinusoidal": {
+      "dtype": "float32",
+      "function": "spatial_angle_modulation_sam2",
+      "module": "binauralbuilder_core.synth_functions.spatial_angle_modulation",
+      "params": {
+        "amp": 0.6,
+        "arcWidthDeg": 90.0,
+        "carrierFreq": 220.0,
+        "directionOffsetDeg": 10.0,
+        "modFreq": 3.0,
+        "pathShape": "sinusoidal",
+        "pathType": "open",
+        "spatialScale": 1.0
+      },
+      "sha256": "6f2a1f7b5180f018f845003e4dc14c09740be301a192dc8ad44387924f7237c1",
+      "shape": [
+        441,
+        2
+      ],
+      "tree": "binauralbuilder_core"
+    },
+    "binauralbuilder_core.transition_carrier_and_mod": {
+      "dtype": "float32",
+      "function": "spatial_angle_modulation_sam2_transition",
+      "module": "binauralbuilder_core.synth_functions.spatial_angle_modulation",
+      "params": {
+        "amp": 0.6,
+        "endArcWidthDeg": 45.0,
+        "endCarrierFreq": 260.0,
+        "endModFreq": 6.0,
+        "pathShape": "sinusoidal",
+        "pathType": "open",
+        "startArcWidthDeg": 90.0,
+        "startCarrierFreq": 200.0,
+        "startModFreq": 3.0
+      },
+      "sha256": "eccce2a19d6a8cdf9380e78b2ce6a43449aeeff209df5d0e1a0e50a286218a51",
+      "shape": [
+        441,
+        2
+      ],
+      "tree": "binauralbuilder_core"
+    },
+    "src.static_closed_circular": {
+      "dtype": "float32",
+      "function": "spatial_angle_modulation_sam2",
+      "module": "src.synth_functions.spatial_angle_modulation",
+      "params": {
+        "amp": 0.5,
+        "arcWidthDeg": 120.0,
+        "carrierFreq": 180.0,
+        "directionOffsetDeg": -20.0,
+        "modFreq": 5.0,
+        "pathType": "closed",
+        "rotationDirection": "cw",
+        "spatialScale": 0.8
+      },
+      "sha256": "a91e3739a1d3b41cc033435b6c3bf9d87755469428d7aae7f9951a5db2e40cc4",
+      "shape": [
+        441,
+        2
+      ],
+      "tree": "src"
+    },
+    "src.static_constant_angle_polarity": {
+      "dtype": "float32",
+      "function": "spatial_angle_modulation_sam2",
+      "module": "src.synth_functions.spatial_angle_modulation",
+      "params": {
+        "amp": 0.5,
+        "arcWidthDeg": 0.0,
+        "carrierFreq": 220.0,
+        "directionOffsetDeg": 90.0,
+        "modFreq": 4.0,
+        "pathShape": "sinusoidal",
+        "pathType": "open",
+        "spatialScale": 1.0
+      },
+      "sha256": "aac66b0e9972dc93b72da94f7a04019b0988b7d8dad225620e6740a8d17664a7",
+      "shape": [
+        441,
+        2
+      ],
+      "tree": "src"
+    },
+    "src.static_discontinuous": {
+      "dtype": "float32",
+      "function": "spatial_angle_modulation_sam2",
+      "module": "src.synth_functions.spatial_angle_modulation",
+      "params": {
+        "amp": 0.4,
+        "arcWidthDeg": 60.0,
+        "carrierFreq": 300.0,
+        "discontinuousSteps": 6,
+        "modFreq": 2.0,
+        "pathType": "discontinuous"
+      },
+      "sha256": "66406e39d848f40fd5f2421bbfe8a2e30cb5f8ec193e48b4ced277fca5c33eac",
+      "shape": [
+        441,
+        2
+      ],
+      "tree": "src"
+    },
+    "src.static_open_sinusoidal": {
+      "dtype": "float32",
+      "function": "spatial_angle_modulation_sam2",
+      "module": "src.synth_functions.spatial_angle_modulation",
+      "params": {
+        "amp": 0.6,
+        "arcWidthDeg": 90.0,
+        "carrierFreq": 220.0,
+        "directionOffsetDeg": 10.0,
+        "modFreq": 3.0,
+        "pathShape": "sinusoidal",
+        "pathType": "open",
+        "spatialScale": 1.0
+      },
+      "sha256": "9e46db60b6ef60f99d1c9ae611e9edd2951b4b4dd7f5e316e3a01206cf6fd7d6",
+      "shape": [
+        441,
+        2
+      ],
+      "tree": "src"
+    },
+    "src.transition_carrier_and_mod": {
+      "dtype": "float32",
+      "function": "spatial_angle_modulation_sam2_transition",
+      "module": "src.synth_functions.spatial_angle_modulation",
+      "params": {
+        "amp": 0.6,
+        "endArcWidthDeg": 45.0,
+        "endCarrierFreq": 260.0,
+        "endModFreq": 6.0,
+        "pathShape": "sinusoidal",
+        "pathType": "open",
+        "startArcWidthDeg": 90.0,
+        "startCarrierFreq": 200.0,
+        "startModFreq": 3.0
+      },
+      "sha256": "5ea5a50647cbb42e8abed12b262f2a974358ed33a5d7cf7fbb119f38f8010fc5",
+      "shape": [
+        441,
+        2
+      ],
+      "tree": "src"
+    }
+  },
+  "duration_s": 0.01,
+  "legacy_polarity": "left_minus_right_plus",
+  "sample_rate_hz": 44100
+}
