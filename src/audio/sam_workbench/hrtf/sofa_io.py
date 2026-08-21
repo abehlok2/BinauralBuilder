@@ -201,7 +201,7 @@ def load_sofa(
         delay = delay * rate
     else:
         raise ValueError(f"unsupported Data.Delay units {delay_units!r}")
-    if policy is DelayPolicy.BAKE:
+    if policy is DelayPolicy.BAKE and np.any(np.abs(delay) > 0.0):
         ir = _bake_delay(ir, delay)
         delay = np.zeros_like(delay)
     source_rate = rate
