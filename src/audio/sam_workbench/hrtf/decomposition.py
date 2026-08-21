@@ -54,16 +54,27 @@ def minimum_phase_from_log_magnitude(
     """
 
     values = np.asarray(log_magnitudes, dtype=np.float64)
-    length = 2 * (values.size - 1)
+    taps = int(taps)
+    # A real FFT of an odd-length signal has (n + 1) // 2 bins, so 2 * (bins - 1)
+    # lands one sample short and reconstructs on a frequency grid that does not
+    # match the one the magnitude was measured on. When the requested length is
+    # consistent with the bin count, believe it.
+    length = taps if values.size == taps // 2 + 1 else 2 * (values.size - 1)
     if length <= 0:
-        return np.zeros(int(taps), dtype=np.float64)
+        return np.zeros(taps, dtype=np.float64)
 
     cepstrum = np.fft.irfft(values, length)
     folded = np.zeros_like(cepstrum)
     half = length // 2
     folded[0] = cepstrum[0]
-    folded[1:half] = 2.0 * cepstrum[1:half]
-    folded[half] = cepstrum[half]
+    if length % 2 == 0:
+        # The Nyquist coefficient is its own mirror image, so it is not doubled.
+        folded[1:half] = 2.0 * cepstrum[1:half]
+        folded[half] = cepstrum[half]
+    else:
+        # An odd-length signal has no Nyquist bin; every coefficient up to and
+        # including `half` has a partner in the upper half to fold onto it.
+        folded[1 : half + 1] = 2.0 * cepstrum[1 : half + 1]
 
     reconstructed = np.fft.irfft(np.exp(np.fft.rfft(folded, length)), length)
     return reconstructed[: int(taps)]

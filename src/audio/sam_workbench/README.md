@@ -34,6 +34,15 @@ and a clean-environment import in a subprocess with those modules blocked.
 | `parameters.py` | The one SAM parameter registry: names, aliases, units, bounds, defaults, tooltips, disclosure mode | 2 |
 | `analysis/` | Waveform, spectrum, instantaneous frequency, IPD/ILD/ITD measured from rendered audio | 2 |
 | `preview.py` | Preview rendering and 16-bit PCM conversion for the existing QtMultimedia path | 2 |
+| `trajectory/` | Geometry, traversal, transforms, and serialization for canonical paths | 3 |
+| `render/geometric.py` | Geometric binaural rendering with common/differential delay | 3 |
+| `hrtf/` | SOFA ingest, validation, coordinates, direction lookup, interpolation, decomposition, headphone correction, asset discovery, local storage, subject testing | 4 |
+| `render/hrtf.py` | Explicit-SOFA rendering, direction chosen per block with a crossfaded filter switch | 4 |
+| `hrtf/modification.py` | Cue transforms: ITD, ILD, pinna, distance, coherence, extra differential delay | 5 |
+| `hrtf/derived.py` | Writing a modified HRTF as SOFA with provenance, and verifying it | 5 |
+| `render/hybrid.py` | Physical HRTF, then creative cue transform, then output - kept separate | 5 |
+| `render/anchor.py` | The optional broadband spatial anchor | 5 |
+| `analysis/hrtf_curves.py` | Impulse, magnitude, phase, group delay, ITD and ILD curves for the HRTF Lab | 5 |
 
 Phase 4 adds explicit-SOFA loading, validation, coordinate conversion,
 resampling, delay policies, caching, nearest/crossfaded rendering, and aligned
@@ -41,6 +50,25 @@ log-magnitude/delay interpolation under `hrtf/` and `render/hrtf.py`. Install
 the standard `requirements.txt` for SOFA loading. The optional
 `requirements-hrtf.txt` adds standards verification and advanced HRTF tooling;
 non-HRTF modes still do not import those optional packages.
+Phase 5 adds cue modification on top of that. A measured HRTF can have its
+interaural and spectral cues scaled - ITD, ILD, pinna residual, distance,
+coherence, and an extra differential delay - through the decomposition in
+section 11.4 of `AGENTS.md`: common and differential delay, common and
+differential log magnitude, and the smooth spectral shape separated from the
+high-frequency directional residual. Every control is neutral at its default,
+so a transform left alone returns the dataset untouched, and normalization is
+one gain shared by every direction and both ears. Never per ear, and never per
+direction: those are the relationships the controls exist to adjust.
+
+A modified dataset can be written back out as a derived SOFA file carrying its
+source hash, cue parameters, delay policy, shared gain, quality metrics and an
+explicit derived-data marker; the write is only reported as successful once
+`sofar` verification passes. The hybrid renderer keeps the physical stage, the
+creative stage and the output stage apart, so a comparison between them differs
+in exactly one thing, and the optional broadband anchor gives a low-frequency
+carrier the high-frequency energy it needs to be localised at all. The anchor
+is off by default at -30 dB and is never enabled silently.
+
 SOFA assets may be absolute, project-relative, or resolved through
 `SAM_WORKBENCH_HRTF_DIR`; their hashes are checked when supplied. Static HRTF
 voice chunks reconstruct state from the absolute voice origin so Python export
