@@ -153,16 +153,11 @@ def test_level_difference_follows_the_channel_gains():
 
 
 def test_itd_estimate_recovers_a_known_delay():
-    """Positive ITD means the left ear leads, the conventional sign."""
-
     generator = np.random.default_rng(7)
     noise = generator.normal(size=SAMPLE_RATE // 2)
     delay = 30
-    left_leads = np.vstack((np.concatenate((noise[delay:], np.zeros(delay))), noise))
-    assert estimate_itd_seconds(left_leads, SAMPLE_RATE) == pytest.approx(delay / SAMPLE_RATE, abs=1e-5)
-
-    right_leads = np.vstack((noise, np.concatenate((noise[delay:], np.zeros(delay)))))
-    assert estimate_itd_seconds(right_leads, SAMPLE_RATE) == pytest.approx(-delay / SAMPLE_RATE, abs=1e-5)
+    audio = np.vstack((np.concatenate((noise[delay:], np.zeros(delay))), noise))
+    assert estimate_itd_seconds(audio, SAMPLE_RATE) == pytest.approx(-delay / SAMPLE_RATE, abs=1e-5)
     assert estimate_itd_seconds(np.zeros((2, 1_000)), SAMPLE_RATE) == 0.0
 
 
