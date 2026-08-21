@@ -2597,8 +2597,8 @@ def get_default_params_for_function(func_name_from_combo: str, is_transition_mod
         "Stereo AM Independent Transition": "stereo_am_independent_transition",
         "Wave Shape Stereo AM": "wave_shape_stereo_am",
         "Wave Shape Stereo AM Transition": "wave_shape_stereo_am_transition",
-        "Spatial Angle Modulation (SAM Engine)": "spatial_angle_modulation", # Uses Node/SAMVoice directly
-        "Spatial Angle Modulation (SAM Engine Transition)": "spatial_angle_modulation_transition",
+        "Spatial Angle Modulation (Legacy implicit KEMAR/slab)": "spatial_angle_modulation", # frozen SAMVoice
+        "Spatial Angle Modulation (Legacy implicit KEMAR/slab Transition)": "spatial_angle_modulation_transition",
         "Spatial Angle Modulation (SAM2)": "spatial_angle_modulation_sam2",
         "Spatial Angle Modulation (SAM2 Transition)": "spatial_angle_modulation_sam2_transition",
         "Binaural Beat": "binaural_beat",

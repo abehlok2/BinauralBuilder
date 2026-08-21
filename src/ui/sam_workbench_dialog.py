@@ -43,6 +43,7 @@ from src.audio.sam_workbench.preview import PreviewResult, render_voice_preview,
 from .sam_analysis_panel import SamAnalysisPanel
 from .sam_basic_panel import SamBasicPanel
 from .sam_path_panel import SamPathPanel
+from .sam_hrtf_lab import SamHrtfLab
 
 try:  # pragma: no cover - import guard mirrors the rest of the UI package
     from PyQt5.QtMultimedia import QAudio, QAudioDeviceInfo, QAudioFormat, QAudioOutput
@@ -153,17 +154,20 @@ class SamWorkbenchDialog(QDialog):
         self.advanced_panel = self.parameter_panel
         self.analysis_panel = SamAnalysisPanel()
         self.path_panel = SamPathPanel()
+        self.hrtf_panel = SamHrtfLab()
         self.compatibility_view = QTextEdit()
         self.compatibility_view.setReadOnly(True)
 
         self.tabs.addTab(self._scrolled(self.parameter_panel), "Parameters")
         self.tabs.addTab(self._scrolled(self.path_panel), "Path & Geometry")
+        self.tabs.addTab(self.hrtf_panel, "HRTF Lab")
         self.tabs.addTab(self.analysis_panel, "Analysis")
         self.tabs.addTab(self.compatibility_view, "Compatibility")
         layout.addWidget(self.tabs, 1)
 
         self.parameter_panel.paramsChanged.connect(self._on_params_changed)
         self.path_panel.paramsChanged.connect(self._on_params_changed)
+        self.hrtf_panel.paramsChanged.connect(self._on_params_changed)
 
         preview_row = QHBoxLayout()
         preview_row.addWidget(QLabel("Preview length:"))
@@ -223,6 +227,7 @@ class SamWorkbenchDialog(QDialog):
         params = self.params
         self.parameter_panel.set_params(params)
         self.path_panel.set_params(params)
+        self.hrtf_panel.set_params(params)
         self._on_mode_changed(self.mode_combo.currentText())
 
     def collect_params(self) -> dict[str, Any]:
@@ -242,6 +247,7 @@ class SamWorkbenchDialog(QDialog):
         }
         merged.update({name: value for name, value in panel_params.items() if name in visible_names})
         merged.update(self.path_panel.params())
+        merged.update(self.hrtf_panel.params())
         return merged
 
     def voice_data(self) -> dict[str, Any]:
@@ -284,13 +290,15 @@ class SamWorkbenchDialog(QDialog):
         known = {name for entry in SAM2_FIELDS for name in (entry.name, *entry.aliases, entry.start_name, entry.end_name)}
         preserved = {key: value for key, value in params.items() if key not in known}
         lines = [
-            f"Renderer: canonical SAM core (src.audio.sam_workbench), sample rate {self._sample_rate} Hz",
+            f"Renderer: {params.get('rendererMode', 'abstract_pm')} via canonical SAM core (src.audio.sam_workbench), sample rate {self._sample_rate} Hz",
             f"Voice: {self._voice.get('synth_function_name', 'unknown')}"
             f" ({'transition' if self._is_transition else 'static'})",
             f"Schema version: {params.get('samSchemaVersion', 'unversioned (legacy ear polarity)')}",
             "",
             "Parameters preserved but not edited here:",
         ]
+        if params.get("rendererMode") == "hrtf":
+            lines += ["", "Migration preview is opt-in: this explicit-SOFA selection is compared by audition; it never rewrites legacy slab/KEMAR presets."]
         if preserved:
             lines.extend(f"  {key} = {value!r}" for key, value in sorted(preserved.items()))
         else:

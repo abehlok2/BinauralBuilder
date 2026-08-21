@@ -32,8 +32,9 @@ from .geometric import (
     distance_gains,
     geometric_cues,
 )
+from .hrtf import HRTFRenderer, HRTFRendererSpec, render_hrtf
 
-__all__ = [
+__all__ += [
     "GeometricBinauralRenderer", "GeometricSpec", "cubic_fractional_sample",
-    "distance_gains", "geometric_cues",
+    "distance_gains", "geometric_cues", "HRTFRenderer", "HRTFRendererSpec", "render_hrtf",
 ]
