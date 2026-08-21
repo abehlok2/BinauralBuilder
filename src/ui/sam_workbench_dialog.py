@@ -71,11 +71,18 @@ class PreviewWorker(QObject):
     rendered = pyqtSignal(object)
     failed = pyqtSignal(str)
 
-    def __init__(self, voice_data: Mapping[str, Any], sample_rate: int, duration_s: float) -> None:
+    def __init__(
+        self,
+        voice_data: Mapping[str, Any],
+        sample_rate: int,
+        duration_s: float,
+        start_time_s: float = 0.0,
+    ) -> None:
         super().__init__()
         self._voice_data = copy.deepcopy(dict(voice_data))
         self._sample_rate = int(sample_rate)
         self._duration_s = float(duration_s)
+        self._start_time_s = float(start_time_s)
 
     @pyqtSlot()
     def run(self) -> None:
@@ -84,6 +91,7 @@ class PreviewWorker(QObject):
                 self._voice_data,
                 sample_rate_hz=self._sample_rate,
                 duration_s=self._duration_s,
+                start_time_s=self._start_time_s,
             )
         except Exception as error:  # pragma: no cover - defensive, surfaced in the UI
             self.failed.emit(str(error))
@@ -184,6 +192,15 @@ class SamWorkbenchDialog(QDialog):
         self.hrtf_panel.auditionRendered.connect(self._on_audition_rendered)
 
         preview_row = QHBoxLayout()
+        preview_row.addWidget(QLabel("Start at:"))
+        self.preview_start_seconds = QDoubleSpinBox()
+        self.preview_start_seconds.setRange(0.0, 86_400.0)
+        self.preview_start_seconds.setDecimals(3)
+        self.preview_start_seconds.setSuffix(" s")
+        self.preview_start_seconds.setToolTip(
+            "Audition automation at this absolute time without rendering everything before it."
+        )
+        preview_row.addWidget(self.preview_start_seconds)
         preview_row.addWidget(QLabel("Preview length:"))
         self.preview_seconds = QDoubleSpinBox()
         self.preview_seconds.setRange(0.25, 60.0)
@@ -340,7 +357,12 @@ class SamWorkbenchDialog(QDialog):
         self.preview_button.setEnabled(False)
         self.status_label.setText("Rendering preview…")
 
-        worker = PreviewWorker(self.voice_data(), self._sample_rate, self.preview_seconds.value())
+        worker = PreviewWorker(
+            self.voice_data(),
+            self._sample_rate,
+            self.preview_seconds.value(),
+            self.preview_start_seconds.value(),
+        )
         thread = QThread(self)
         worker.moveToThread(thread)
         thread.started.connect(worker.run)

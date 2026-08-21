@@ -7,13 +7,17 @@ import pytest
 
 from src.audio.sam_workbench.controls import (
     ConstantControl,
+    ExpressionControl,
+    ExternalControl,
     KeyframeControl,
     LfoControl,
     MapRangeControl,
     ProductControl,
     RampControl,
+    RandomWalkControl,
     SmoothedControl,
     SumControl,
+    StepSequenceControl,
     compile_control,
     control_from_dict,
     instantaneous_frequency_deviation_hz,
@@ -48,6 +52,10 @@ STATELESS_CONTROLS = [
     SumControl(terms=(ConstantControl(value=1.0), LfoControl(rate_hz=5.0, depth=0.5))),
     ProductControl(factors=(ConstantControl(value=2.0), LfoControl(rate_hz=3.0, depth=1.0))),
     MapRangeControl(source=LfoControl(rate_hz=4.0, depth=1.0), to_low=100.0, to_high=200.0),
+    StepSequenceControl(values=(1.0, 2.0, -1.0), step_duration_s=0.003),
+    RandomWalkControl(step_interval_s=0.004, step_size=0.2, seed=73),
+    ExpressionControl(expression="2 + sin(2 * pi * 3 * t)"),
+    ExternalControl(samples=((0.0, 1.0), (0.01, 2.0), (0.02, -1.0)), fallback=0.5),
 ]
 
 
@@ -150,6 +158,30 @@ def test_controls_round_trip_through_their_serialized_form(control):
 def test_unknown_control_kind_is_rejected():
     with pytest.raises(ValueError):
         control_from_dict({"kind": "quantum"})
+
+
+@pytest.mark.parametrize(
+    "expression",
+    ("__import__('os')", "t.__class__", "open('/tmp/nope')", "missing + 1"),
+)
+def test_expression_control_rejects_unsafe_or_unknown_syntax(expression):
+    with pytest.raises(ValueError):
+        ExpressionControl(expression=expression)
+
+
+def test_external_control_uses_a_safe_fallback_before_a_capture():
+    control = ExternalControl(samples=((0.01, 1.0), (0.02, 2.0)), fallback=-0.5)
+    values = control.render(0, 480, SAMPLE_RATE)
+    assert values[0] == pytest.approx(-0.5)
+    assert values[-1] == pytest.approx(-0.5)
+
+
+def test_random_walk_is_reproducible_and_seeded():
+    first = RandomWalkControl(seed=7).render(0, SAMPLE_RATE, SAMPLE_RATE)
+    second = RandomWalkControl(seed=7).render(0, SAMPLE_RATE, SAMPLE_RATE)
+    different = RandomWalkControl(seed=8).render(0, SAMPLE_RATE, SAMPLE_RATE)
+    np.testing.assert_array_equal(first, second)
+    assert not np.array_equal(first, different)
 
 
 def test_peak_frequency_deviation_formula():

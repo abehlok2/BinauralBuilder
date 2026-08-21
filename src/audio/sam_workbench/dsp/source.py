@@ -113,6 +113,7 @@ def compile_source(source, *, ear_polarity: str = EAR_POLARITY_CANONICAL) -> Com
         amplitude=float(source.amplitude_linear),
         carrier_frequency_hz=float(source.signal.carrier_frequency_hz),
         carrier_phase_rad=float(source.signal.phase_rad),
+        waveform=str(source.signal.waveform),
         modulators=(
             ModulatorSpec(
                 rate_hz=float(source.sam.rate_hz),

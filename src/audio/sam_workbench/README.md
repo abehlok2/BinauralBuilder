@@ -25,7 +25,7 @@ and a clean-environment import in a subprocess with those modules blocked.
 | `migrations.py` | Explicit, ordered schema migrations | 0 |
 | `cli.py` | Headless `new` / `validate` / `render` shell (`python -m src.audio.sam_workbench`) | 0-1 |
 | `waveforms.py` | Dependency-free periodic shapes shared by controls and oscillators | 1 |
-| `controls.py` | Declarative controls that render themselves, block-size invariantly | 1 |
+| `controls.py` | Complete declarative control union, restricted expression AST, and block-size-invariant rendering | 1 |
 | `dsp/` | Phase accumulation, oscillators, modulators, envelopes, blocks, mixing, limiting, and the SAM equations | 1 |
 | `render/` | The `SpatialRenderer` contract, the abstract PM engine and its presets, and the scene mixer | 1 |
 | `export.py` | WAV export plus the reconstruction manifest | 1 |
@@ -193,6 +193,14 @@ the shared master gain and limiter report, and the measured levels.
 
 `validate` reports every problem at once, each tagged with a stable field path
 such as `sources[1].amplitude_linear`, and exits non-zero on failure.
+
+The control compiler supports constants, keyframes, LFOs, ramps, step
+sequences, seeded random walks, restricted arithmetic expressions, captured
+external streams, sums, products, range mapping, and explicit smoothing.
+Expressions are evaluated by a small AST interpreter—never Python `eval`—and
+random walks reconstruct from their seed and absolute time, so arbitrary render
+chunks reproduce a whole render. Live device ownership stays outside the core;
+an external control is serialized as a captured stream with a declared failsafe.
 
 ## The SAM parameter registry
 

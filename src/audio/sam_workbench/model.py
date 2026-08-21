@@ -44,6 +44,7 @@ from src.audio.sam_workbench.conventions import (
 from src.audio.sam_workbench.migrations import migrate_project_dict
 from src.audio.sam_workbench.validation import ProjectValidationError, ValidationCollector, ValidationIssue
 from src.audio.sam_workbench.version import SCHEMA_VERSION
+from src.audio.sam_workbench.waveforms import WAVEFORMS
 
 __all__ = [
     "AudioSettings",
@@ -61,7 +62,7 @@ __all__ = [
     "validate_project",
 ]
 
-SIGNAL_KINDS: tuple[str, ...] = ("sine",)
+SIGNAL_KINDS: tuple[str, ...] = ("periodic", "sine")
 MAX_AMPLITUDE_LINEAR = 4.0
 MAX_MASTER_GAIN_DB = 12.0
 MAX_DEPTH_RAD = 8.0 * math.pi
@@ -365,22 +366,24 @@ class OutputSettings:
 class SignalSpec:
     """Carrier signal for a source.
 
-    Phase 0 defines the sine carrier only; richer variants (harmonic banks,
-    band-limited waves, noise, files) are tagged by ``kind`` in later phases.
+    Phase 1 supports every periodic waveform shared by the oscillator and the
+    control engine. ``kind='sine'`` remains the compatibility spelling.
     """
 
     kind: str = "sine"
     carrier_frequency_hz: float = 220.0
     phase_rad: float = 0.0
+    waveform: str = "sine"
     extras: dict[str, Any] = field(default_factory=dict)
 
-    _FIELDS = ("kind", "carrier_frequency_hz", "phase_rad")
+    _FIELDS = ("kind", "carrier_frequency_hz", "phase_rad", "waveform")
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "kind": str(self.kind),
             "carrier_frequency_hz": float(self.carrier_frequency_hz),
             "phase_rad": float(self.phase_rad),
+            "waveform": str(self.waveform),
             **self.extras,
         }
 
@@ -394,6 +397,7 @@ class SignalSpec:
                 raw, "carrier_frequency_hz", defaults.carrier_frequency_hz, collector
             ),
             phase_rad=_read_number(raw, "phase_rad", defaults.phase_rad, collector),
+            waveform=_read_text(raw, "waveform", defaults.waveform, collector),
             extras=_extras(raw, cls._FIELDS),
         )
 
@@ -408,6 +412,7 @@ class SignalSpec:
             maximum=nyquist,
         )
         collector.check_number("phase_rad", self.phase_rad)
+        collector.check_choice("waveform", self.waveform, tuple(WAVEFORMS))
 
 
 @dataclass(frozen=True)

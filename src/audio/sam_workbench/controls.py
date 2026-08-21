@@ -21,6 +21,7 @@ order; they are never used on the legacy compatibility path.
 
 from __future__ import annotations
 
+import ast
 import math
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Protocol, runtime_checkable
@@ -35,11 +36,15 @@ __all__ = [
     "CompiledControl",
     "ControlBase",
     "ConstantControl",
+    "ExpressionControl",
+    "ExternalControl",
     "KeyframeControl",
     "LfoControl",
     "MapRangeControl",
     "ProductControl",
     "RampControl",
+    "RandomWalkControl",
+    "StepSequenceControl",
     "SumControl",
     "SmoothedControl",
     "as_control",
@@ -257,6 +262,229 @@ class KeyframeControl(ControlBase):
 
 
 @dataclass(frozen=True)
+class StepSequenceControl(ControlBase):
+    """A repeating or one-shot sequence with an absolute-time clock."""
+
+    values: tuple[float, ...] = (0.0,)
+    step_duration_s: float = 1.0
+    start_s: float = 0.0
+    loop: bool = True
+
+    def __post_init__(self) -> None:
+        if not self.values:
+            raise ValueError("a step sequence needs at least one value")
+        if not math.isfinite(self.step_duration_s) or self.step_duration_s <= 0.0:
+            raise ValueError("step_duration_s must be finite and positive")
+
+    def _evaluate(self, start_sample: int, frames: int, sample_rate: float) -> NDArray[np.float64]:
+        times = sample_times(start_sample, frames, sample_rate)
+        positions = np.floor(
+            (times - float(self.start_s)) / float(self.step_duration_s)
+        ).astype(np.int64)
+        positions = np.maximum(positions, 0)
+        if self.loop:
+            positions %= len(self.values)
+        else:
+            positions = np.minimum(positions, len(self.values) - 1)
+        return np.asarray(self.values, dtype=np.float64)[positions]
+
+    def constant_value(self) -> float | None:
+        return float(self.values[0]) if len(set(self.values)) == 1 else None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "kind": "step_sequence",
+            "values": [float(value) for value in self.values],
+            "step_duration_s": float(self.step_duration_s),
+            "start_s": float(self.start_s),
+            "loop": bool(self.loop),
+            "unit": self.unit,
+        }
+
+
+@dataclass(frozen=True)
+class RandomWalkControl(ControlBase):
+    """Seeded sample-and-hold random walk, reconstructed from absolute time.
+
+    Reconstructing the walk from its seed makes arbitrary chunks identical to a
+    whole render. ``smoothing`` linearly interpolates between adjacent steps;
+    it does not introduce mutable filter state.
+    """
+
+    step_interval_s: float = 0.25
+    step_size: float = 1.0
+    initial: float = 0.0
+    seed: int = 0
+    smoothing: bool = True
+
+    def __post_init__(self) -> None:
+        if not math.isfinite(self.step_interval_s) or self.step_interval_s <= 0.0:
+            raise ValueError("step_interval_s must be finite and positive")
+        if not math.isfinite(self.step_size) or self.step_size < 0.0:
+            raise ValueError("step_size must be finite and non-negative")
+
+    def _walk(self, last_step: int) -> NDArray[np.float64]:
+        rng = np.random.default_rng(int(self.seed))
+        increments = rng.uniform(-float(self.step_size), float(self.step_size), max(0, last_step))
+        return np.concatenate(([float(self.initial)], float(self.initial) + np.cumsum(increments)))
+
+    def _evaluate(self, start_sample: int, frames: int, sample_rate: float) -> NDArray[np.float64]:
+        times = sample_times(start_sample, frames, sample_rate)
+        positions = np.maximum(times / float(self.step_interval_s), 0.0)
+        steps = np.floor(positions).astype(np.int64)
+        walk = self._walk(int(steps.max(initial=0)) + (1 if self.smoothing else 0))
+        values = walk[steps]
+        if self.smoothing:
+            fraction = positions - steps
+            values = values + fraction * (walk[steps + 1] - values)
+        return values
+
+    def constant_value(self) -> float | None:
+        return float(self.initial) if float(self.step_size) == 0.0 else None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "kind": "random_walk",
+            "step_interval_s": float(self.step_interval_s),
+            "step_size": float(self.step_size),
+            "initial": float(self.initial),
+            "seed": int(self.seed),
+            "smoothing": bool(self.smoothing),
+            "unit": self.unit,
+        }
+
+
+_EXPRESSION_FUNCTIONS = {
+    "abs": np.abs,
+    "cos": np.cos,
+    "exp": np.exp,
+    "log": np.log,
+    "maximum": np.maximum,
+    "minimum": np.minimum,
+    "sin": np.sin,
+    "sqrt": np.sqrt,
+    "tan": np.tan,
+}
+_EXPRESSION_NAMES = {"t", "sample", "pi", "e"}
+_EXPRESSION_NODES = (
+    ast.Expression, ast.BinOp, ast.UnaryOp, ast.Call, ast.Name, ast.Load,
+    ast.Constant, ast.Add, ast.Sub, ast.Mult, ast.Div, ast.Pow, ast.Mod,
+    ast.USub, ast.UAdd,
+)
+
+
+def _parse_expression(source: str) -> ast.Expression:
+    try:
+        tree = ast.parse(source, mode="eval")
+    except SyntaxError as error:
+        raise ValueError(f"invalid control expression: {error.msg}") from error
+    for node in ast.walk(tree):
+        if not isinstance(node, _EXPRESSION_NODES):
+            raise ValueError(f"expression syntax {type(node).__name__} is not allowed")
+        if (
+            isinstance(node, ast.Name)
+            and node.id not in _EXPRESSION_NAMES | _EXPRESSION_FUNCTIONS.keys()
+        ):
+            raise ValueError(f"unknown expression name {node.id!r}")
+        if isinstance(node, ast.Constant) and (
+            isinstance(node.value, bool) or not isinstance(node.value, (int, float))
+        ):
+            raise ValueError("expression constants must be numbers")
+        if isinstance(node, ast.Call) and (
+            not isinstance(node.func, ast.Name) or node.func.id not in _EXPRESSION_FUNCTIONS
+        ):
+            raise ValueError("only documented math functions may be called")
+    return tree
+
+
+def _evaluate_expression(node: ast.AST, names: Mapping[str, Any]) -> Any:
+    """Evaluate the validated arithmetic AST without invoking Python ``eval``."""
+
+    if isinstance(node, ast.Expression):
+        return _evaluate_expression(node.body, names)
+    if isinstance(node, ast.Constant):
+        return float(node.value)
+    if isinstance(node, ast.Name):
+        return names[node.id]
+    if isinstance(node, ast.UnaryOp):
+        value = _evaluate_expression(node.operand, names)
+        return -value if isinstance(node.op, ast.USub) else value
+    if isinstance(node, ast.BinOp):
+        left = _evaluate_expression(node.left, names)
+        right = _evaluate_expression(node.right, names)
+        operators = {
+            ast.Add: np.add, ast.Sub: np.subtract, ast.Mult: np.multiply,
+            ast.Div: np.divide, ast.Pow: np.power, ast.Mod: np.mod,
+        }
+        return operators[type(node.op)](left, right)
+    if isinstance(node, ast.Call):
+        function = _EXPRESSION_FUNCTIONS[node.func.id]
+        return function(*(_evaluate_expression(argument, names) for argument in node.args))
+    raise ValueError(f"expression syntax {type(node).__name__} is not allowed")
+
+
+@dataclass(frozen=True)
+class ExpressionControl(ControlBase):
+    """A restricted mathematical expression over absolute time and sample."""
+
+    expression: str = "0"
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "_tree", _parse_expression(self.expression))
+
+    def _evaluate(self, start_sample: int, frames: int, sample_rate: float) -> NDArray[np.float64]:
+        sample = np.arange(start_sample, start_sample + frames, dtype=np.float64)
+        namespace = {
+            **_EXPRESSION_FUNCTIONS,
+            "t": sample / sample_rate,
+            "sample": sample,
+            "pi": np.pi,
+            "e": np.e,
+        }
+        values = _evaluate_expression(self._tree, namespace)
+        return np.broadcast_to(np.asarray(values, dtype=np.float64), (frames,)).copy()
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"kind": "expression", "expression": self.expression, "unit": self.unit}
+
+
+@dataclass(frozen=True)
+class ExternalControl(ControlBase):
+    """A captured external-control stream with deterministic interpolation.
+
+    Live MIDI/OSC devices remain an application concern. The core receives a
+    defensively copied, serializable capture so preview and export use identical
+    values and missing input falls back safely.
+    """
+
+    samples: tuple[tuple[float, float], ...] = ()
+    fallback: float = 0.0
+
+    def __post_init__(self) -> None:
+        ordered = tuple(sorted((float(time), float(value)) for time, value in self.samples))
+        object.__setattr__(self, "samples", ordered)
+
+    def _evaluate(self, start_sample: int, frames: int, sample_rate: float) -> NDArray[np.float64]:
+        if not self.samples:
+            return np.full(frames, float(self.fallback), dtype=np.float64)
+        times = sample_times(start_sample, frames, sample_rate)
+        knots = np.asarray([item[0] for item in self.samples], dtype=np.float64)
+        values = np.asarray([item[1] for item in self.samples], dtype=np.float64)
+        return np.interp(times, knots, values, left=float(self.fallback), right=float(values[-1]))
+
+    def constant_value(self) -> float | None:
+        return float(self.fallback) if not self.samples else None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "kind": "external",
+            "samples": [[float(time), float(value)] for time, value in self.samples],
+            "fallback": float(self.fallback),
+            "unit": self.unit,
+        }
+
+
+@dataclass(frozen=True)
 class SumControl(ControlBase):
     """Sum of nested controls."""
 
@@ -436,6 +664,10 @@ _CONTROL_KINDS: dict[str, type[ControlBase]] = {
     "constant": ConstantControl,
     "lfo": LfoControl,
     "keyframe": KeyframeControl,
+    "step_sequence": StepSequenceControl,
+    "random_walk": RandomWalkControl,
+    "expression": ExpressionControl,
+    "external": ExternalControl,
     "ramp": RampControl,
     "sum": SumControl,
     "product": ProductControl,
@@ -457,6 +689,10 @@ def control_from_dict(data: Mapping[str, Any]) -> ControlBase:
     fields = {key: value for key, value in data.items() if key != "kind"}
     if kind == "keyframe":
         fields["keyframes"] = tuple((float(time), float(value)) for time, value in fields.get("keyframes", ()))
+    if kind == "step_sequence":
+        fields["values"] = tuple(float(value) for value in fields.get("values", ()))
+    if kind == "external":
+        fields["samples"] = tuple((float(time), float(value)) for time, value in fields.get("samples", ()))
     for nested in ("source",):
         if nested in fields:
             fields[nested] = control_from_dict(fields[nested])

@@ -32,6 +32,7 @@ from src.audio.sam_workbench.render.abstract_pm import (
     preset_diotic,
     preset_exact_symmetric,
 )
+from src.audio.sam_workbench.model import SignalSpec, Source
 
 SAMPLE_RATE = 44_100
 
@@ -59,6 +60,12 @@ def test_exact_symmetric_matches_the_reference_equations():
     rendered = render_source(source, SAMPLE_RATE, 4096, dtype=np.float64)
     expected = _exact_reference(0.4, 440.0, 4.0, 1.2, 4096)
     np.testing.assert_allclose(rendered, expected, rtol=0, atol=1e-12)
+
+
+def test_project_signal_waveform_reaches_the_canonical_renderer():
+    source = Source(signal=SignalSpec(carrier_frequency_hz=220.0, waveform="square"))
+    rendered = render_source(source, SAMPLE_RATE, 2048, dtype=np.float64)
+    assert set(np.unique(rendered)) <= {-0.5, 0.5}
 
 
 @pytest.mark.parametrize("block_size", [1, 7, 64, 127, 512, 4096, 10_000])
