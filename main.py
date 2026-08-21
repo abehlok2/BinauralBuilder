@@ -117,13 +117,17 @@ def _patch_qmessagebox():
 
 _patch_qmessagebox()
 
-# Attempt to import VoiceEditorDialog. Handle if ui/voice_editor_dialog.py is not found.
+# Voice editing is optional so that the rest of the application can still open
+# when one of the editor's dependencies is unavailable.  Keep this import
+# separate from the voice-detail helper: a failure in that secondary dialog
+# must not replace a successfully imported VoiceEditorDialog with the stub.
 try:
     from src.ui.voice_editor_dialog import VoiceEditorDialog, get_default_params_for_function
-    from src.ui.voice_detail_display_dialog import get_default_display_flag
     VOICE_EDITOR_DIALOG_AVAILABLE = True
-except ImportError:
+    VOICE_EDITOR_DIALOG_IMPORT_ERROR = None
+except ImportError as exc:
     VOICE_EDITOR_DIALOG_AVAILABLE = False
+    VOICE_EDITOR_DIALOG_IMPORT_ERROR = exc
 
     def get_default_params_for_function(func_name_from_combo: str, is_transition_mode: bool):
         return OrderedDict()
@@ -138,18 +142,40 @@ except ImportError:
             super().__init__(parent)
             self.setWindowTitle("Voice Editor (Unavailable)")
             layout = QVBoxLayout(self)
-            label = QLabel("VoiceEditorDialog is not available. Please ensure 'ui/voice_editor_dialog.py' exists.")
+            label = QLabel(
+                "VoiceEditorDialog could not be imported. The file may exist, "
+                "but one of its Python or system dependencies may be unavailable."
+            )
             layout.addWidget(label)
             ok_button = QPushButton("OK")
             ok_button.clicked.connect(self.reject)
             layout.addWidget(ok_button)
-            print("WARNING: ui.voice_editor_dialog.VoiceEditorDialog not found. Voice editing will be limited/non-functional.")
+            print(
+                "WARNING: src.ui.voice_editor_dialog.VoiceEditorDialog could not be imported; "
+                "voice editing will be limited/non-functional. "
+                f"Original error: {VOICE_EDITOR_DIALOG_IMPORT_ERROR!r}"
+            )
 
         def exec_(self):
             # Override exec_ to prevent showing a non-functional dialog,
             # or show a simple message.
             QMessageBox.critical(self.parent(), "Voice Editor Error", "VoiceEditorDialog component is missing.\nCannot add or edit voices.")
             return QDialog.Rejected
+
+
+# This helper belongs to a separate configuration dialog and has a safe local
+# equivalent.  Do not let an optional configuration-dialog import disable the
+# main voice editor.
+try:
+    from src.ui.voice_detail_display_dialog import get_default_display_flag
+except ImportError as exc:
+    print(
+        "WARNING: Voice detail display preferences could not be imported; "
+        f"using default visibility rules. Original error: {exc!r}"
+    )
+
+    def get_default_display_flag(param_name: str) -> bool:
+        return True
 
 
 # Numpy is used in _generate_test_step_audio
