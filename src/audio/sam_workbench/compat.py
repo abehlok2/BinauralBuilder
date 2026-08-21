@@ -46,11 +46,17 @@ from .dsp.source import (
     CompiledSource,
     render_source,
 )
+from .trajectory.geometry import ArcGeometry, GeometrySpec
 from .trajectory.legacy_paths import SAM2_DEFAULT_SHAPES_BY_TYPE, resolve_sam2_shape
+from .trajectory.legacy_profile import profile_to_geometry
+from .trajectory.spec import TrajectorySpec
+from .trajectory.traversal import TraversalSpec
 from .waveforms import TWO_PI
 
 __all__ = [
     "SAM2_PARAMETER_DEFAULTS",
+    "NOMINAL_PATH_RADIUS_M",
+    "sam2_trajectory",
     "SAM2_TRANSITION_PARAMETER_DEFAULTS",
     "SAM_SCHEMA_VERSION",
     "Sam2Spec",
@@ -466,3 +472,54 @@ def render_sam2_voice(
     start_sample = 0 if is_transition else seconds_to_samples(initial_offset, sample_rate)
     audio = render_sam2(spec, frames, sample_rate, start_sample=start_sample, block_size=block_size)
     return to_frame_major(audio).astype(AUDIO_DTYPE, copy=False)
+
+
+# --- canonical view of an abstract path -------------------------------------
+
+#: Distance at which an abstract SAM path is drawn. Abstract phase modulation
+#: places no source in metres - it modulates interaural phase directly - so a
+#: radius is chosen only to make the swept angles visible.
+NOMINAL_PATH_RADIUS_M = 1.0
+
+
+def sam2_trajectory(
+    spec: Sam2Spec, *, radius_m: float = NOMINAL_PATH_RADIUS_M
+) -> TrajectorySpec:
+    """The canonical trajectory a SAM2 voice's path describes.
+
+    This is a **view**, not the renderer's model: the abstract engine modulates
+    interaural phase directly and never computes a distance. The trajectory
+    shows the angles that modulation sweeps, so the path a user draws and the
+    geometry the geometric renderer would use can be compared side by side.
+
+    A custom path is translated through the legacy coordinate bridge; every
+    other path type becomes the arc its width and direction offset describe.
+    """
+
+    geometry: GeometrySpec | None = None
+    if spec.path_type == "custom":
+        geometry = profile_to_geometry(spec.custom_path_profile)
+    if geometry is None:
+        half_width = 0.5 * float(spec.arc_width_start_deg)
+        centre = float(spec.direction_offset_start_deg)
+        geometry = ArcGeometry(
+            radius_m=float(radius_m), start_deg=centre - half_width, end_deg=centre + half_width
+        )
+
+    if spec.path_type == "closed":
+        traversal = TraversalSpec(rate_hz=spec.modulation_start_hz, mode="loop", arc_length=False)
+    elif spec.path_type == "discontinuous":
+        steps = max(2, int(spec.discontinuous_steps))
+        period = 1.0 / max(1e-9, float(spec.modulation_start_hz))
+        traversal = TraversalSpec(
+            rate_hz=0.0,
+            mode="loop",
+            arc_length=False,
+            jump_times_s=tuple(period * index / steps for index in range(1, steps)),
+            jump_step=1.0 / steps,
+        )
+    else:
+        traversal = TraversalSpec(
+            rate_hz=spec.modulation_start_hz, mode="ping_pong", easing="sine", arc_length=False
+        )
+    return TrajectorySpec(geometry=geometry, traversal=traversal)

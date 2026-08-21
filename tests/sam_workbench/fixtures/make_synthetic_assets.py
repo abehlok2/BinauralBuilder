@@ -17,8 +17,16 @@ Assets
     and head shadow only, so it is front/back symmetric by construction and is
     not a stand-in for measured data.
 ``synthetic_hrir.sofa``
-    The same HRIR set written as a minimal ``SimpleFreeFieldHRIR`` SOFA file.
-    Requires ``h5py``; the ``.npz`` copy is always written.
+    The same HRIR set as a ``SimpleFreeFieldHRIR`` SOFA file.
+``synthetic_sonicom_hrir.sofa``
+    A denser, SONICOM-shaped set: a full azimuth circle at six elevations,
+    with a nonzero ``Data_Delay`` so the delay policies have something to act
+    on. Small enough to keep in the repository, structured enough to exercise
+    direction lookup, interpolation, and delay handling.
+
+Writing SOFA prefers ``sofar`` so the result is convention-valid; ``h5py`` is
+used as a fallback. Reading the fixtures in tests needs one of the two, and
+those tests skip when neither is installed.
 """
 
 from __future__ import annotations
@@ -127,13 +135,126 @@ def write_hrir_npz(path: Path | None = None) -> Path:
     return destination
 
 
-def write_synthetic_sofa(path: Path | None = None) -> Path:
-    """Write a minimal ``SimpleFreeFieldHRIR`` SOFA file (requires ``h5py``)."""
+SONICOM_AZIMUTHS_DEG = tuple(float(value) for value in range(0, 360, 15))
+#: The elevations the subject-selection audition grid uses.
+SONICOM_ELEVATIONS_DEG = (-45.0, -30.0, 0.0, 30.0, 45.0, 60.0)
+SONICOM_TAPS = 128
+#: A nonzero Data_Delay, so a loader that ignores it is caught by a test.
+SONICOM_DATA_DELAY_SAMPLES = (3.0, 5.0)
 
-    import h5py
+
+def sonicom_shaped_set() -> tuple[np.ndarray, np.ndarray]:
+    """Return ``(positions_deg, hrirs)`` for a SONICOM-shaped synthetic set.
+
+    ``positions_deg`` is ``(measurements, 3)`` azimuth/elevation/distance and
+    ``hrirs`` is ``(measurements, 2, taps)``. The responses are the same
+    closed-form shadow-and-delay model as the small set, sampled over a full
+    sphere-like grid so direction lookup has somewhere to go.
+    """
+
+    positions = np.array(
+        [[azimuth, elevation, SOURCE_DISTANCE_M]
+         for elevation in SONICOM_ELEVATIONS_DEG
+         for azimuth in SONICOM_AZIMUTHS_DEG],
+        dtype=np.float64,
+    )
+    hrirs = np.zeros((positions.shape[0], 2, SONICOM_TAPS), dtype=np.float64)
+    taps = np.arange(SONICOM_TAPS, dtype=np.float64)
+    reference_delay_s = SOURCE_DISTANCE_M / SPEED_OF_SOUND_M_S
+
+    for index, (azimuth, elevation, _) in enumerate(positions):
+        elevation_scale = math.cos(math.radians(elevation))
+        for ear, sign in ((0, 1), (1, -1)):
+            cosine = _ear_incidence_cosine(azimuth, sign) * elevation_scale
+            delay_samples = (
+                (_woodworth_delay_s(azimuth, sign) - reference_delay_s) * SAMPLE_RATE_HZ + 24.0
+            )
+            envelope = np.clip(1.0 - np.abs(taps - delay_samples) / 3.0, 0.0, None)
+            pulse = 0.5 * (1.0 - np.cos(math.pi * envelope)) * np.sign(envelope)
+            shadow = 0.6 + 0.4 * cosine
+            # A gentle elevation-dependent notch stands in for a pinna cue.
+            notch = 1.0 - 0.25 * math.cos(math.radians(2.0 * elevation))
+            hrirs[index, ear] = shadow * notch * pulse
+    return positions, hrirs
+
+
+def _write_sofa_with_sofar(
+    path: Path,
+    positions_deg: np.ndarray,
+    hrirs: np.ndarray,
+    *,
+    data_delay: np.ndarray,
+    database_name: str,
+    listener_short_name: str,
+    comment: str,
+) -> Path:
+    import sofar
+
+    sofa = sofar.Sofa("SimpleFreeFieldHRIR")
+    sofa.Data_IR = hrirs
+    sofa.Data_SamplingRate = float(SAMPLE_RATE_HZ)
+    sofa.Data_Delay = data_delay
+    sofa.SourcePosition = positions_deg
+    sofa.SourcePosition_Type = "spherical"
+    sofa.SourcePosition_Units = "degree, degree, metre"
+    sofa.ReceiverPosition = np.array(
+        [[0.0, HEAD_RADIUS_M, 0.0], [0.0, -HEAD_RADIUS_M, 0.0]], dtype=np.float64
+    )
+    sofa.GLOBAL_DatabaseName = database_name
+    sofa.GLOBAL_ListenerShortName = listener_short_name
+    sofa.GLOBAL_Title = "Synthetic BinauralBuilder SAM workbench test HRIR"
+    sofa.GLOBAL_AuthorContact = "BinauralBuilder repository"
+    sofa.GLOBAL_Organization = "BinauralBuilder"
+    sofa.GLOBAL_License = "Synthetic fixture created for this repository's tests"
+    sofa.GLOBAL_Comment = comment
+    sofar.write_sofa(str(path), sofa)
+    return path
+
+
+def write_sonicom_shaped_sofa(path: Path | None = None) -> Path:
+    """Write the denser SONICOM-shaped fixture, with a nonzero ``Data_Delay``."""
+
+    destination = Path(path) if path is not None else FIXTURE_DIR / "synthetic_sonicom_hrir.sofa"
+    positions, hrirs = sonicom_shaped_set()
+    return _write_sofa_with_sofar(
+        destination,
+        positions,
+        hrirs,
+        data_delay=np.array([list(SONICOM_DATA_DELAY_SAMPLES)], dtype=np.float64),
+        database_name="Synthetic SONICOM-shaped fixture",
+        listener_short_name="P0001",
+        comment="windowed",
+    )
+
+
+def write_synthetic_sofa(path: Path | None = None) -> Path:
+    """Write the small horizontal set as a ``SimpleFreeFieldHRIR`` SOFA file."""
 
     destination = Path(path) if path is not None else FIXTURE_DIR / "synthetic_hrir.sofa"
     positions, hrirs = synthetic_hrir_set()
+    try:
+        return _write_sofa_with_sofar(
+            destination,
+            positions,
+            hrirs,
+            data_delay=np.zeros((1, 2)),
+            database_name="Synthetic BinauralBuilder fixture",
+            listener_short_name="synthetic",
+            comment="windowed",
+        )
+    except ImportError:
+        pass
+    return _write_synthetic_sofa_with_h5py(destination, positions, hrirs)
+
+
+def _write_synthetic_sofa_with_h5py(
+    path: Path, positions: np.ndarray, hrirs: np.ndarray
+) -> Path:
+    """Fallback writer for environments with ``h5py`` but no ``sofar``."""
+
+    import h5py
+
+    destination = Path(path)
     measurements = hrirs.shape[0]
 
     with h5py.File(destination, "w") as handle:
@@ -192,10 +313,14 @@ def write_synthetic_sofa(path: Path | None = None) -> Path:
 def main() -> int:
     print(f"wrote {write_impulse_wav()}")
     print(f"wrote {write_hrir_npz()}")
-    try:
-        print(f"wrote {write_synthetic_sofa()}")
-    except ImportError:
-        print("h5py is not installed; skipped synthetic_hrir.sofa")
+    for writer, name in (
+        (write_synthetic_sofa, "synthetic_hrir.sofa"),
+        (write_sonicom_shaped_sofa, "synthetic_sonicom_hrir.sofa"),
+    ):
+        try:
+            print(f"wrote {writer()}")
+        except ImportError:
+            print(f"no SOFA backend installed; skipped {name}")
     return 0
 
 

@@ -8,6 +8,8 @@ envelopes, mixing, and limiting, and `render` builds renderers on top.
 from __future__ import annotations
 
 from .blocks import RenderBlock, RenderContext, iter_blocks
+from .delay import FractionalDelayLine, cubic_interpolate, read_fractional
+from .filters import OnePoleLowpass, head_shadow_cutoff_hz
 from .envelopes import (
     DEFAULT_CROSSFADE_MS,
     apply_fade_in,
@@ -40,8 +42,10 @@ __all__ = [
     "EAR_POLARITY_LEGACY",
     "EAR_POLARITY_SAME",
     "CompiledSource",
+    "FractionalDelayLine",
     "LimiterReport",
     "ModulatorSpec",
+    "OnePoleLowpass",
     "PhaseAccumulator",
     "RenderBlock",
     "RenderContext",
@@ -51,8 +55,10 @@ __all__ = [
     "carrier_phase",
     "compile_source",
     "crossfade_blocks",
+    "cubic_interpolate",
     "equal_power_crossfade",
     "instantaneous_frequencies",
+    "head_shadow_cutoff_hz",
     "integrate_phase",
     "interaural_phase_difference",
     "iter_blocks",
@@ -62,6 +68,7 @@ __all__ = [
     "mix_stems",
     "modulation_sum",
     "peak_level",
+    "read_fractional",
     "phase_from_constant_frequency",
     "render_modulator",
     "render_oscillator",

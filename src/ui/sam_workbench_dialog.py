@@ -37,10 +37,13 @@ from src.audio.sam_workbench.parameters import (
     SAM2_FIELDS,
     validate_sam2_params,
 )
+from src.audio.sam_workbench.compat import sam2_spec_from_params, sam2_trajectory
 from src.audio.sam_workbench.preview import PreviewResult, render_voice_preview, to_pcm16_bytes
 
 from .sam_analysis_panel import SamAnalysisPanel
 from .sam_basic_panel import SamBasicPanel
+from .sam_hrtf_lab import SamHrtfLab
+from .sam_path_panel import SamPathPanel
 
 try:  # pragma: no cover - import guard mirrors the rest of the UI package
     from PyQt5.QtMultimedia import QAudio, QAudioDeviceInfo, QAudioFormat, QAudioOutput
@@ -145,12 +148,18 @@ class SamWorkbenchDialog(QDialog):
         self.tabs = QTabWidget()
         self.basic_panel = SamBasicPanel(mode=BASIC, is_transition=self._is_transition)
         self.advanced_panel = SamBasicPanel(mode=EXPERT, is_transition=self._is_transition)
+        self.path_panel = SamPathPanel()
+        self.path_panel.profileMigrated.connect(self._on_profile_migrated)
+        self.hrtf_lab = SamHrtfLab(sample_rate_hz=self._sample_rate)
+        self.hrtf_lab.assetSelected.connect(self._on_hrtf_asset_selected)
         self.analysis_panel = SamAnalysisPanel()
         self.compatibility_view = QTextEdit()
         self.compatibility_view.setReadOnly(True)
 
         self.tabs.addTab(self._scrolled(self.basic_panel), "Basic SAM")
         self.tabs.addTab(self._scrolled(self.advanced_panel), "Advanced")
+        self.tabs.addTab(self.path_panel, "Path")
+        self.tabs.addTab(self.hrtf_lab, "HRTF Lab")
         self.tabs.addTab(self.analysis_panel, "Analysis")
         self.tabs.addTab(self.compatibility_view, "Compatibility")
         layout.addWidget(self.tabs, 1)
@@ -202,7 +211,12 @@ class SamWorkbenchDialog(QDialog):
         return area
 
     def _on_mode_changed(self, mode: str) -> None:
-        """Basic hides the advanced tab; advanced and expert reveal it."""
+        """Basic hides the advanced tab; advanced and expert reveal it.
+
+        The Path, Analysis, and Compatibility tabs stay available in every
+        mode: they show what the current parameters do rather than adding more
+        of them.
+        """
 
         self.tabs.setTabEnabled(1, mode in (ADVANCED, EXPERT))
 
@@ -217,6 +231,47 @@ class SamWorkbenchDialog(QDialog):
         self.basic_panel.set_params(params)
         self.advanced_panel.set_params(params)
         self._on_mode_changed(self.mode_combo.currentText())
+        self._refresh_path()
+
+    def _refresh_path(self) -> None:
+        """Show the canonical trajectory the current parameters describe."""
+
+        params = self.collect_params()
+        spec = sam2_spec_from_params(params, is_transition=self._is_transition)
+        duration = 1.0 / max(0.05, float(spec.modulation_start_hz))
+        self.path_panel.set_profile(params.get("customPathProfile"))
+        self.path_panel.set_trajectory(sam2_trajectory(spec), duration_s=duration * 2.0)
+
+    @pyqtSlot(dict)
+    def _on_hrtf_asset_selected(self, selection: dict) -> None:
+        """Record an HRTF choice on this voice's copy.
+
+        Only the path, subject, and options are stored: the dataset itself
+        lives in the application data directory, so a project stays portable
+        and small.
+        """
+
+        params = self._original.setdefault("params", {})
+        for key in ("hrtfAsset", "hrtfSubject", "hrtfInterpolation", "hrtfDelayPolicy",
+                    "headphoneCorrection"):
+            if selection.get(key) not in (None, ""):
+                params[key] = selection[key]
+        params.setdefault("samSchemaVersion", 1)
+        self._voice["params"] = self.collect_params()
+        subject = selection.get("hrtfSubject") or "asset"
+        self.status_label.setText(
+            f"HRTF {subject} selected ({selection.get('quality', 'unknown')} quality)."
+        )
+        self._revalidate()
+
+    @pyqtSlot(dict)
+    def _on_profile_migrated(self, profile: dict) -> None:
+        """A committed path migration becomes an edit to this voice's copy."""
+
+        self._original.setdefault("params", {})["customPathProfile"] = profile
+        self._voice["params"] = self.collect_params()
+        self.status_label.setText("Custom path profile migrated to versioned coordinates.")
+        self._revalidate()
 
     def collect_params(self) -> dict[str, Any]:
         """Merge both panels' values over the original parameters.
@@ -242,6 +297,7 @@ class SamWorkbenchDialog(QDialog):
     def _on_params_changed(self, _params: dict[str, Any]) -> None:
         self._voice["params"] = self.collect_params()
         self._revalidate()
+        self._refresh_path()
 
     # --- validation ---------------------------------------------------------
 
