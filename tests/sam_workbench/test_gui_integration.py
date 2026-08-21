@@ -23,7 +23,7 @@ import pytest
 pytest.importorskip("PyQt5")
 pytest.importorskip("pytestqt", reason="GUI tests need pytest-qt")
 
-from PyQt5.QtWidgets import QDialog, QMainWindow  # noqa: E402
+from PyQt5.QtWidgets import QDialog, QFormLayout, QMainWindow  # noqa: E402
 
 from src.audio.sam_workbench.compat import render_sam2_voice  # noqa: E402
 from src.audio.sam_workbench.parameters import (  # noqa: E402
@@ -209,6 +209,32 @@ def test_workbench_loads_the_voice_into_its_controls(workbench):
     dialog, _ = workbench
     assert dialog.basic_panel.control_for("carrierFreq").value() == pytest.approx(220.0)
     assert dialog.basic_panel.control_for("pathType").value() == "open"
+
+
+def test_workbench_parameter_tooltips_explain_output_and_metadata(workbench):
+    """The label and editor both expose the same informative hover card."""
+
+    dialog, _ = workbench
+    control = dialog.basic_panel.control_for("carrierFreq")
+    tooltip = control.editor().toolTip()
+
+    assert "audible tone" in tooltip
+    assert "Range:" in tooltip
+    assert "Default:" in tooltip
+    assert "Can be automated" in tooltip
+
+    form = control.parent().findChild(QFormLayout)
+    label = form.labelForField(control)
+    assert label.toolTip() == tooltip
+
+
+def test_transition_tooltip_explains_which_endpoint_is_changed(qtbot):
+    from src.ui.sam_basic_panel import SamBasicPanel
+
+    panel = SamBasicPanel(mode=BASIC, is_transition=True)
+    qtbot.addWidget(panel)
+    assert "beginning of the transition" in panel.control_for("startCarrierFreq").toolTip()
+    assert "end of the transition" in panel.control_for("endCarrierFreq").toolTip()
 
 
 def test_workbench_edits_a_copy_so_cancel_changes_nothing(workbench):
