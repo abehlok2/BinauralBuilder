@@ -525,11 +525,28 @@ def validate_sam2_params(
                         key, f"is at or above Nyquist ({nyquist:.0f} Hz) for this project's sample rate"
                     )
                 )
+    # Which renderers exist, and what each one needs, comes from the registry
+    # rather than from a list repeated here: a fifth copy of that list is a
+    # fifth chance for it to disagree with the other four.
+    from src.audio.sam_workbench.render.registry import REGISTRY
+
     renderer_mode = params.get("rendererMode", "abstract_pm")
-    if renderer_mode not in ("abstract_pm", "geometric", "hrtf", "hybrid"):
-        issues.append(ValidationIssue("rendererMode", "must be abstract_pm, geometric, hrtf, or hybrid"))
-    if renderer_mode in ("hrtf", "hybrid") and not params.get("hrtfAsset"):
-        issues.append(ValidationIssue("hrtfAsset", "an explicit SOFA asset is required for this renderer"))
+    if renderer_mode not in REGISTRY:
+        issues.append(
+            ValidationIssue(
+                "rendererMode", f"must be {', '.join(REGISTRY.identifiers)}"
+            )
+        )
+    else:
+        for requirement in REGISTRY.get(renderer_mode).assets:
+            if requirement.required and not params.get(requirement.key):
+                issues.append(
+                    ValidationIssue(
+                        requirement.key,
+                        f"an explicit {requirement.kind.upper()} asset is required "
+                        "for this renderer",
+                    )
+                )
     options = params.get("hrtfOptions", {})
     if options is not None and not isinstance(options, dict):
         issues.append(ValidationIssue("hrtfOptions", "must be a versioned object"))

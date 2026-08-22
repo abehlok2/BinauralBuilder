@@ -12,7 +12,7 @@ from typing import Any
 import numpy as np
 from numpy.typing import NDArray
 
-from src.audio.sam_workbench.conventions import CHANNEL_COUNT, seconds_to_samples
+from src.audio.sam_workbench.conventions import CHANNEL_COUNT, intersect_window, seconds_to_samples
 from src.audio.sam_workbench.dsp.limiter import LimiterReport, limit_lookahead, true_peak_estimate_db
 from src.audio.sam_workbench.dsp.mixer import apply_shared_gain, mix_stems, peak_level
 from src.audio.sam_workbench.dsp.source import (
@@ -126,6 +126,29 @@ def render_warnings(project) -> tuple[ValidationIssue, ...]:
     return tuple(issues)
 
 
+def _source_window(
+    source, sample_rate: float, window_start: int, window_frames: int
+) -> tuple[int, int, int, int] | None:
+    """Intersect a source's own absolute interval with the requested window.
+
+    Returns ``(source_start, placement, source_offset, frames)`` - the source's
+    absolute start plus the three values :func:`intersect_window` produces - or
+    ``None`` when the source and the window do not overlap.
+
+    The intersection itself lives in :mod:`..conventions` so that this and the
+    compiled plan cannot drift apart about where a source sounds.
+    """
+
+    source_start = seconds_to_samples(source.start_s, sample_rate)
+    source_end = (
+        None
+        if source.duration_s is None
+        else source_start + seconds_to_samples(source.duration_s, sample_rate)
+    )
+    overlap = intersect_window(source_start, source_end, window_start, window_frames)
+    return None if overlap is None else (source_start, *overlap)
+
+
 def render_project(
     project,
     duration_s: float | None = None,
@@ -161,23 +184,12 @@ def render_project(
     for source in project.sources:
         if not source.enabled:
             continue
-        source_start = seconds_to_samples(source.start_s, sample_rate)
-        offset = source_start - int(start_sample)
-        available = frames - max(0, offset)
-        if available <= 0:
+        window = _source_window(source, sample_rate, int(start_sample), frames)
+        if window is None:
             continue
-        source_frames = available
-        if source.duration_s is not None:
-            source_frames = min(available, seconds_to_samples(source.duration_s, sample_rate))
-        if source_frames <= 0:
-            continue
+        source_start, placement, source_offset, source_frames = window
 
         compiled: CompiledSource = compile_source(source, ear_polarity=ear_polarity)
-        # Where the stem lands in the render window, and how far into the
-        # source's own timeline that is - nonzero when the window opens after
-        # the source already started.
-        placement = max(0, offset)
-        source_offset = max(0, -offset)
         audio = render_source(
             compiled,
             sample_rate,
