@@ -98,6 +98,7 @@ __all__ = [
     "linear_to_db",
     "seconds_to_samples",
     "samples_to_seconds",
+    "intersect_window",
     "to_channel_major",
     "to_frame_major",
 ]
@@ -209,6 +210,29 @@ def samples_to_seconds(samples: int, sample_rate_hz: float) -> float:
     """Convert an absolute sample index to seconds."""
 
     return int(samples) / float(sample_rate_hz)
+
+
+def intersect_window(
+    source_start: int, source_end: int | None, window_start: int, window_frames: int
+) -> tuple[int, int, int] | None:
+    """Intersect a source's absolute interval with a render window.
+
+    Returns ``(placement, source_offset, frames)``: where the overlap sits in
+    the window, how far into the source's own timeline it begins, and how long
+    it is - or ``None`` when the two do not overlap.  ``source_end`` of ``None``
+    means the source runs as long as the window asks.
+
+    One implementation, deliberately.  Intersecting only the near end is how a
+    source came to render past its own end, and how a window opening after a
+    source had finished came to render it from its beginning.
+    """
+
+    window_end = int(window_start) + int(window_frames)
+    end = window_end if source_end is None else min(int(source_end), window_end)
+    begin = max(int(source_start), int(window_start))
+    if end <= begin:
+        return None
+    return (begin - int(window_start), begin - int(source_start), end - begin)
 
 
 # --- array layout ----------------------------------------------------------

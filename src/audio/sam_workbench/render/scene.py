@@ -12,7 +12,7 @@ from typing import Any
 import numpy as np
 from numpy.typing import NDArray
 
-from src.audio.sam_workbench.conventions import CHANNEL_COUNT, seconds_to_samples
+from src.audio.sam_workbench.conventions import CHANNEL_COUNT, intersect_window, seconds_to_samples
 from src.audio.sam_workbench.dsp.limiter import LimiterReport, limit_lookahead, true_peak_estimate_db
 from src.audio.sam_workbench.dsp.mixer import apply_shared_gain, mix_stems, peak_level
 from src.audio.sam_workbench.dsp.source import (
@@ -131,30 +131,22 @@ def _source_window(
 ) -> tuple[int, int, int, int] | None:
     """Intersect a source's own absolute interval with the requested window.
 
-    Returns ``(source_start, placement, source_offset, frames)`` where
-    ``placement`` is the offset into the window, ``source_offset`` is how far
-    into the source's own timeline the window opens, and ``frames`` is the
-    overlap - or ``None`` when the two do not overlap at all.
+    Returns ``(source_start, placement, source_offset, frames)`` - the source's
+    absolute start plus the three values :func:`intersect_window` produces - or
+    ``None`` when the source and the window do not overlap.
 
-    Both ends have to be intersected, not just the near one. Clamping the
-    length to the source's duration without first subtracting the part of the
-    source that had already elapsed let a window opening late run past the
-    source's end, and a window opening entirely after the source had finished
-    rendered it from its own beginning as though it were only now starting.
+    The intersection itself lives in :mod:`..conventions` so that this and the
+    compiled plan cannot drift apart about where a source sounds.
     """
 
     source_start = seconds_to_samples(source.start_s, sample_rate)
-    window_end = window_start + window_frames
-    # A source with no declared duration runs to the end of any window.
-    source_end = window_end
-    if source.duration_s is not None:
-        source_end = source_start + seconds_to_samples(source.duration_s, sample_rate)
-
-    begin = max(source_start, window_start)
-    end = min(source_end, window_end)
-    if end <= begin:
-        return None
-    return (source_start, begin - window_start, begin - source_start, end - begin)
+    source_end = (
+        None
+        if source.duration_s is None
+        else source_start + seconds_to_samples(source.duration_s, sample_rate)
+    )
+    overlap = intersect_window(source_start, source_end, window_start, window_frames)
+    return None if overlap is None else (source_start, *overlap)
 
 
 def render_project(

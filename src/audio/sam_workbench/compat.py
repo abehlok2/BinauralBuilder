@@ -32,7 +32,7 @@ change as described above.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Mapping
 
 import numpy as np
@@ -203,6 +203,14 @@ class Sam2Spec:
     transition_start_s: float = 0.0
     transition_duration_s: float | None = None
     schema_version: int | None = None
+    #: Scene automation the abstract renderer follows per sample. ``None`` for
+    #: every voice whose scene does not automate these, which is what keeps the
+    #: established closed-form phase bit-exact wherever it already applied.
+    #: Keys are ``"modulation"``/``"carrier"`` for integrated frequencies, and
+    #: ``"arc_width"``/``"direction"``/``"spatial_scale"`` for read-per-sample
+    #: shape parameters.
+    automation_phase: Mapping[str, Any] | None = field(default=None, repr=False, compare=False)
+    automation_shape: Mapping[str, Any] | None = field(default=None, repr=False, compare=False)
     unknown_params: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -319,6 +327,75 @@ def sam2_spec_from_params(
 # --- time bases -------------------------------------------------------------
 
 
+#: Scene-automated parameters the abstract renderer can follow per sample, and
+#: the field of :class:`Sam2Spec` each one drives. Frequencies are integrated;
+#: the rest are read.
+_INTEGRATED_AUTOMATION = {"modFreq": "modulation", "carrierFreq": "carrier"}
+_SHAPE_AUTOMATION = {
+    "arcWidthDeg": "arc_width",
+    "directionOffsetDeg": "direction",
+    "spatialScale": "spatial_scale",
+}
+
+
+def _scene_automation(
+    sam_scene: Mapping[str, Any],
+    source_id: str,
+    base: Mapping[str, Any],
+    sample_rate: float,
+    origin_offset: int,
+):
+    """Compile the scene's automation for the parameters this renderer follows.
+
+    Returns a mapping from parameter name to a callable over an absolute
+    window. Only parameters the scene actually automates appear, so a voice
+    with no scene automation gets an empty mapping and the untouched
+    closed-form path.
+    """
+
+    from .scene_state import automated_paths, scene_parameter_series
+
+    followed = set(_INTEGRATED_AUTOMATION) | set(_SHAPE_AUTOMATION)
+    paths = [path for path in automated_paths(sam_scene, source_id) if path in followed]
+    if not paths:
+        return {}
+
+    def series_for(path: str):
+        def evaluate(start_sample: int, frames: int) -> NDArray[np.float64]:
+            # ``start_sample`` is on the renderer's clock; the scene wants the
+            # project's, which differ by the offset computed once by the caller.
+            values = scene_parameter_series(
+                sam_scene,
+                source_id,
+                int(origin_offset) + int(start_sample),
+                int(frames),
+                sample_rate,
+                base,
+            )
+            if path in values:
+                return np.asarray(values[path], dtype=np.float64)
+            return np.full(int(frames), float(base.get(path, 0.0) or 0.0), dtype=np.float64)
+
+        return evaluate
+
+    return {path: series_for(path) for path in paths}
+
+
+def _with_automation(spec: Sam2Spec, automation: Mapping[str, Any], sample_rate: float) -> Sam2Spec:
+    """Replace a spec's constant phase providers with automated ones."""
+
+    from .automation import AutomatedPhase
+
+    replacements: dict[str, Any] = {}
+    for name, role in _INTEGRATED_AUTOMATION.items():
+        if name in automation:
+            replacements[role] = AutomatedPhase(automation[name], sample_rate)
+    shape = {role: automation[name] for name, role in _SHAPE_AUTOMATION.items() if name in automation}
+    if not replacements and not shape:
+        return spec
+    return replace(spec, automation_phase=replacements or None, automation_shape=shape or None)
+
+
 def _spec_times(spec: Sam2Spec, start_sample: int, frames: int, sample_rate: float) -> NDArray[np.float64]:
     """The time axis a spec's parameters are functions of.
 
@@ -384,12 +461,18 @@ def _ramp_phase(
 def _modulation_provider(spec: Sam2Spec):
     """Build the callable that turns a SAM2 path into interaural phase."""
 
+    integrated = spec.automation_phase or {}
+    shaped = spec.automation_shape or {}
+
     def provider(start_sample: int, frames: int, sample_rate: float) -> NDArray[np.float64]:
         times = _spec_times(spec, start_sample, frames, sample_rate)
         alpha = _ramp_alpha(spec, times)
-        modulation_phase = _ramp_phase(
-            spec.modulation_start_hz, spec.modulation_end_hz, spec.transition_duration_s, times
-        )
+        if "modulation" in integrated:
+            modulation_phase = integrated["modulation"].at(start_sample, frames)
+        else:
+            modulation_phase = _ramp_phase(
+                spec.modulation_start_hz, spec.modulation_end_hz, spec.transition_duration_s, times
+            )
         shape, dynamic_scale = resolve_sam2_shape(
             spec.path_type,
             modulation_phase,
@@ -398,11 +481,23 @@ def _modulation_provider(spec: Sam2Spec):
             discontinuous_steps=spec.discontinuous_steps,
             rotation_direction=spec.rotation_direction,
         )
-        arc_width = _ramp_value(spec.arc_width_start_deg, spec.arc_width_end_deg, alpha)
-        direction = _ramp_value(
-            spec.direction_offset_start_deg, spec.direction_offset_end_deg, alpha
+        arc_width = (
+            shaped["arc_width"](start_sample, frames)
+            if "arc_width" in shaped
+            else _ramp_value(spec.arc_width_start_deg, spec.arc_width_end_deg, alpha)
         )
-        spatial_scale = _ramp_value(spec.spatial_scale_start, spec.spatial_scale_end, alpha)
+        direction = (
+            shaped["direction"](start_sample, frames)
+            if "direction" in shaped
+            else _ramp_value(
+                spec.direction_offset_start_deg, spec.direction_offset_end_deg, alpha
+            )
+        )
+        spatial_scale = (
+            shaped["spatial_scale"](start_sample, frames)
+            if "spatial_scale" in shaped
+            else _ramp_value(spec.spatial_scale_start, spec.spatial_scale_end, alpha)
+        )
         angle_deg = direction + 0.5 * arc_width * shape
         return (spatial_scale * dynamic_scale) * np.sin(np.radians(angle_deg))
 
@@ -410,6 +505,14 @@ def _modulation_provider(spec: Sam2Spec):
 
 
 def _carrier_phase_provider(spec: Sam2Spec):
+    integrated = spec.automation_phase or {}
+    if "carrier" in integrated:
+
+        def automated(start_sample: int, frames: int, sample_rate: float) -> NDArray[np.float64]:
+            return integrated["carrier"].at(start_sample, frames)
+
+        return automated
+
     def provider(start_sample: int, frames: int, sample_rate: float) -> NDArray[np.float64]:
         times = _spec_times(spec, start_sample, frames, sample_rate)
         return _ramp_phase(
@@ -478,13 +581,38 @@ def render_sam2_voice(
         return np.zeros((0, 2), dtype=AUDIO_DTYPE)
 
     voice_params = dict(params or {})
+    automation: dict[str, Any] = {}
     if sam_scene:
-        from .scene_state import scene_parameter_overrides
+        from .scene_state import automated_paths, scene_parameter_overrides
 
-        scene_seconds = float(initial_offset if scene_start_s is None else scene_start_s)
-        voice_params.update(
-            scene_parameter_overrides(sam_scene, str(source_id), scene_seconds, voice_params)
+        # Where the scene's automation lands is what decides whether the render
+        # is block-invariant. Parameters the renderer integrates or reads per
+        # sample are compiled into functions of the absolute sample index and
+        # handed over as such; anything left is resolved once, at the source's
+        # own origin rather than at the start of whichever chunk is being
+        # rendered, so that value too is the same however the caller cut the
+        # timeline.
+        scene_origin = float(initial_offset if scene_start_s is None else scene_start_s)
+        # The renderer's own clock and the scene's timeline are both absolute
+        # but need not share an origin: a transition renders from sample zero
+        # while sitting somewhere later on the project timeline. The difference
+        # is applied once, here, rather than being rediscovered per parameter.
+        voice_origin = 0 if is_transition else seconds_to_samples(initial_offset, sample_rate)
+        automation = _scene_automation(
+            sam_scene,
+            str(source_id),
+            voice_params,
+            sample_rate,
+            seconds_to_samples(scene_origin, sample_rate) - voice_origin,
         )
+        remaining = {
+            path: value
+            for path, value in scene_parameter_overrides(
+                sam_scene, str(source_id), scene_origin, voice_params
+            ).items()
+            if path not in automation
+        }
+        voice_params.update(remaining)
     spec = sam2_spec_from_params(
         voice_params,
         is_transition=is_transition,
@@ -504,6 +632,8 @@ def render_sam2_voice(
             f"expected one of "
             f"{', '.join(entry.identifier for entry in REGISTRY.voice_renderable)}"
         )
+    if automation and renderer_mode == "abstract_pm":
+        spec = _with_automation(spec, automation, sample_rate)
     if renderer_mode == "hrtf":
         audio = _render_hrtf_voice(
             voice_params, frames, sample_rate, start_sample=start_sample,

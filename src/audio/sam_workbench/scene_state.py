@@ -81,6 +81,7 @@ __all__ = [
     "scene_parameter_overrides",
     "scene_parameter_series",
     "modulator_series",
+    "automated_paths",
 ]
 
 
@@ -561,6 +562,35 @@ def scene_parameter_series(
         series[path] = np.asarray(route.apply(modulator, current), dtype=np.float64)
 
     return {path: value for path, value in series.items() if path not in AMPLITUDE_PATHS}
+
+
+def automated_paths(
+    scene_data: Mapping[str, Any] | None, source_id: str, *, include_gain: bool = False
+) -> tuple[str, ...]:
+    """Which parameter paths this scene automates for a source.
+
+    Determined from the scene's structure rather than by sampling it, because a
+    stage that has not begun yet, or one whose weight happens to be zero at the
+    instant sampled, contributes nothing at that instant and everything later.
+    A caller building compiled controls needs to know the parameter is
+    automated at all, not whether it is moving right now.
+    """
+
+    if not scene_data:
+        return ()
+    scene = normalize_sam_scene(scene_data)
+    targets = {str(source_id)} | set(WILDCARD_TARGETS)
+    paths: set[str] = set()
+    for stage in Timeline.from_mapping(scene.get("stages")).stages:
+        for binding in stage.parameter_overrides:
+            if binding.target_id in targets:
+                paths.add(binding.parameter_path)
+    for route in ModulationMatrix.from_mapping(scene.get("modulation")).routes:
+        if route.is_active and route.target_id in targets:
+            paths.add(route.parameter_path)
+    if not include_gain:
+        paths -= set(AMPLITUDE_PATHS)
+    return tuple(sorted(paths))
 
 
 def scene_gain_envelope(
