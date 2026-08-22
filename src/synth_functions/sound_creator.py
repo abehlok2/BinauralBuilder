@@ -37,6 +37,17 @@ MAX_BATCH_SIZE = 8
 # Sequential offline chunking can introduce non-step boundary phase resets
 # depending on synth internals. Keep it disabled by default so each step is
 # rendered as one uninterrupted segment.
+# Off, and not merely unfinished: measured against the unchunked path, chunked
+# generation diverges at every chunk boundary. Each chunk fades in from zero
+# rather than continuing the previous one, because the synth functions do not
+# carry their oscillator phase across a chunk - `binaural_beat`, for one, has no
+# state to return. Turning this on would put an audible fade into every long
+# render at each boundary while appearing to save memory.
+#
+# Making it correct means giving each synth function state that survives a
+# chunk, which is a per-function change rather than a flag. Until then the flag
+# stays off, and test_sequential_chunking_is_not_silently_enabled pins the
+# reason so it cannot be flipped on by someone reading only its name.
 ENABLE_SEQUENTIAL_CHUNKING = False
 # Kept for compatibility if chunking is re-enabled in the future.
 SEQUENTIAL_CHUNK_DURATION_SECONDS = 30.0
