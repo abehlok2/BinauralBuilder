@@ -218,7 +218,16 @@ class CueTransform:
     def from_mapping(cls, data: Any) -> "CueTransform":
         """Build from stored options, ignoring keys this build does not know."""
 
-        values = dict(data or {})
+        import re
+
+        # Stored options are camelCase everywhere else in a project, and this
+        # was the one place that only read snake_case: a project asking for
+        # ``itdScale`` validated, rendered, and quietly did nothing.
+        values = {}
+        for name, value in dict(data or {}).items():
+            values[str(name)] = value
+            values[re.sub(r"(?<!^)(?=[A-Z])", "_", str(name)).lower()] = value
+
         known = {
             name: float(values[name])
             for name in (*CUE_PARAMETERS, "pinna_cutoff_hz")

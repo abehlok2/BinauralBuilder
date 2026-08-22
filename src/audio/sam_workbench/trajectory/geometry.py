@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import ast
+from collections import OrderedDict
 from dataclasses import dataclass
 import math
-from typing import Protocol, Sequence, runtime_checkable
+from typing import Any, Protocol, Sequence, runtime_checkable
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
@@ -375,10 +376,45 @@ def sample_polyline_arclength(
     return result
 
 
+def _cache_key(geometry: Geometry, samples: int):
+    """A hashable identity for a geometry, or ``None`` when it has none.
+
+    Geometry objects are frozen dataclasses, so most are hashable by value and
+    two equal ones share a table. One that is not - a numpy array smuggled into
+    a field - simply misses the cache rather than raising.
+    """
+
+    try:
+        hash(geometry)
+    except TypeError:
+        return None
+    return (type(geometry), geometry, int(samples))
+
+
+#: Tables are keyed by geometry *value*, so the same shape shares one table
+#: however many trajectories refer to it. Bounded because a scene with many
+#: distinct paths should not accumulate tables without limit.
+_ARCLENGTH_CACHE: "OrderedDict[Any, tuple[NDArray[np.float64], NDArray[np.float64]]]" = OrderedDict()
+_ARCLENGTH_CACHE_LIMIT = 64
+
+
 def arclength_table(
     geometry: Geometry, samples: int = 2049
 ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
-    """Build a monotonic ``(parameter, cumulative metres)`` lookup table."""
+    """Build a monotonic ``(parameter, cumulative metres)`` lookup table.
+
+    Cached, because this is a property of the *shape* and the shape does not
+    change while a render evaluates it. Rebuilding a 2049-point table for every
+    position query made constant-speed traversal cost more than the convolution
+    it was feeding - it was three quarters of an HRTF render.
+    """
+
+    key = _cache_key(geometry, samples)
+    if key is not None:
+        cached = _ARCLENGTH_CACHE.get(key)
+        if cached is not None:
+            _ARCLENGTH_CACHE.move_to_end(key)
+            return cached
 
     if samples < 2:
         raise ValueError("samples must be at least two")
@@ -389,6 +425,13 @@ def arclength_table(
     cumulative = np.concatenate(
         ([0.0], np.cumsum(np.linalg.norm(np.diff(positions, axis=0), axis=1)))
     )
+    # Read-only, since the cache hands the same arrays to every caller.
+    parameter.setflags(write=False)
+    cumulative.setflags(write=False)
+    if key is not None:
+        _ARCLENGTH_CACHE[key] = (parameter, cumulative)
+        if len(_ARCLENGTH_CACHE) > _ARCLENGTH_CACHE_LIMIT:
+            _ARCLENGTH_CACHE.popitem(last=False)
     return parameter, cumulative
 
 

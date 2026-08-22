@@ -91,6 +91,22 @@ def test_ab_comparison_uses_one_matched_gain_for_both_ears():
     rms_b = np.sqrt(np.mean(np.square(compared.audio_b.astype(np.float64))))
     assert rms_b == pytest.approx(rms_a, rel=1e-5)
 
-def test_future_hybrid_mode_is_not_silently_replaced_by_abstract_pm():
-    with pytest.raises(ValueError, match="not available"):
+def test_hybrid_mode_is_not_silently_replaced_by_abstract_pm():
+    """Hybrid renders now, but still refuses to run without its SOFA asset.
+
+    The point this test has always made is that an unusable configuration must
+    fail rather than quietly render as something else. What changed is why it
+    is unusable: the mode is implemented, so a missing asset is the reason.
+    """
+
+    with pytest.raises((ValueError, TypeError, OSError)):
         render_sam2_voice(.01, 44_100, params={"rendererMode": "hybrid"})
+
+
+def test_hybrid_mode_renders_when_it_has_what_it_needs():
+    audio = render_sam2_voice(
+        .05, 44_100,
+        params={"rendererMode": "hybrid", "amp": 0.5, "hrtfAsset": str(FIXTURE)},
+    )
+    assert audio.shape[1] == 2
+    assert np.all(np.isfinite(audio))

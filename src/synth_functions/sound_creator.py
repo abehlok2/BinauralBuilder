@@ -1575,6 +1575,63 @@ def _write_audio_file(audio_int16, sample_rate, filename):
         return False
 
 
+def _should_stream_export(track_audio, output_filename) -> bool:
+    """Whether this export is big enough to be worth streaming.
+
+    Only for the formats soundfile writes directly. MP3 goes through pydub,
+    which wants the whole array anyway, so streaming it would spool a track to
+    disk and then load it straight back.
+    """
+
+    from src.audio.sam_workbench.streaming import STREAMING_THRESHOLD_FRAMES
+
+    if track_audio is None or getattr(track_audio, "ndim", 0) != 2:
+        return False
+    suffix = os.path.splitext(str(output_filename))[1].lower()
+    if suffix not in (".wav", ".flac"):
+        return False
+    return int(track_audio.shape[0]) >= STREAMING_THRESHOLD_FRAMES
+
+
+def _stream_export(
+    track_audio, sample_rate, output_filename, target_level, start_time, progress_callback
+) -> bool:
+    """Normalize and encode without a second full-length copy of the track."""
+
+    from src.audio.sam_workbench.streaming import (
+        iter_track_blocks, stream_normalized_export,
+    )
+
+    suffix = os.path.splitext(str(output_filename))[1].lower()
+    try:
+        report = stream_normalized_export(
+            iter_track_blocks(track_audio),
+            output_filename,
+            sample_rate,
+            target_level=float(target_level),
+            channels=int(track_audio.shape[1]),
+            subtype="PCM_16" if suffix == ".wav" else "PCM_24",
+            progress=(lambda fraction: progress_callback(fraction))
+            if progress_callback else None,
+        )
+    except Exception as error:  # noqa: BLE001 - report and fall back
+        print(f"Streaming export failed ({error}); falling back to in-memory encoding.")
+        return False
+
+    if report["nonFiniteSamples"]:
+        print(
+            f"Warning: {report['nonFiniteSamples']} non-finite samples were replaced "
+            "with silence before normalization."
+        )
+    print(
+        f"Streamed {report['frames']} frames (peak {report['peak']:.4f}, "
+        f"gain {report['gain']:.4f}) to {output_filename}"
+    )
+    print("--- Audio Generation Complete ---")
+    print(f"Total generation time: {time.time() - start_time:.2f} seconds")
+    return True
+
+
 def generate_audio(track_data, output_filename=None, target_level=0.25, progress_callback=None):
     """Generate and export an audio file (WAV/FLAC/MP3) based on track_data."""
     if not track_data:
@@ -1628,7 +1685,25 @@ def generate_audio(track_data, output_filename=None, target_level=0.25, progress
         print("Error: Track assembly failed or resulted in empty audio.")
         return False
 
-    # --- Final Normalization ---
+    # --- Final Normalization and encoding -------------------------------
+    #
+    # Exact normalization needs the peak, and the peak is not known until the
+    # last sample exists. That used to mean three full-length arrays alive at
+    # once: the rendered track, a float copy scaled by the gain, and an int16
+    # copy to encode. For an hour of stereo audio that is about four gigabytes
+    # to write a file.
+    #
+    # The streaming encoder measures the peak while spooling float32 to
+    # temporary storage, then reads that back in bounded blocks, applies the
+    # gain and encodes. Same peak, same gain, same output - two of the three
+    # copies gone. Short tracks keep the in-memory path, where a round trip
+    # through the filesystem would cost more than it saves.
+    if _should_stream_export(track_audio, output_filename):
+        return _stream_export(
+            track_audio, sample_rate, output_filename, target_level, start_time,
+            progress_callback,
+        )
+
     max_abs_val = np.max(np.abs(track_audio))
 
     if max_abs_val > 1e-9:  # Avoid division by zero for silent tracks
@@ -1636,8 +1711,6 @@ def generate_audio(track_data, output_filename=None, target_level=0.25, progress
         scaling_factor = target_level / max_abs_val
         print(f"Normalizing final track (peak value: {max_abs_val:.4f}) to target level: {target_level}")
         normalized_track = track_audio * scaling_factor
-        # Optional: Apply a limiter after normalization as a final safety net
-        # normalized_track = np.clip(normalized_track, -target_level, target_level)
     else:
         print("Track is silent or near-silent. Skipping final normalization.")
         normalized_track = track_audio # Already silent or zero

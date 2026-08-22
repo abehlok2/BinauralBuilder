@@ -466,6 +466,23 @@ def _hybrid_factory(*args: Any, **kwargs: Any):
 
 _DISTANCE_LAWS = ("none", "inverse", "inverse_square")
 
+
+def _interpolation_choices() -> tuple[str, ...]:
+    """Every interpolation mode production accepts, aliases included.
+
+    Taken from the interpolation subsystem rather than listed here, so
+    validation cannot accept a mode rendering refuses - or refuse one it
+    accepts, which is the same failure seen from the other side.
+    """
+
+    from ..hrtf.interpolation import INTERPOLATION_MODES
+    from .hrtf import INTERPOLATION_ALIASES
+
+    return tuple(INTERPOLATION_MODES) + tuple(INTERPOLATION_ALIASES)
+
+
+_INTERPOLATION_CHOICES = _interpolation_choices()
+
 _ABSTRACT_PM = REGISTRY.register(
     RendererDefinition(
         identifier="abstract_pm",
@@ -532,8 +549,13 @@ def _hrtf_extra_validation(params: Mapping[str, Any]) -> Iterable[ValidationIssu
 _HRTF_FIELDS = (
     ConfigField(
         "interpolation", "choice", "nearest",
-        choices=("nearest", "logmag_delay"), label="Interpolation",
-        description="Nearest steps between measured directions; logmag_delay interpolates across them.",
+        choices=_INTERPOLATION_CHOICES, label="Interpolation",
+        description=(
+            "How a direction between measurements is reconstructed. 'nearest' "
+            "steps between measured points; the others interpolate across the "
+            "measurement surface. 'logmag_delay' is the old name for "
+            "'delay_magnitude' and is still accepted."
+        ),
     ),
     ConfigField(
         "delayPolicy", "choice", "bake_delay_into_ir",
@@ -548,6 +570,14 @@ _HRTF_FIELDS = (
     ConfigField("propagationDelay", "bool", True, label="Propagation delay"),
     ConfigField("elevationDeg", "float", 0.0, minimum=-90.0, maximum=90.0, label="Fixed elevation"),
     ConfigField("distanceM", "float", 1.0, minimum=1e-6, label="Fixed distance"),
+    ConfigField("neighborCount", "int", 3, minimum=1, label="Neighbours",
+                description="How many measurements the three-neighbour blend uses."),
+    ConfigField("harmonicOrder", "int", None, minimum=0, label="Harmonic order",
+                description="Spherical-harmonic order, or unset for the highest the dataset supports."),
+    ConfigField("maxAngularErrorDeg", "float", 1.0, minimum=0.0, label="Max angular error",
+                description="How far the source may turn before its filter is reselected."),
+    ConfigField("minControlIntervalSamples", "int", 128, minimum=1, label="Min control interval"),
+    ConfigField("maxControlIntervalSamples", "int", 4096, minimum=1, label="Max control interval"),
 )
 
 _HRTF = REGISTRY.register(
@@ -589,7 +619,6 @@ _HYBRID = REGISTRY.register(
         version=1,
         cost_weight=1.15,
         config_key="hrtfOptions",
-        voice_renderable=False,
         capabilities=RendererCapabilities(
             label="Hybrid",
             description="HRTF for spectrum, with declared extra cues.",
@@ -607,7 +636,6 @@ _HYBRID = REGISTRY.register(
         ),
         config_fields=_HRTF_FIELDS
         + (
-            ConfigField("neighborCount", "int", 3, minimum=1, label="Neighbours"),
             ConfigField("outputGainDb", "float", 0.0, automatable=True, label="Output gain"),
         ),
         assets=(
