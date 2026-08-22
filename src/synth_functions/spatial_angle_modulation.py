@@ -365,6 +365,7 @@ def spatial_angle_modulation_sam2(duration, sample_rate=44100, **params):
     sam_scene = voice_params.pop("_sam_scene", None)
     source_id = voice_params.pop("_sam_source_id", "source.1")
     scene_start_s = voice_params.pop("_sam_scene_start_s", None)
+    apply_routing = bool(voice_params.pop("_sam_apply_routing", True))
     return render_sam2_voice(
         duration,
         sample_rate,
@@ -372,6 +373,7 @@ def spatial_angle_modulation_sam2(duration, sample_rate=44100, **params):
         is_transition=False,
         initial_offset=initial_offset,
         sam_scene=sam_scene,
+        apply_routing=apply_routing,
         source_id=source_id,
         scene_start_s=scene_start_s,
     )
@@ -394,6 +396,7 @@ def spatial_angle_modulation_sam2_transition(
     sam_scene = voice_params.pop("_sam_scene", None)
     source_id = voice_params.pop("_sam_source_id", "source.1")
     scene_start_s = voice_params.pop("_sam_scene_start_s", None)
+    apply_routing = bool(voice_params.pop("_sam_apply_routing", True))
     return render_sam2_voice(
         duration,
         sample_rate,
@@ -402,6 +405,7 @@ def spatial_angle_modulation_sam2_transition(
         initial_offset=float(initial_offset or 0.0),
         transition_duration=transition_duration,
         sam_scene=sam_scene,
+        apply_routing=apply_routing,
         source_id=source_id,
         scene_start_s=scene_start_s,
     )

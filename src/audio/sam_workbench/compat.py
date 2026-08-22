@@ -570,6 +570,7 @@ def render_sam2_voice(
     sam_scene: Mapping[str, Any] | None = None,
     source_id: str = "source.1",
     scene_start_s: float | None = None,
+    apply_routing: bool = True,
 ) -> NDArray[np.float32]:
     """Render a legacy SAM2 voice and return frame-major ``(frames, 2)`` float32.
 
@@ -659,7 +660,8 @@ def render_sam2_voice(
             initial_offset if scene_start_s is None else scene_start_s, sample_rate
         )
         audio *= scene_gain_envelope(
-            sam_scene, str(source_id), gain_start, frames, sample_rate
+            sam_scene, str(source_id), gain_start, frames, sample_rate,
+            include_routing=apply_routing,
         )[None, :]
     return to_frame_major(audio).astype(AUDIO_DTYPE, copy=False)
 
