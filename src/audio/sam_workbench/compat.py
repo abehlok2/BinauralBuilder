@@ -458,6 +458,9 @@ def render_sam2_voice(
     initial_offset: float = 0.0,
     transition_duration: float | None = None,
     block_size: int | None = None,
+    sam_scene: Mapping[str, Any] | None = None,
+    source_id: str = "source.1",
+    scene_start_s: float | None = None,
 ) -> NDArray[np.float32]:
     """Render a legacy SAM2 voice and return frame-major ``(frames, 2)`` float32.
 
@@ -469,7 +472,14 @@ def render_sam2_voice(
     if frames <= 0:
         return np.zeros((0, 2), dtype=AUDIO_DTYPE)
 
-    voice_params = params or {}
+    voice_params = dict(params or {})
+    if sam_scene:
+        from .scene_state import scene_parameter_overrides
+
+        scene_seconds = float(initial_offset if scene_start_s is None else scene_start_s)
+        voice_params.update(
+            scene_parameter_overrides(sam_scene, str(source_id), scene_seconds, voice_params)
+        )
     spec = sam2_spec_from_params(
         voice_params,
         is_transition=is_transition,
@@ -493,6 +503,15 @@ def render_sam2_voice(
         audio = render_sam2(spec, frames, sample_rate, start_sample=start_sample, block_size=block_size)
     else:
         raise ValueError(f"rendererMode {renderer_mode!r} is not available in this build")
+    if sam_scene:
+        from .scene_state import scene_gain_envelope
+
+        gain_start = seconds_to_samples(
+            initial_offset if scene_start_s is None else scene_start_s, sample_rate
+        )
+        audio *= scene_gain_envelope(
+            sam_scene, str(source_id), gain_start, frames, sample_rate
+        )[None, :]
     return to_frame_major(audio).astype(AUDIO_DTYPE, copy=False)
 
 

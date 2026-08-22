@@ -2284,7 +2284,14 @@ class VoiceEditorDialog(QDialog): # Standard class name
         except (AttributeError, KeyError, TypeError, ValueError):
             pass
 
-        dialog = SamWorkbenchDialog(voice_data, sample_rate=sample_rate, parent=self)
+        scene_data = None
+        try:
+            scene_data = self.app.track_data.get("sam_scene")
+        except AttributeError:
+            pass
+        dialog = SamWorkbenchDialog(
+            voice_data, sample_rate=sample_rate, parent=self, scene_data=scene_data
+        )
         # Stages are a view over the session's steps, so the workbench needs
         # them to have anything to group.
         try:
@@ -2293,6 +2300,10 @@ class VoiceEditorDialog(QDialog): # Standard class name
             pass
         if dialog.exec_() == QDialog.Accepted:
             self.apply_workbench_result(dialog.voice_data())
+            try:
+                self.app.track_data["sam_scene"] = dialog.scene_data()
+            except AttributeError:
+                pass
 
     def apply_workbench_result(self, voice_data):
         """Load a workbench result back into this editor's fields."""
