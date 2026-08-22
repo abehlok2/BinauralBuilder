@@ -54,6 +54,7 @@ from src.audio.sam_workbench.render.anchor import (
     AnchorSpec,
 )
 
+from .head_view import HeadDirectionSelector
 from .hrtf_cue_plot import Curve, HrtfCurvePlot, PlotThrottle
 
 __all__ = ["SamHrtfModifyPanel", "AbxTrial", "DeriveWorker"]
@@ -273,7 +274,23 @@ class SamHrtfModifyPanel(QWidget):
         selector.addWidget(self.plot_selector, 1)
         plot_layout.addLayout(selector)
 
+        # A direction is a place around the head, so it is chosen on a picture
+        # of a head rather than typed. The faint dots are the directions this
+        # dataset actually measured; the plots snap to the nearest of them.
+        plot_layout.addWidget(QLabel("Direction (single-direction views):"))
+        self.direction_selector = HeadDirectionSelector()
+        self.direction_selector.setMaximumHeight(190)
+        self.direction_selector.directionChanged.connect(self._on_direction_changed)
+        plot_layout.addWidget(self.direction_selector)
+
+        self.direction_label = QLabel("")
+        self.direction_label.setWordWrap(True)
+        plot_layout.addWidget(self.direction_label)
+
         self.plot = HrtfCurvePlot()
+        # The head view sits above the plot now, so the plot needs a floor of
+        # its own or the two share the space until neither is readable.
+        self.plot.setMinimumHeight(200)
         plot_layout.addWidget(self.plot, 1)
         layout.addWidget(plots, 1)
 
@@ -403,9 +420,40 @@ class SamHrtfModifyPanel(QWidget):
         self._abx_renders.clear()
         self._set_controls_enabled(dataset is not None)
         if dataset is None:
+            self.direction_selector.set_marks(())
             self.plot.clear("Select an asset on the Asset tab.")
             return
+        self._seed_direction()
         self.refresh_plots()
+
+    def _seed_direction(self) -> None:
+        """Show where this dataset measured, and open on a useful direction."""
+
+        from src.audio.sam_workbench.hrtf.coordinates import cartesian_to_sofa_spherical
+
+        spherical = cartesian_to_sofa_spherical(self._dataset.positions_m)
+        self.direction_selector.set_marks(
+            [(float(row[0]), float(row[1])) for row in spherical]
+        )
+        opening = spherical[self._default_plot_index()]
+        self.direction_selector.set_direction(float(opening[0]), float(opening[1]))
+        self._describe_direction()
+
+    def _on_direction_changed(self, _azimuth: float, _elevation: float) -> None:
+        if self._dataset is None:
+            return
+        self._describe_direction()
+        self.refresh_plots()
+
+    def _describe_direction(self) -> None:
+        from src.audio.sam_workbench.hrtf.coordinates import cartesian_to_sofa_spherical
+
+        spherical = cartesian_to_sofa_spherical(self._dataset.positions_m)
+        row = spherical[self._plot_index()]
+        self.direction_label.setText(
+            f"Nearest measured direction: azimuth {float(row[0]):+.1f}°, "
+            f"elevation {float(row[1]):+.1f}°"
+        )
 
     def _set_controls_enabled(self, enabled: bool) -> None:
         for widget in (
@@ -440,11 +488,12 @@ class SamHrtfModifyPanel(QWidget):
 
     # --- plots --------------------------------------------------------------
 
-    def _plot_index(self) -> int:
-        """Which measurement the single-direction plots show.
+    def _default_plot_index(self) -> int:
+        """The direction to open on: most lateral on the horizon.
 
-        The most lateral direction on the horizon: the interaural cues are
-        largest there, so a change to them is visible rather than subtle.
+        The interaural cues are largest there, so a change to them is visible
+        rather than subtle - a better opening view than straight ahead, where
+        ITD and ILD are both near zero and nothing appears to happen.
         """
 
         from src.audio.sam_workbench.hrtf.coordinates import cartesian_to_sofa_spherical
@@ -454,6 +503,31 @@ class SamHrtfModifyPanel(QWidget):
         candidates = np.flatnonzero(horizon) if np.any(horizon) else np.arange(len(spherical))
         lateral = np.abs(np.sin(np.radians(spherical[candidates, 0])))
         return int(candidates[int(np.argmax(lateral))])
+
+    def _plot_index(self) -> int:
+        """The measured direction nearest the one chosen on the head view.
+
+        Snapping rather than interpolating is deliberate: these plots show what
+        the file contains, and an interpolated curve would show what the
+        renderer would make of it instead.
+        """
+
+        from src.audio.sam_workbench.hrtf.coordinates import (
+            sofa_positions_to_cartesian,
+            unit_vectors,
+        )
+
+        wanted = unit_vectors(
+            sofa_positions_to_cartesian(
+                [[self.direction_selector.azimuth_deg, self.direction_selector.elevation_deg, 1.0]],
+                "spherical",
+                "degree, degree, metre",
+            )
+        )[0]
+        directions = unit_vectors(self._dataset.positions_m)
+        # The nearest direction on the sphere is the one whose unit vector has
+        # the largest projection onto the wanted one.
+        return int(np.argmax(directions @ wanted))
 
     def refresh_plots(self) -> None:
         """Redraw the selected view with both curves on it."""

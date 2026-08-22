@@ -2285,6 +2285,12 @@ class VoiceEditorDialog(QDialog): # Standard class name
             pass
 
         dialog = SamWorkbenchDialog(voice_data, sample_rate=sample_rate, parent=self)
+        # Stages are a view over the session's steps, so the workbench needs
+        # them to have anything to group.
+        try:
+            dialog.set_steps(self.app.track_data.get("steps", []))
+        except AttributeError:
+            pass
         if dialog.exec_() == QDialog.Accepted:
             self.apply_workbench_result(dialog.voice_data())
 

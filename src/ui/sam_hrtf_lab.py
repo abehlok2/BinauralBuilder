@@ -267,6 +267,7 @@ class SamHrtfLab(QWidget):
         self.modify_panel.auditionRendered.connect(self.auditionRendered)
         self.tabs.addTab(self.modify_panel, "Modify")
         self.tabs.addTab(self._build_ranking_tab(), "Ranking")
+        self.tabs.addTab(self._build_tests_tab(), "Tests && import")
         layout.addWidget(self.tabs, 1)
 
         self.status_label = QLabel("")
@@ -555,6 +556,115 @@ class SamHrtfLab(QWidget):
         self.ratings_location_label.setWordWrap(True)
         outer.addWidget(self.ratings_location_label)
         return page
+
+    def _build_tests_tab(self) -> QWidget:
+        """Listening tests, and the two advanced acquisition routes.
+
+        Ordered the way the specification orders them: the localization test
+        first, because it costs nothing and settles most of the question, and
+        the measurement and simulation routes last, behind their own flag.
+        """
+
+        page = QWidget()
+        outer = QVBoxLayout(page)
+
+        intro = QLabel(
+            "Which HRTF works for you is a listening question, not a specification "
+            "one. Start with the localization test over the assets in your "
+            "library; measuring or simulating a head is a much larger undertaking "
+            "for a smaller remaining gain."
+        )
+        intro.setWordWrap(True)
+        outer.addWidget(intro)
+
+        localization = QPushButton("Run a blinded localization test…")
+        localization.setToolTip(
+            "Present directions through each candidate and point at where you "
+            "heard them. Scores the candidates on angular error and front/back "
+            "reversals."
+        )
+        localization.clicked.connect(self.open_localization_test)
+        outer.addWidget(localization)
+
+        experiment = QPushButton("Run a listening experiment…")
+        experiment.setToolTip(
+            "Blinded subjective comparison across conditions, with an export "
+            "that records enough to reproduce what was compared."
+        )
+        experiment.clicked.connect(self.open_experiment)
+        outer.addWidget(experiment)
+
+        acquisition = QPushButton("Measure or import an HRTF…")
+        acquisition.setToolTip(
+            "Swept-sine measurement (advanced, off by default) and Mesh2HRTF "
+            "import validation."
+        )
+        acquisition.clicked.connect(self.open_measurement)
+        outer.addWidget(acquisition)
+
+        self.tests_hint = QLabel("")
+        self.tests_hint.setWordWrap(True)
+        outer.addWidget(self.tests_hint)
+        outer.addStretch(1)
+        return page
+
+    # --- test and import dialogs -------------------------------------------
+
+    def candidate_subjects(self) -> list[str]:
+        """The subjects the current filters leave available, for a comparison."""
+
+        subjects = []
+        for entry in self._matching_assets():
+            name = entry.subject or Path(str(entry.path)).stem
+            if name and name not in subjects:
+                subjects.append(name)
+        return subjects
+
+    def candidate_assets(self) -> list[dict[str, Any]]:
+        """The matching assets as condition material, with provenance kept."""
+
+        assets = []
+        for entry in self._matching_assets():
+            path = str(getattr(entry, "path", ""))
+            assets.append(
+                {
+                    "id": entry.subject or Path(path).stem,
+                    "subject": entry.subject or "",
+                    "path": path,
+                    "sha256": str(getattr(entry, "sha256", "") or ""),
+                    "processing": str(getattr(entry, "processing", "") or ""),
+                    "sampleRateHz": float(getattr(entry, "sample_rate_hz", 0) or 48_000.0),
+                }
+            )
+        return assets
+
+    def open_localization_test(self) -> Any:
+        from .sam_localization_dialog import SamLocalizationDialog
+
+        candidates = self.candidate_subjects()
+        if len(candidates) < 2:
+            self.tests_hint.setText(
+                "A comparison needs at least two candidates. Widen the filters on "
+                "the Asset tab, or point the library at a folder with more SOFA files."
+            )
+            return None
+        dialog = SamLocalizationDialog(candidates, parent=self)
+        dialog.exec_()
+        return dialog
+
+    def open_experiment(self) -> Any:
+        from .sam_experiment_dialog import SamExperimentDialog
+
+        dialog = SamExperimentDialog(self.candidate_assets(), parent=self)
+        dialog.exec_()
+        return dialog
+
+    def open_measurement(self) -> Any:
+        from .sam_measurement_dialog import SamMeasurementDialog
+
+        dialog = SamMeasurementDialog(parent=self)
+        dialog.exec_()
+        return dialog
 
     def _populate_audition_choices(self) -> None:
         from src.audio.sam_workbench.hrtf.subject_test import (
