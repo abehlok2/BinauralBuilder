@@ -126,6 +126,37 @@ def render_warnings(project) -> tuple[ValidationIssue, ...]:
     return tuple(issues)
 
 
+def _source_window(
+    source, sample_rate: float, window_start: int, window_frames: int
+) -> tuple[int, int, int, int] | None:
+    """Intersect a source's own absolute interval with the requested window.
+
+    Returns ``(source_start, placement, source_offset, frames)`` where
+    ``placement`` is the offset into the window, ``source_offset`` is how far
+    into the source's own timeline the window opens, and ``frames`` is the
+    overlap - or ``None`` when the two do not overlap at all.
+
+    Both ends have to be intersected, not just the near one. Clamping the
+    length to the source's duration without first subtracting the part of the
+    source that had already elapsed let a window opening late run past the
+    source's end, and a window opening entirely after the source had finished
+    rendered it from its own beginning as though it were only now starting.
+    """
+
+    source_start = seconds_to_samples(source.start_s, sample_rate)
+    window_end = window_start + window_frames
+    # A source with no declared duration runs to the end of any window.
+    source_end = window_end
+    if source.duration_s is not None:
+        source_end = source_start + seconds_to_samples(source.duration_s, sample_rate)
+
+    begin = max(source_start, window_start)
+    end = min(source_end, window_end)
+    if end <= begin:
+        return None
+    return (source_start, begin - window_start, begin - source_start, end - begin)
+
+
 def render_project(
     project,
     duration_s: float | None = None,
@@ -161,23 +192,12 @@ def render_project(
     for source in project.sources:
         if not source.enabled:
             continue
-        source_start = seconds_to_samples(source.start_s, sample_rate)
-        offset = source_start - int(start_sample)
-        available = frames - max(0, offset)
-        if available <= 0:
+        window = _source_window(source, sample_rate, int(start_sample), frames)
+        if window is None:
             continue
-        source_frames = available
-        if source.duration_s is not None:
-            source_frames = min(available, seconds_to_samples(source.duration_s, sample_rate))
-        if source_frames <= 0:
-            continue
+        source_start, placement, source_offset, source_frames = window
 
         compiled: CompiledSource = compile_source(source, ear_polarity=ear_polarity)
-        # Where the stem lands in the render window, and how far into the
-        # source's own timeline that is - nonzero when the window opens after
-        # the source already started.
-        placement = max(0, offset)
-        source_offset = max(0, -offset)
         audio = render_source(
             compiled,
             sample_rate,
