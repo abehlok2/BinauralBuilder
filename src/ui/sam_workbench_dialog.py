@@ -43,7 +43,10 @@ from src.audio.sam_workbench.preview import PreviewResult, render_voice_preview,
 
 from .sam_analysis_panel import SamAnalysisPanel
 from .sam_basic_panel import SamBasicPanel
+from .sam_modulation_panel import SamModulationPanel
 from .sam_path_panel import SamPathPanel
+from .sam_routing_panel import SamRoutingPanel
+from .sam_stage_panel import SamStagePanel
 from .sam_hrtf_lab import SamHrtfLab
 
 try:  # pragma: no cover - import guard mirrors the rest of the UI package
@@ -167,12 +170,23 @@ class SamWorkbenchDialog(QDialog):
         self.analysis_panel = SamAnalysisPanel()
         self.path_panel = SamPathPanel()
         self.hrtf_panel = SamHrtfLab()
+        self.stage_panel = SamStagePanel()
+        self.modulation_panel = SamModulationPanel()
+        self.routing_panel = SamRoutingPanel()
         self.compatibility_view = QTextEdit()
         self.compatibility_view.setReadOnly(True)
 
         self.tabs.addTab(self._scrolled(self.parameter_panel), "Parameters")
-        self.tabs.addTab(self._scrolled(self.path_panel), "Path & Geometry")
+        self.tabs.addTab(self._scrolled(self.path_panel), "Path && Geometry")
         self.tabs.addTab(self.hrtf_panel, "HRTF Lab")
+        # Stages, modulation and routing describe the shape of the scene rather
+        # than one voice's parameters, so they share a tab of their own instead
+        # of lengthening the parameter list.
+        self.scene_tabs = QTabWidget()
+        self.scene_tabs.addTab(self._scrolled(self.stage_panel), "Stages")
+        self.scene_tabs.addTab(self._scrolled(self.modulation_panel), "Modulation")
+        self.scene_tabs.addTab(self._scrolled(self.routing_panel), "Routing && cost")
+        self.tabs.addTab(self.scene_tabs, "Scene")
         self.tabs.addTab(self.analysis_panel, "Analysis")
         self.tabs.addTab(self.compatibility_view, "Compatibility")
         layout.addWidget(self.tabs, 1)
@@ -180,6 +194,12 @@ class SamWorkbenchDialog(QDialog):
         self.parameter_panel.paramsChanged.connect(self._on_params_changed)
         self.path_panel.paramsChanged.connect(self._on_params_changed)
         self.hrtf_panel.paramsChanged.connect(self._on_params_changed)
+        for signal in (
+            self.stage_panel.timelineChanged,
+            self.modulation_panel.matrixChanged,
+            self.routing_panel.routingChanged,
+        ):
+            signal.connect(self._on_params_changed)
         # Auditions play through the dialog's output rather than a second one.
         self.hrtf_panel.auditionRendered.connect(self._on_audition_rendered)
 
@@ -226,6 +246,15 @@ class SamWorkbenchDialog(QDialog):
         area.setWidget(widget)
         return area
 
+    def set_steps(self, steps) -> None:
+        """Give the stage view the session's steps.
+
+        Stages are built from steps rather than invented alongside them, so
+        without this the Stages tab has nothing to group and says so.
+        """
+
+        self.stage_panel.set_steps(steps or ())
+
     def _on_mode_changed(self, mode: str) -> None:
         """Apply progressive disclosure within the shared parameter view."""
 
@@ -244,6 +273,9 @@ class SamWorkbenchDialog(QDialog):
         self.parameter_panel.set_params(params)
         self.path_panel.set_params(params)
         self.hrtf_panel.set_params(params)
+        self.stage_panel.set_params(params)
+        self.modulation_panel.set_params(params)
+        self.routing_panel.set_params(params)
         self._on_mode_changed(self.mode_combo.currentText())
 
     def collect_params(self) -> dict[str, Any]:
@@ -265,6 +297,9 @@ class SamWorkbenchDialog(QDialog):
         merged.update({name: value for name, value in panel_params.items() if name in visible_names})
         merged.update(self.path_panel.params())
         merged.update(self.hrtf_panel.params())
+        merged.update(self.stage_panel.params())
+        merged.update(self.modulation_panel.params())
+        merged.update(self.routing_panel.params())
         return merged
 
     def voice_data(self) -> dict[str, Any]:

@@ -339,7 +339,12 @@ def test_disclosure_defaults_to_expert(workbench):
 
 def test_phase_three_path_tools_are_part_of_the_standard_workbench(workbench):
     dialog, _ = workbench
-    labels = [dialog.tabs.tabText(index) for index in range(dialog.tabs.count())]
+    # Qt takes "&" in a tab title as a mnemonic, so the stored text doubles it;
+    # compare against what the tab actually reads as.
+    labels = [
+        dialog.tabs.tabText(index).replace("&&", "&")
+        for index in range(dialog.tabs.count())
+    ]
     assert "Path & Geometry" in labels
     assert dialog.path_panel.designer_button.isEnabled()
     assert "visual path designer" in dialog.path_panel.designer_button.text().lower()

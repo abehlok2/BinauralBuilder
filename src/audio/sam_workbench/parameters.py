@@ -449,6 +449,12 @@ def transition_names(is_transition: bool = True) -> tuple[str, ...]:
 #: compatibility view cannot drift apart about what counts as "not edited here".
 WORKBENCH_OWNED_KEYS = frozenset({
     "samSchemaVersion",
+    # Scene structure, edited by the workbench's stage, modulation and routing
+    # views. Listed here so the compatibility view does not describe keys the
+    # workbench itself owns as "preserved but not edited here".
+    "samStages",
+    "samModulation",
+    "samRouting",
     "rendererMode",
     "hrtfAsset",
     "hrtfAssetHash",
