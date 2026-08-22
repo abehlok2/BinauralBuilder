@@ -1,0 +1,35 @@
+{
+  "examples": {
+    "sam_deep_modulation": {
+      "frames": 144000,
+      "interauralCorrelation": -0.17759677131433907,
+      "peak": 0.17740669461678774,
+      "peakBinHz": 188.0,
+      "rmsLeftDb": -18.030899869919445,
+      "rmsRightDb": -18.030899869919427,
+      "spectralCentroidHz": 180.00000685967098,
+      "zeroCrossingsLeft": 1079
+    },
+    "sam_single_source": {
+      "frames": 132300,
+      "interauralCorrelation": 0.22389077914123323,
+      "peak": 0.2004748905967671,
+      "peakBinHz": 220.0,
+      "rmsLeftDb": -16.96910013008057,
+      "rmsRightDb": -16.969100130080566,
+      "spectralCentroidHz": 220.00000454915926,
+      "zeroCrossingsLeft": 1319
+    },
+    "sam_two_sources": {
+      "frames": 132300,
+      "interauralCorrelation": 0.37028111042208767,
+      "peak": 0.2756434584453559,
+      "peakBinHz": 110.0,
+      "rmsLeftDb": -18.56362606681681,
+      "rmsRightDb": -18.56362606681681,
+      "spectralCentroidHz": 1231.7735772339672,
+      "zeroCrossingsLeft": 866
+    }
+  },
+  "renderSeconds": 3.0
+}
