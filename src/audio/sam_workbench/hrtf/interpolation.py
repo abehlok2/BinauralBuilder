@@ -102,6 +102,8 @@ def interpolate_log_magnitude_delay(dataset, query_position_m: ArrayLike, neighb
 # the direction-dependent delay, blends what is left, and puts a blended delay
 # back - which moves the source instead of blurring it.
 
+import hashlib
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from functools import cached_property
 
@@ -131,6 +133,55 @@ INTERPOLATION_MODES = (
 )
 
 _EPSILON = 1e-12
+
+#: Interpolated filters, shared across every interpolator in the process.
+#:
+#: Per-instance caching turned out to buy nothing: the adaptive control
+#: interval already declines to reselect until the direction has moved past its
+#: tolerance, so within one render consecutive lookups are genuinely different
+#: directions. What repeats is *renders* - a preview and then an export of the
+#: same voice, the two halves of an A/B, several sources on one trajectory -
+#: and each of those built a new interpolator and threw the work away. The
+#: cache therefore lives here, keyed by what the result depends on, so it
+#: survives the object that filled it.
+_FILTER_CACHE: "OrderedDict[tuple, HrirSelection]" = OrderedDict()
+
+
+def clear_filter_cache() -> None:
+    """Forget every interpolated filter. For tests and for memory pressure."""
+
+    _FILTER_CACHE.clear()
+
+
+def _dataset_fingerprint(dataset) -> tuple:
+    """What distinguishes one set of measurements from another.
+
+    The SOFA file's content hash is not enough on its own. A cue-modified
+    dataset is a *view* of the file it came from and forwards that hash, so
+    keying on it alone would serve the modified render the unmodified filters -
+    silently, and only in hybrid mode, which is the worst place for it. The
+    impulse responses themselves are therefore hashed, which is the only thing
+    that cannot be wrong.
+
+    Done once when an interpolator is built, not per lookup: a few milliseconds
+    against a render, and it is what makes every other key component safe.
+    """
+
+    responses = np.ascontiguousarray(
+        np.asarray(getattr(dataset, "ir", ()), dtype=np.float64)
+    )
+    digest = hashlib.sha256(responses.tobytes()).hexdigest()
+    return (
+        digest,
+        responses.shape,
+        float(getattr(dataset, "sample_rate_hz", 0.0)),
+        str(
+            getattr(
+                getattr(dataset, "delay_policy", ""), "value",
+                getattr(dataset, "delay_policy", ""),
+            )
+        ),
+    )
 
 
 @dataclass(frozen=True)
@@ -209,6 +260,19 @@ class HrtfInterpolator:
             None if harmonic_order is None else int(harmonic_order)
         )
         self.harmonic_order = self._resolve_harmonic_order(self.requested_harmonic_order)
+
+        # What this interpolator's results depend on, beyond the direction
+        # asked for. It is the cache's identity, so two interpolators built the
+        # same way over the same measurements share their work and two built
+        # differently cannot see each other's.
+        self._identity = (
+            _dataset_fingerprint(dataset),
+            self.mode,
+            self.neighbor_count,
+            self.harmonic_order,
+        )
+        self._cache_hits = 0
+        self._cache_misses = 0
 
     # --- the spherical-harmonic order ---------------------------------------
 
@@ -302,9 +366,64 @@ class HrtfInterpolator:
 
     # --- selection ----------------------------------------------------------
 
-    def at(self, direction: ArrayLike) -> HrirSelection:
-        """The filter pair for one direction, under the configured mode."""
+    #: Direction quantization for the cache, in units of the unit vector. At
+    #: 1e-3 the worst error between a direction and its cache key is well under
+    #: a tenth of a degree - far below the angular tolerance a renderer works
+    #: to, and far below anything audible.
+    CACHE_RESOLUTION = 1e-3
 
+    #: Bounded, so a long render with a wandering path cannot accumulate
+    #: filters without limit.
+    CACHE_LIMIT = 4096
+
+    def cache_statistics(self) -> dict:
+        """Hits, misses and size, for the inspector and for benchmarks."""
+
+        total = self._cache_hits + self._cache_misses
+        return {
+            "hits": int(self._cache_hits),
+            "misses": int(self._cache_misses),
+            "size": len(_FILTER_CACHE),
+            "hitRate": float(self._cache_hits / total) if total else 0.0,
+        }
+
+    def _cache_key(self, direction: ArrayLike):
+        values = np.asarray(direction, dtype=np.float64).reshape(-1)
+        if values.size != 3 or not np.all(np.isfinite(values)):
+            return None
+        norm = float(np.linalg.norm(values))
+        if norm <= 0.0:
+            return None
+        unit = values / norm
+        return tuple(np.round(unit / self.CACHE_RESOLUTION).astype(np.int64).tolist())
+
+    def at(self, direction: ArrayLike) -> HrirSelection:
+        """The filter pair for one direction, under the configured mode.
+
+        Cached on a quantized direction. Everything else the result depends on
+        - the dataset, the mode, the neighbour count, the harmonic order - is
+        fixed for the life of this object, so it is part of the cache's
+        identity rather than part of each key.
+        """
+
+        quantized = self._cache_key(direction)
+        key = None if quantized is None else (self._identity, quantized)
+        if key is not None:
+            cached = _FILTER_CACHE.get(key)
+            if cached is not None:
+                _FILTER_CACHE.move_to_end(key)
+                self._cache_hits += 1
+                return cached
+            self._cache_misses += 1
+
+        selection = self._select(direction)
+        if key is not None and self.CACHE_LIMIT > 0:
+            _FILTER_CACHE[key] = selection
+            while len(_FILTER_CACHE) > self.CACHE_LIMIT:
+                _FILTER_CACHE.popitem(last=False)
+        return selection
+
+    def _select(self, direction: ArrayLike) -> HrirSelection:
         if self.mode == NEAREST:
             return self._nearest(direction)
         if self.mode == THREE_NEIGHBOR:
