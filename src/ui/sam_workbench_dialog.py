@@ -234,7 +234,7 @@ class SamWorkbenchDialog(QDialog):
         preview_row.addWidget(self.preview_start_seconds)
         preview_row.addWidget(QLabel("Preview length:"))
         self.preview_seconds = QDoubleSpinBox()
-        self.preview_seconds.setRange(0.25, 60.0)
+        self.preview_seconds.setRange(0.1, 60.0)
         self.preview_seconds.setDecimals(2)
         self.preview_seconds.setValue(DEFAULT_PREVIEW_SECONDS)
         self.preview_seconds.setSuffix(" s")
@@ -250,6 +250,10 @@ class SamWorkbenchDialog(QDialog):
         self.stop_button.setEnabled(False)
         self.stop_button.clicked.connect(self.stop_preview)
         preview_row.addWidget(self.stop_button)
+        self.manual_button = QPushButton("Manual")
+        self.manual_button.setToolTip("Open the complete SAM/HRTF workbench manual (F1)")
+        self.manual_button.clicked.connect(self.open_manual)
+        preview_row.addWidget(self.manual_button)
         preview_row.addStretch(1)
         layout.addLayout(preview_row)
 
@@ -349,6 +353,7 @@ class SamWorkbenchDialog(QDialog):
             (self.preview_button, "Render preview", "Render a preview of the current settings"),
             (self.play_button, "Play preview", "Play the rendered preview"),
             (self.stop_button, "Stop preview", "Stop playback"),
+            (self.manual_button, "SAM workbench manual", "Open the complete in-app manual"),
             (self.status_label, "Status", "Validation messages and preview progress"),
             (
                 self.compatibility_view,
@@ -373,6 +378,7 @@ class SamWorkbenchDialog(QDialog):
         self.preview_button.setShortcut(QKeySequence("Ctrl+R"))
         self.play_button.setShortcut(QKeySequence("Ctrl+P"))
         self.stop_button.setShortcut(QKeySequence("Ctrl+."))
+        self.manual_button.setShortcut(QKeySequence("F1"))
         for button in (self.preview_button, self.play_button, self.stop_button):
             # The shortcut is only discoverable if it is written down.
             button.setToolTip(
@@ -394,6 +400,19 @@ class SamWorkbenchDialog(QDialog):
              self.play_button, self.stop_button),
         ):
             self.setTabOrder(earlier, later)
+
+    def open_manual(self) -> None:
+        """Open one reusable, non-modal manual window."""
+
+        from .sam_workbench_manual import SamWorkbenchManualDialog
+
+        manual = getattr(self, "_manual_dialog", None)
+        if manual is None:
+            manual = SamWorkbenchManualDialog(self)
+            self._manual_dialog = manual
+        manual.show()
+        manual.raise_()
+        manual.activateWindow()
 
     @staticmethod
     def _scrolled(widget: QWidget) -> QWidget:
