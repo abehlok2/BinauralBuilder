@@ -243,6 +243,25 @@ def test_workbench_loads_the_voice_into_its_controls(workbench):
     assert dialog.basic_panel.control_for("pathType").value() == "open"
 
 
+def test_workbench_state_round_trip_waits_for_apply(workbench, tmp_path):
+    dialog, original = workbench
+    applied = []
+    dialog._on_apply = applied.append
+    path = tmp_path / "saved.samstate.json"
+
+    dialog.parameter_panel.control_for("carrierFreq").set_value(330.0)
+    assert dialog.save_parameter_state(str(path))
+    dialog.parameter_panel.control_for("carrierFreq").set_value(440.0)
+    assert dialog.load_parameter_state(str(path))
+
+    assert dialog.collect_params()["carrierFreq"] == pytest.approx(330.0)
+    assert dialog.collect_params()["legacyMystery"] == "keep me"
+    assert original["params"]["carrierFreq"] == 220.0
+    assert applied == []
+    dialog.apply_changes()
+    assert applied[0]["params"]["carrierFreq"] == pytest.approx(330.0)
+
+
 def test_workbench_can_be_resized_vertically(workbench):
     dialog, _ = workbench
     original_width = dialog.width()

@@ -72,6 +72,7 @@ from src.audio.sam_workbench.model import (
     validate_project,
 )
 from src.audio.sam_workbench.render import AbstractPMRenderer, SceneReport, render_project
+from src.audio.sam_workbench.state import load_parameter_state, save_parameter_state
 from src.audio.sam_workbench.validation import ValidationCollector, ValidationIssue
 from src.audio.sam_workbench.version import PACKAGE_VERSION, SCHEMA_VERSION, SUPPORTED_SCHEMA_VERSIONS
 
@@ -126,10 +127,12 @@ __all__ = [
     "db_to_linear",
     "linear_to_db",
     "load_project",
+    "load_parameter_state",
     "migrate_project_dict",
     "project_from_dict",
     "samples_to_seconds",
     "save_project",
+    "save_parameter_state",
     "seconds_to_samples",
     "spherical_to_cartesian_m",
     "to_channel_major",

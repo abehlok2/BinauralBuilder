@@ -21,6 +21,7 @@ from PyQt5.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QDoubleSpinBox,
+    QFileDialog,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -45,6 +46,7 @@ from src.audio.sam_workbench.preview import (
     render_voice_preview,
     to_pcm16_bytes,
 )
+from src.audio.sam_workbench.state import load_parameter_state, save_parameter_state
 
 from .sam_analysis_panel import SamAnalysisPanel
 from .sam_basic_panel import SamBasicPanel
@@ -258,6 +260,23 @@ class SamWorkbenchDialog(QDialog):
         preview_row.addStretch(1)
         layout.addLayout(preview_row)
 
+        state_row = QHBoxLayout()
+        state_row.addWidget(QLabel("Parameter state:"))
+        self.load_state_button = QPushButton("Load state…")
+        self.load_state_button.setToolTip(
+            "Replace the controls with a saved SAM parameter state"
+        )
+        self.load_state_button.clicked.connect(lambda: self.load_parameter_state())
+        state_row.addWidget(self.load_state_button)
+        self.save_state_button = QPushButton("Save state…")
+        self.save_state_button.setToolTip(
+            "Save every current SAM workbench parameter to JSON"
+        )
+        self.save_state_button.clicked.connect(lambda: self.save_parameter_state())
+        state_row.addWidget(self.save_state_button)
+        state_row.addStretch(1)
+        layout.addLayout(state_row)
+
         self.status_label = QLabel("")
         self.status_label.setWordWrap(True)
         layout.addWidget(self.status_label)
@@ -354,6 +373,8 @@ class SamWorkbenchDialog(QDialog):
             (self.preview_button, "Render preview", "Render a preview of the current settings"),
             (self.play_button, "Play preview", "Play the rendered preview"),
             (self.stop_button, "Stop preview", "Stop playback"),
+            (self.load_state_button, "Load parameter state", "Load a SAM parameter snapshot"),
+            (self.save_state_button, "Save parameter state", "Save a SAM parameter snapshot"),
             (self.manual_button, "SAM workbench manual", "Open the complete in-app manual"),
             (self.status_label, "Status", "Validation messages and preview progress"),
             (
@@ -379,6 +400,8 @@ class SamWorkbenchDialog(QDialog):
         self.preview_button.setShortcut(QKeySequence("Ctrl+R"))
         self.play_button.setShortcut(QKeySequence("Ctrl+P"))
         self.stop_button.setShortcut(QKeySequence("Ctrl+."))
+        self.load_state_button.setShortcut(QKeySequence("Ctrl+Shift+O"))
+        self.save_state_button.setShortcut(QKeySequence("Ctrl+Shift+S"))
         self.manual_button.setShortcut(QKeySequence("F1"))
         for button in (self.preview_button, self.play_button, self.stop_button):
             # The shortcut is only discoverable if it is written down.
@@ -506,6 +529,58 @@ class SamWorkbenchDialog(QDialog):
     def _on_params_changed(self, _params: dict[str, Any]) -> None:
         self._voice["params"] = self.collect_params()
         self._revalidate()
+
+    # --- parameter-state persistence ---------------------------------------
+
+    def save_parameter_state(self, path: str | None = None) -> bool:
+        """Save all current tab values without applying them to the voice."""
+
+        self.parameter_panel.flush()
+        if path is None:
+            path, _ = QFileDialog.getSaveFileName(
+                self,
+                "Save SAM parameter state",
+                "sam-parameters.samstate.json",
+                "SAM parameter state (*.samstate.json *.json);;All files (*)",
+            )
+        if not path:
+            return False
+        try:
+            saved = save_parameter_state(
+                self.collect_params(), path, is_transition=self._is_transition
+            )
+        except (OSError, TypeError, ValueError) as error:
+            self.status_label.setText(f"Could not save parameter state: {error}")
+            return False
+        self.status_label.setText(f"Parameter state saved to {saved}.")
+        return True
+
+    def load_parameter_state(self, path: str | None = None) -> bool:
+        """Load a snapshot into every tab, leaving Apply/Cancel semantics intact."""
+
+        if path is None:
+            path, _ = QFileDialog.getOpenFileName(
+                self,
+                "Load SAM parameter state",
+                "",
+                "SAM parameter state (*.samstate.json *.json);;All files (*)",
+            )
+        if not path:
+            return False
+        try:
+            params = load_parameter_state(path, is_transition=self._is_transition)
+        except (OSError, ValueError) as error:
+            self.status_label.setText(f"Could not load parameter state: {error}")
+            return False
+
+        # A loaded snapshot replaces (rather than overlays) the state.  Make it
+        # the merge base so unknown extension keys from the file survive too.
+        self._original["params"] = copy.deepcopy(params)
+        self._voice["params"] = copy.deepcopy(params)
+        self._load_params()
+        self._revalidate()
+        self.status_label.setText(f"Parameter state loaded from {path}; press Apply or OK to commit it.")
+        return True
 
     # --- validation ---------------------------------------------------------
 
