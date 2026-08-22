@@ -580,14 +580,30 @@ class RandomWalkVolume:
         points = self._waypoints()
         knots = np.linspace(0.0, 1.0, len(points))
         if not self.smooth:
-            return np.stack(
+            result = np.stack(
                 [np.interp(progress, knots, points[:, axis]) for axis in range(3)],
                 axis=-1,
             )
-        from scipy.interpolate import CubicSpline
+        else:
+            from scipy.interpolate import CubicSpline
 
-        spline = CubicSpline(knots, points, axis=0, bc_type="periodic")
-        return np.asarray(spline(progress), dtype=np.float64)
+            spline = CubicSpline(knots, points, axis=0, bc_type="periodic")
+            result = np.asarray(spline(progress), dtype=np.float64)
+        # Enforced on the curve, not just on the waypoints it passes through:
+        # a spline between two points that each clear the minimum can still bow
+        # inside it, and a path that dips into the listener's head is exactly
+        # what the minimum exists to prevent.
+        return self._enforce_minimum(result)
+
+    def _enforce_minimum(self, points: NDArray[np.float64]) -> NDArray[np.float64]:
+        minimum = float(self.minimum_distance_m)
+        if minimum <= 0.0:
+            return points
+        centre = _centre(self.centre_m)
+        offset = points - centre
+        radius = np.linalg.norm(offset, axis=-1, keepdims=True)
+        scale = np.where(radius < minimum, minimum / np.maximum(radius, 1e-9), 1.0)
+        return centre + offset * scale
 
 
 #: Serialized names for the 3-D primitives, in the order the editor lists them.

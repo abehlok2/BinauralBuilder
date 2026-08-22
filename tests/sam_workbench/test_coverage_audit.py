@@ -167,27 +167,61 @@ def test_the_disclosure_modes_between_them_show_everything_owned():
 # --- path geometry ----------------------------------------------------------
 
 
-def _offered(dialog: SamPathEditorDialog) -> list[str]:
+def _offered(dialog) -> list[str]:
     return [
         dialog.primitive_combo.itemText(index)
         for index in range(dialog.primitive_combo.count())
     ]
 
 
-def test_the_editor_and_the_loader_agree_on_the_geometry_list(qtbot):
-    dialog = SamPathEditorDialog()
-    qtbot.addWidget(dialog)
-    offered = _offered(dialog)
+def _editor_for(primitive: str, qtbot):
+    """The dialog that owns a geometry kind.
 
-    assert [name for name in offered if name not in GEOMETRY_TYPES] == []
-    assert [name for name in GEOMETRY_TYPES if name not in offered] == []
+    There are two path editors: the original two-dimensional one, and the
+    three-dimensional designer that owns the primitives with height in them.
+    A kind belongs to exactly one of them, and this picks the right one.
+    """
+
+    from src.ui.sam_path3d_dialog import SamPath3DDialog
+
+    for factory in (SamPathEditorDialog, SamPath3DDialog):
+        dialog = factory()
+        qtbot.addWidget(dialog)
+        if primitive in _offered(dialog):
+            dialog.primitive_combo.setCurrentText(primitive)
+            return dialog
+    raise AssertionError(f"no editor offers geometry {primitive!r}")
+
+
+def test_the_editors_and_the_loader_agree_on_the_geometry_list(qtbot):
+    """Between them the editors offer every kind the loader accepts, and no more.
+
+    Neither editor has to offer all of them - a dome traversal has no place in
+    a flat top-down canvas - but a kind the loader understands that no editor
+    can create would be unreachable, and a kind an editor offers that the
+    loader rejects would be unsavable.
+    """
+
+    from src.ui.sam_path3d_dialog import SamPath3DDialog
+
+    flat = SamPathEditorDialog()
+    spatial = SamPath3DDialog()
+    qtbot.addWidget(flat)
+    qtbot.addWidget(spatial)
+    # The 3-D designer separates its groups with non-selectable headings.
+    offered = {
+        name
+        for name in _offered(flat) + _offered(spatial)
+        if name and not name.startswith("\u2014")
+    }
+
+    assert sorted(offered - set(GEOMETRY_TYPES)) == []
+    assert sorted(set(GEOMETRY_TYPES) - offered) == []
 
 
 @pytest.mark.parametrize("primitive", sorted(GEOMETRY_TYPES))
 def test_every_offered_geometry_produces_a_trajectory_the_core_accepts(qtbot, primitive):
-    dialog = SamPathEditorDialog()
-    qtbot.addWidget(dialog)
-    dialog.primitive_combo.setCurrentText(primitive)
+    dialog = _editor_for(primitive, qtbot)
 
     trajectory = trajectory_from_dict(dialog.trajectory_spec())
     geometry = getattr(trajectory.geometry, "geometry", trajectory.geometry)
