@@ -85,6 +85,7 @@ medical, therapeutic, mental-state, or localization guarantee.</p>
 <li><a href="#header">Renderer, disclosure, preview and saving</a></li>
 <li><a href="#parameters">Parameters and every exposed field</a></li>
 <li><a href="#path">Path &amp; Geometry</a></li>
+<li><a href="#path3d">Three-dimensional paths</a></li>
 <li><a href="#hrtf">HRTF Lab</a></li>
 <li><a href="#scene">Scene: stages, modulation, routing and cost</a></li>
 <li><a href="#analysis">Analysis and compatibility</a></li>
@@ -152,6 +153,72 @@ accept to return it to the voice. Legacy pixel paths retain their original data
 but are converted through explicit centre, axis, scale, normalization and metres-
 per-scene-unit metadata before physical rendering. Smoothing passes round corners;
 the ratio controls how strongly each pass cuts them.</p>
+
+<h2 id="path3d">Three-dimensional paths</h2>
+<p><b>Open 3D path designer</b> edits the full path: where the source is in
+height and depth as well as around you. A position is stored as
+<code>[x, y, z]</code> metres in the listener frame, and the renderer derives
+azimuth, elevation and distance from it. That is the only stored format -
+azimuth/elevation/distance entry is converted as you type it, so there is never
+a second version of the path to disagree with the first.</p>
+
+<h3>Why four views</h3>
+<p>Depth is ambiguous in a single perspective view: a point dragged across the
+screen has moved along a ray, and which point on that ray it landed on is a
+guess. So there are four. <b>Perspective</b> shows what the path looks like and
+orbits when dragged. <b>Top</b> (forward/left), <b>Front</b> (left/height) and
+<b>Side</b> (forward/height) each edit exactly the two axes they show and leave
+the third alone. Selecting a point in any view selects it in all of them, in the
+table, and in the numeric editor. The listener is drawn with a nose, ears, a
+head-height plane and a vertical axis, and can show the HRTF coverage shell -
+the sphere a dataset measures on. A path outside it is being extrapolated.</p>
+
+<h3>Geometry and traversal are separate</h3>
+<p><b>Geometry</b> is where the source can be. <b>Traversal</b> is how it moves
+along that shape over time. A circle stays one circle whether it is walked at
+constant speed, eased, reversed, or driven from the stage timeline, so those live
+on their own tab and changing them never reshapes the path.</p>
+<p>The speed law is worth choosing deliberately. <i>Constant linear speed</i>
+advances by physical distance, so the source covers metres evenly. <i>Curve
+parameter speed</i> advances along the curve's own parameter, which on a circle
+is constant angular speed instead.</p>
+
+<h3>Primitives</h3>
+<p>Point kinds - polyline, spline, bezier and the rest - are edited by dragging.
+The three-dimensional primitives are edited by their own numbers, so a dome
+traversal stays a dome when the project is reopened rather than becoming a spline
+through samples of one. They cover horizontal, vertical, tilted and spherical
+orbits, rising and falling arcs, overhead sweeps, front-to-back elevation sweeps,
+dome traversal, a three-dimensional figure-eight, pendulum, toroidal paths and a
+seeded random walk in a volume. <b>Keyframes</b> holds timestamped positions and
+is what a CSV or JSON import lands in.</p>
+
+<h3>What each renderer does with it</h3>
+<ul>
+<li><b>HRTF</b> queries the dataset with azimuth <i>and</i> elevation at every
+control interval, and uses distance for gain and propagation delay. This is the
+mode that can actually place a source above or below you.</li>
+<li><b>Geometric</b> derives interaural time and level difference, propagation
+delay and distance attenuation from the path. Elevation colours the sound but
+does not localize it - that needs HRTF filtering.</li>
+<li><b>Abstract phase modulation</b> can take the path as a control source -
+azimuth to interaural phase, elevation to carrier or modulation depth, distance
+to amplitude. <span class="note">These are creative mappings, not
+spatialization. Phase modulation alone cannot produce reliable height.</span></li>
+<li><b>Hybrid</b> runs Source &#8594; SAM &#8594; 3D trajectory &#8594; HRTF
+interpolation &#8594; Cue modification &#8594; Output. The order matters:
+phase manipulation before binaural filtering and after it are different
+renders.</li>
+</ul>
+
+<h3>Coverage warnings</h3>
+<p>Many published HRTF datasets are dense around the horizontal plane and thin or
+empty above and below it, so an overhead or below-head path can ask for
+directions that were never measured. The workbench warns when the path leaves
+measured coverage, repeatedly crosses sparse regions, needs a hemisphere the
+dataset barely samples, falls back to nearest-neighbour selection, or turns
+faster than the control interval and crossfade can track. None of these stops a
+render; they say which parts of it are extrapolated rather than reproduced.</p>
 
 <h2 id="hrtf">HRTF Lab</h2>
 <h3>Asset</h3><p>Point the SONICOM library at a folder, then filter by dataset,

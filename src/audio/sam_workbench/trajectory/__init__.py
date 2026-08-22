@@ -1,9 +1,30 @@
 """Trajectory geometry, traversal, and legacy path translation.
 
-Phase 1 contains only the behaviour-preserving port of the legacy SAM2 path
-evaluation, which the compatibility adapter needs in order to delegate existing
-voices to the canonical core. The separable geometry/traversal/transform model
-arrives with the geometric renderer.
+A source position is a point in metres in the listener frame,
+``p(t) = [x(t), y(t), z(t)]`` with ``+x`` forward, ``+y`` left and ``+z`` up.
+Azimuth, elevation and distance are *derived* from it rather than stored beside
+it, so there is exactly one description of where a source is and no way for two
+of them to disagree. Spherical values are an input convenience, converted at the
+boundary by :mod:`.spherical`.
+
+The model is separable in two directions, and both matter:
+
+* **geometry against traversal** - where the source can be, against how it moves
+  along that shape over time. A circle is one circle whether it is walked at
+  constant speed, eased, reversed or driven from an envelope, so those are time
+  laws in :mod:`.traversal` rather than new shapes. :mod:`.path_model` composes
+  the two and carries the frame, units and playback semantics a saved path needs
+  in order to be read correctly somewhere else.
+* **shape against parameters** - :mod:`.geometry` holds the point-based curves
+  the editor lets you drag, :mod:`.primitives` the three-dimensional shapes
+  defined by their own numbers, and :mod:`.keyframes` timestamped positions,
+  including imported and recorded motion. All of them compile to the same
+  timestamped trajectory, which is what lets a renderer accept any of them
+  without knowing which it was given.
+
+:mod:`.legacy_paths` remains the behaviour-preserving port of the legacy SAM2
+path evaluation, which the compatibility adapter needs in order to delegate
+existing voices to the canonical core.
 """
 
 from __future__ import annotations

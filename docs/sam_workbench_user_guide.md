@@ -64,6 +64,142 @@ and the numbers as a description of the signal that produced it.
 The renderer is chosen per voice and is used by both the preview and the
 export, so what you hear during editing is what gets written.
 
+## Moving a source in three dimensions
+
+A source position is a point in metres in the listener's own frame:
+
+```
+p(t) = [x(t), y(t), z(t)]
+```
+
+The frame is right-handed: **+x** is forward, **+y** is to your left, **+z** is
+up. Every renderer derives what it needs from that one point — azimuth is
+`atan2(y, x)`, elevation is `atan2(z, hypot(x, y))`, and distance is the length
+of the vector. Nothing stores a direction and a distance separately, which is
+what stops two descriptions of the same path from drifting apart.
+
+Open **Path & Geometry → Open 3D path designer** to edit one.
+
+### Two ways to type a position, one way to store it
+
+You can enter a point in metres, or in the terms spatial audio is usually
+discussed in:
+
+```json
+{ "azimuthDegrees": 45.0, "elevationDegrees": 30.0, "distanceMetres": 1.5 }
+```
+
+Spherical entry is converted as you type it. Both editors in the dialog show the
+same point at the same time, and what is written to the project is Cartesian.
+
+### Keyframes
+
+The most direct way to describe a path is to say where the source is at each
+moment:
+
+```json
+{
+  "coordinateSystem": "listener_relative_cartesian",
+  "units": "metres",
+  "interpolation": "cubic",
+  "keyframes": [
+    { "timeSeconds": 0.0,  "position": [0.0,  1.0, 0.0] },
+    { "timeSeconds": 5.0,  "position": [1.0,  0.0, 1.5] },
+    { "timeSeconds": 10.0, "position": [0.0, -1.0, 0.5] }
+  ]
+}
+```
+
+Interpolation may be `hold`, `linear`, `cubic` or `catmull_rom`. CSV and JSON
+import land here too, in either Cartesian or spherical columns, which is how
+recorded motion gets in.
+
+### Geometry is not traversal
+
+The dialog keeps two things apart, and it is worth keeping them apart in your
+head as well:
+
+* **Path geometry** — where the virtual source can be.
+* **Path traversal** — how it moves along that shape over time.
+
+The same circle can be walked at constant speed, accelerated, eased, reversed,
+or driven from the stage timeline. Those are all traversal; none of them changes
+the circle. Choosing the speed law is a real decision: *constant linear speed*
+covers metres evenly, while *curve parameter speed* on a circle means constant
+angular speed instead.
+
+### Four views, because depth is ambiguous
+
+A path cannot be edited precisely in a single perspective view — dragging a
+point moves it along a ray, and where on that ray it lands is a guess. So the
+designer has a perspective view for seeing the shape, and top, front and side
+views that each edit exactly the two axes they show and leave the third
+untouched. A point selected anywhere is selected everywhere.
+
+The listener is drawn with a nose, ears, a head-height plane and a vertical
+axis, so which way you are facing is never in doubt. The optional **HRTF
+coverage shell** draws the sphere your dataset measured on.
+
+During preview the moving marker is evaluated through the same path model the
+renderer uses, so it follows the trajectory actually being sent — with easing or
+reverse in play that is not the same as the drawn curve.
+
+### Paths worth trying
+
+Beyond flat circles and arcs, the primitive list includes vertical and tilted
+orbits, helices, rising and falling arcs, overhead sweeps, front-to-back
+elevation sweeps, dome traversal, three-dimensional figure-eights, pendulums,
+toroidal paths around the head and a seeded random walk in a volume. For this
+application the useful ones tend to be:
+
+* a floor-to-overhead sweep (**rising arc**, low start elevation to high);
+* front-centre to directly overhead (**overhead sweep**);
+* a spiral rising around you (**dome traversal**);
+* alternating above-left and below-right (**figure-eight** at 45° tilt);
+* an expanding and contracting orbit (**spherical orbit** with two distances);
+* a toroidal path around the head (**torus**);
+* a slow three-dimensional figure-eight (**figure-eight**, long duration).
+
+### What each renderer can honestly do with height
+
+Height is the part where the renderers genuinely differ, so it is the part worth
+being careful about:
+
+* **HRTF** looks the dataset up by azimuth *and* elevation at every control
+  interval, and uses distance for gain and propagation delay. This is the only
+  mode that can really place a source above or below you.
+* **Geometric** derives interaural time and level differences, propagation delay
+  and distance attenuation from the path. Elevation can colour the sound, but
+  convincing height localization needs HRTF filtering.
+* **Abstract phase modulation** can use the path as a control source — azimuth
+  to interaural phase, elevation to carrier or modulation depth, distance to
+  amplitude. These are labelled **creative mappings, not spatialization**.
+  Phase modulation alone cannot produce reliable height, and the label travels
+  with the setting into the saved project so it cannot quietly become a claim.
+* **Hybrid** runs `Source → SAM → 3D trajectory → HRTF interpolation → Cue
+  modification → Output`. The order is stated because it matters: phase
+  manipulation applied before binaural filtering and after it are meaningfully
+  different renders.
+
+### When the dataset cannot follow the path
+
+Many published HRTF datasets are dense near the horizontal plane and thin or
+empty above and below it. An overhead or below-head path can therefore ask for
+directions nobody measured, and the renderer will still produce audio — it
+always finds a nearest measurement — which is exactly the problem.
+
+The workbench warns when:
+
+* the requested elevation lies outside measured coverage;
+* the path repeatedly crosses sparse measurement regions;
+* the dataset has too few upper- or lower-hemisphere samples;
+* nearest-neighbour fallback is in use;
+* the path moves too fast for the control interval or crossfade to track.
+
+None of these refuses a render. They tell you which parts of it are being
+extrapolated rather than reproduced, which is a distinction worth having before
+you draw a conclusion from what you heard.
+
 ## Choosing an HRTF
 
 Start with the localization test in **HRTF Lab → Tests & import**. It presents
