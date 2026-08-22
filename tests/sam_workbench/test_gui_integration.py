@@ -23,7 +23,13 @@ import pytest
 pytest.importorskip("PyQt5")
 pytest.importorskip("pytestqt", reason="GUI tests need pytest-qt")
 
-from PyQt5.QtWidgets import QDialog, QFormLayout, QMainWindow  # noqa: E402
+from PyQt5.QtCore import Qt  # noqa: E402
+from PyQt5.QtWidgets import (  # noqa: E402
+    QDialog,
+    QFormLayout,
+    QMainWindow,
+    QScrollArea,
+)
 
 from src.audio.sam_workbench.compat import render_sam2_voice  # noqa: E402
 from src.audio.sam_workbench.parameters import (  # noqa: E402
@@ -204,6 +210,18 @@ def test_no_second_main_window_is_introduced():
     assert "QMainWindow" not in source
     assert issubclass(sam_workbench_dialog.SamWorkbenchDialog, QDialog)
     assert not issubclass(sam_workbench_dialog.SamWorkbenchDialog, QMainWindow)
+
+
+def test_every_workbench_page_scrolls_when_the_window_shrinks(workbench):
+    dialog, _voice = workbench
+
+    assert dialog.tabs.count() > 0
+    for index in range(dialog.tabs.count()):
+        page = dialog.tabs.widget(index)
+        assert isinstance(page, QScrollArea), dialog.tabs.tabText(index)
+        assert page.widgetResizable()
+        assert page.horizontalScrollBarPolicy() == Qt.ScrollBarAsNeeded
+        assert page.verticalScrollBarPolicy() == Qt.ScrollBarAsNeeded
 
 
 # --- the workbench dialog ---------------------------------------------------

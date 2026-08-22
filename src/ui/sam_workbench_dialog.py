@@ -24,6 +24,7 @@ from PyQt5.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QScrollArea,
     QTabWidget,
     QTextEdit,
     QVBoxLayout,
@@ -197,7 +198,7 @@ class SamWorkbenchDialog(QDialog):
 
         self.tabs.addTab(self._scrolled(self.parameter_panel), "Parameters")
         self.tabs.addTab(self._scrolled(self.path_panel), "Path && Geometry")
-        self.tabs.addTab(self.hrtf_panel, "HRTF Lab")
+        self.tabs.addTab(self._scrolled(self.hrtf_panel), "HRTF Lab")
         # Stages, modulation and routing describe the shape of the scene rather
         # than one voice's parameters, so they share a tab of their own instead
         # of lengthening the parameter list.
@@ -205,9 +206,9 @@ class SamWorkbenchDialog(QDialog):
         self.scene_tabs.addTab(self._scrolled(self.stage_panel), "Stages")
         self.scene_tabs.addTab(self._scrolled(self.modulation_panel), "Modulation")
         self.scene_tabs.addTab(self._scrolled(self.routing_panel), "Routing && cost")
-        self.tabs.addTab(self.scene_tabs, "Scene")
-        self.tabs.addTab(self.analysis_panel, "Analysis")
-        self.tabs.addTab(self.compatibility_view, "Compatibility")
+        self.tabs.addTab(self._scrolled(self.scene_tabs), "Scene")
+        self.tabs.addTab(self._scrolled(self.analysis_panel), "Analysis")
+        self.tabs.addTab(self._scrolled(self.compatibility_view), "Compatibility")
         layout.addWidget(self.tabs, 1)
 
         self.parameter_panel.paramsChanged.connect(self._on_params_changed)
@@ -396,11 +397,19 @@ class SamWorkbenchDialog(QDialog):
             self.setTabOrder(earlier, later)
 
     @staticmethod
-    def _scrolled(widget: QWidget) -> QWidget:
-        from PyQt5.QtWidgets import QScrollArea
+    def _scrolled(widget: QWidget) -> QScrollArea:
+        """Make a workbench page usable at any practical dialog size.
 
+        Every top-level page uses the same wrapper so newly added controls do
+        not become unreachable after the dialog or display is resized.  Qt's
+        ``AsNeeded`` policy (the default) keeps the bars out of the way when
+        the complete page fits while allowing scrolling in both directions.
+        """
         area = QScrollArea()
         area.setWidgetResizable(True)
+        area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        area.setFrameShape(QScrollArea.NoFrame)
         area.setWidget(widget)
         return area
 
