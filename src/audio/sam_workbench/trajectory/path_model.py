@@ -152,20 +152,32 @@ class PathModel:
         return self.coordinate_system == "listener_relative_cartesian"
 
     def trajectory(self) -> CanonicalTrajectory:
-        """The geometry/traversal pair, with the transform already applied."""
+        """The geometry/traversal pair, with the transform already applied.
+
+        Built once and kept. A renderer asks for positions thousands of times
+        per second of audio, and rebuilding the composed trajectory for each
+        query was pure overhead - the model is frozen, so the answer cannot
+        change between calls.
+        """
+
+        cached = self.__dict__.get("_compiled_trajectory")
+        if cached is not None:
+            return cached
 
         from .geometry import TransformedGeometry
 
         geometry = self.geometry
         if self.transform != Transform():
             geometry = TransformedGeometry(geometry, self.transform)
-        return CanonicalTrajectory(
+        compiled = CanonicalTrajectory(
             geometry,
             self.traversal,
             arc_length=self.speed_law == "constant_speed",
             arclength_samples=self.arclength_samples,
             coordinate_smoothing=self.coordinate_smoothing,
         )
+        object.__setattr__(self, "_compiled_trajectory", compiled)
+        return compiled
 
     def positions(self, time_s: ArrayLike) -> NDArray[np.float64]:
         """Listener-relative positions in metres, whatever frame was stored.

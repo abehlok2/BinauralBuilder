@@ -7,11 +7,24 @@ from typing import Literal
 import numpy as np
 from numpy.typing import ArrayLike
 from ..conventions import AUDIO_DTYPE
+from ..dsp.binaural_convolution import BinauralConvolver
 from ..hrtf import DelayPolicy, default_hrtf_cache
-from ..hrtf.interpolation import interpolate_log_magnitude_delay, nearest_indices
 from ..trajectory.transforms import ListenerTransform
 
-InterpolationMode = Literal["nearest", "logmag_delay"]
+#: ``logmag_delay`` was this renderer's own name for what the interpolation
+#: subsystem calls ``delay_magnitude``. Both are accepted; the canonical name
+#: is the subsystem's, so a mode advertised in one place cannot be a mode the
+#: other refuses.
+INTERPOLATION_ALIASES: dict[str, str] = {"logmag_delay": "delay_magnitude"}
+
+
+def canonical_interpolation(mode: str) -> str:
+    """The subsystem's name for an interpolation mode."""
+
+    return INTERPOLATION_ALIASES.get(str(mode), str(mode))
+
+
+InterpolationMode = str
 
 @dataclass(frozen=True)
 class HRTFRendererSpec:
@@ -25,6 +38,22 @@ class HRTFRendererSpec:
     listener: ListenerTransform = ListenerTransform()
     expected_sha256: str | None = None
     project_directory: str | Path | None = None
+
+    # --- interpolation -----------------------------------------------------
+    #: How many measurements the three-neighbour blend uses.
+    neighbor_count: int = 3
+    #: Spherical-harmonic order, or None for the highest the dataset supports.
+    harmonic_order: int | None = None
+
+    # --- spatial update ----------------------------------------------------
+    #: Largest direction change tolerated before the filter is reselected. A
+    #: fixed interval updates a slow path far more often than it can hear and a
+    #: fast one less often than it needs; bounding the *error* instead adapts to
+    #: the path. ``None`` keeps the fixed interval.
+    max_angular_error_deg: float | None = 1.0
+    #: Bounds on the adaptive interval, in samples.
+    min_control_interval_samples: int = 128
+    max_control_interval_samples: int = 4096
 
     # --- distance ----------------------------------------------------------
     #
@@ -49,8 +78,18 @@ class HRTFRendererSpec:
     speed_of_sound_m_s: float = 343.0
 
     def __post_init__(self):
-        if self.interpolation not in ("nearest", "logmag_delay"):
-            raise ValueError(f"unsupported interpolation {self.interpolation!r}")
+        from ..hrtf.interpolation import INTERPOLATION_MODES
+
+        if canonical_interpolation(self.interpolation) not in INTERPOLATION_MODES:
+            raise ValueError(
+                f"unsupported interpolation {self.interpolation!r}; "
+                f"expected one of {INTERPOLATION_MODES} "
+                f"(or the alias {tuple(INTERPOLATION_ALIASES)})"
+            )
+        if int(self.neighbor_count) < 1:
+            raise ValueError("neighbor_count must be at least 1")
+        if self.harmonic_order is not None and int(self.harmonic_order) < 0:
+            raise ValueError("harmonic_order must not be negative")
         DelayPolicy(self.delay_policy)
         if not math.isfinite(self.crossfade_ms) or self.crossfade_ms < 0:
             raise ValueError("crossfade_ms must be finite and non-negative")
@@ -75,16 +114,39 @@ class HRTFRendererSpec:
         return float(ratio * ratio if self.distance_law == "inverse_square" else ratio)
 
 class HRTFRenderer:
-    """Streaming FIR renderer with continuous history and equal-power switches."""
+    """The canonical binaural engine: block convolution, every interpolation mode.
+
+    This used to convolve sample by sample in Python and offer two of the five
+    interpolation modes the rest of the workbench advertises, while a second
+    engine served the HRTF Lab with block convolution and all five. Two engines
+    meant preview and export could differ from an audition of the same
+    settings, and the production one rendered slower than real time.
+
+    One engine now serves preview, export, the lab, A/B, analysis, experiments
+    and benchmarks. It keeps everything the production path had - the
+    three-dimensional trajectory, the distance law, propagation delay and
+    coverage diagnostics - and gains what only the lab had.
+
+    Direction is reselected on an adaptive schedule rather than a fixed one:
+    what matters is how far the source has turned since the filter was chosen,
+    not how many samples have elapsed, so a slow path costs almost nothing and
+    a fast one is still tracked.
+    """
+
     def __init__(self, spec: HRTFRendererSpec):
         self.spec = spec
         self.dataset = None
+        self.interpolator = None
         self._sample_rate_hz = 44100
-        self._fade_frames = 1
-        self._diagnostics = {}
+        self._diagnostics: dict = {}
+        self._convolver: BinauralConvolver | None = None
         self.reset()
 
+    # --- setup --------------------------------------------------------------
+
     def prepare(self, context, source=None):
+        from ..hrtf.interpolation import HrtfInterpolator
+
         self._sample_rate_hz = int(context.sample_rate_hz)
         self.dataset = default_hrtf_cache.get(
             self.spec.sofa_path, self._sample_rate_hz, self.spec.delay_policy,
@@ -92,31 +154,28 @@ class HRTFRenderer:
         )
         if self.spec.expected_sha256 and self.dataset.content_hash.lower() != self.spec.expected_sha256.lower():
             raise ValueError("SOFA asset hash does not match hrtfAssetHash")
-        self._fade_frames = max(1, round(self.spec.crossfade_ms * self._sample_rate_hz / 1000))
-        if self.dataset.has_external_delay:
-            from scipy.ndimage import shift
-            padding = int(np.ceil(np.max(self.dataset.delay_samples))) + 4
-            delayed = np.pad(self.dataset.ir, ((0, 0), (0, 0), (0, padding)))
-            for measurement in range(self.dataset.measurements):
-                for ear in range(2):
-                    delayed[measurement, ear] = shift(delayed[measurement, ear],
-                        self.dataset.delay_samples[measurement, ear], order=3,
-                        mode="constant", cval=0.0, prefilter=True)
-            self._render_ir = delayed
-        else:
-            self._render_ir = self.dataset.ir
-        # After the sample rate is known, so the delay line is sized for it.
+        self.interpolator = HrtfInterpolator(
+            self.dataset,
+            mode=canonical_interpolation(self.spec.interpolation),
+            neighbor_count=int(self.spec.neighbor_count),
+            harmonic_order=self.spec.harmonic_order,
+        )
+        self._convolver = BinauralConvolver(
+            sample_rate_hz=float(self._sample_rate_hz),
+            crossfade_ms=float(self.spec.crossfade_ms),
+        )
         self.reset(0)
 
-    def reset(self, sample_index=0):
-        taps = self._render_ir.shape[-1] if hasattr(self, "_render_ir") else 1
-        self._history = np.zeros(max(0, taps - 1), dtype=np.float64)
+    def reset(self, sample_index: int = 0):
         self._next_sample = int(sample_index)
-        self._current_filter = self._previous_filter = None
-        self._filter_key = None
-        self._fade_position = self._fade_frames
-        # Propagation delay needs the input from up to maximum_distance_m ago,
-        # held in a ring buffer so the per-sample read stays constant time.
+        self._selection = None
+        self._selection_direction = None
+        self._selection_sample = None
+        self._filter_changes = 0
+        self._selections = 0
+        self._extrapolated = 0
+        if self._convolver is not None:
+            self._convolver.reset()
         self._delay_line = np.zeros(self._delay_capacity(), dtype=np.float64)
         self._delay_write = 0
         self._gain = self._gain_step = 0.0
@@ -124,145 +183,267 @@ class HRTFRenderer:
         self._control_remaining = 0
         self._primed_distance = False
 
+    def latency_samples(self):
+        return 0
+
+    def diagnostics(self):
+        return dict(self._diagnostics)
+
+    # --- distance -----------------------------------------------------------
+
     def _delay_capacity(self):
         if not self.spec.propagation_delay:
             return 4
         span = self.spec.maximum_distance_m / self.spec.speed_of_sound_m_s
         return int(np.ceil(span * self._sample_rate_hz)) + 8
 
-    def _read_delayed(self, delay_samples):
-        """Four-point interpolated read from the ring buffer.
+    def _distance_curve(self, start: int, frames: int):
+        """Per-sample gain and propagation delay over an absolute window.
+
+        Evaluated on the same fixed grid the filter uses and interpolated
+        between grid points, so both are functions of the absolute sample index
+        alone. Ramping from wherever the previous *segment* happened to end
+        would make the curve depend on how the caller cut the block, which is
+        exactly what a listener must never be able to hear.
+        """
+
+        step = max(1, int(self.spec.min_control_interval_samples))
+        first = (start // step) * step
+        last = ((start + frames + step - 1) // step) * step
+        knots = np.arange(first, last + step, step, dtype=np.int64)
+        positions = self._positions(knots)
+        distances = np.linalg.norm(positions, axis=1)
+        gains = np.asarray(
+            [self.spec.distance_gain(float(value)) for value in distances], dtype=np.float64
+        )
+        if self.spec.propagation_delay:
+            clamped = np.clip(
+                distances, self.spec.minimum_distance_m, self.spec.maximum_distance_m
+            )
+            delays = clamped / self.spec.speed_of_sound_m_s * self._sample_rate_hz
+        else:
+            delays = np.zeros(knots.size, dtype=np.float64)
+        wanted = np.arange(start, start + frames, dtype=np.float64)
+        return (
+            np.interp(wanted, knots.astype(np.float64), gains),
+            np.interp(wanted, knots.astype(np.float64), delays),
+        )
+
+    def _delayed(self, samples: NDArray[np.float64], delays: NDArray[np.float64]):
+        """Fractional-delay read for a whole block at once.
 
         Cubic rather than linear because a linearly interpolated fractional
-        delay low-passes the signal by an amount that changes with the
-        fractional part, which on a moving source is heard as the timbre
-        wobbling in step with the motion.
+        delay low-passes by an amount that changes with the fractional part,
+        which on a moving source is heard as the timbre wobbling in step with
+        the motion. Vectorized because doing it a sample at a time in Python is
+        the cost this engine exists to remove.
         """
 
         size = len(self._delay_line)
+        frames = samples.size
+        # Write the block into the ring, then read from it: every sample this
+        # block needs is either in the ring already or written just now.
+        write = (self._delay_write + np.arange(frames)) % size
+        self._delay_line[write] = samples
+        self._delay_write = int((self._delay_write + frames) % size)
+
         newest = self._delay_write - 1
-        target = newest - max(0.0, float(delay_samples))
-        base = int(np.floor(target))
+        target = (newest - (frames - 1) + np.arange(frames)) - np.maximum(delays, 0.0)
+        base = np.floor(target).astype(np.int64)
         fraction = target - base
-        p0, p1, p2, p3 = (self._delay_line[(base + offset) % size] for offset in (-1, 0, 1, 2))
+        p0, p1, p2, p3 = (
+            self._delay_line[(base + offset) % size] for offset in (-1, 0, 1, 2)
+        )
         return p1 + 0.5 * fraction * (
             p2 - p0
             + fraction * (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3
                           + fraction * (3.0 * (p1 - p2) + p3 - p0))
         )
 
-    def _update_distance(self, position, frames_until_next):
-        """Retarget gain and delay, ramping over the coming control interval.
-
-        Stepping either one at a control boundary is audible - gain as a click,
-        delay as a tear in the waveform - so both slew across the interval
-        instead. The delay slewing is what produces the Doppler shift of an
-        approaching or receding source.
-        """
-
+    def _distance_targets(self, position):
         distance = float(np.linalg.norm(position))
         gain = self.spec.distance_gain(distance)
         delay = 0.0
         if self.spec.propagation_delay:
             clamped = min(max(distance, self.spec.minimum_distance_m), self.spec.maximum_distance_m)
             delay = clamped / self.spec.speed_of_sound_m_s * self._sample_rate_hz
-        if not self._primed_distance:
-            # The first interval starts where it belongs rather than sliding in
-            # from silence and zero delay.
-            self._gain, self._delay_samples = gain, delay
-            self._primed_distance = True
-        span = max(int(frames_until_next), 1)
-        self._gain_step = (gain - self._gain) / span
-        self._delay_step = (delay - self._delay_samples) / span
-        self._control_remaining = span
+        return gain, delay
 
-    def latency_samples(self): return 0
-    def diagnostics(self): return dict(self._diagnostics)
+    def _apply_distance(self, samples: NDArray[np.float64], start: int) -> NDArray[np.float64]:
+        """Distance gain and propagation delay over one window."""
 
-    def _position(self, sample):
-        time = np.array([sample / self._sample_rate_hz])
+        if samples.size == 0:
+            return samples
+        gains, delays = self._distance_curve(start, samples.size)
+        result = samples
+        if self.spec.propagation_delay:
+            result = self._delayed(samples, delays)
+        if self.spec.distance_law != "none":
+            result = result * gains
+        self._gain = float(gains[-1])
+        self._delay_samples = float(delays[-1])
+        return result
+
+    # --- direction ----------------------------------------------------------
+
+    def _positions(self, samples):
+        """Listener-relative positions at several absolute samples at once.
+
+        Batched because a trajectory query costs about the same for one sample
+        as for a hundred, and the renderer needs a whole block's worth of grid
+        points before it convolves anything.
+        """
+
+        index = np.asarray(samples, dtype=np.float64)
+        time = index / self._sample_rate_hz
         trajectory = self.spec.trajectory
         world = trajectory(time) if callable(trajectory) else trajectory.evaluate(time)
         values = np.asarray(world, dtype=np.float64)
-        if values.shape != (1, 3) or not np.all(np.isfinite(values)):
+        if values.shape != (index.size, 3) or not np.all(np.isfinite(values)):
             raise ValueError("trajectory must return finite (frames, 3) positions")
-        return self.spec.listener.world_to_listener(values)[0]
+        return self.spec.listener.world_to_listener(values)
 
-    def _target_filter(self, position):
-        nearest = int(nearest_indices(self.dataset.positions_m, position[None])[0])
-        if self.spec.interpolation == "nearest":
-            return ("nearest", nearest), self._render_ir[nearest]
-        direction = position / np.linalg.norm(position)
-        reference = self.dataset.positions_m[nearest]
-        reference = reference / np.linalg.norm(reference)
-        if np.dot(direction, reference) > 1.0 - 1e-12:
-            # Neutral reconstruction at a measured direction is exact rather
-            # than an avoidable minimum-phase approximation.
-            return ("logmag_delay", *np.round(direction, 6)), self._render_ir[nearest]
-        target = interpolate_log_magnitude_delay(self.dataset, position)
-        if target.shape[-1] < self._render_ir.shape[-1]:
-            target = np.pad(target, ((0, 0), (0, self._render_ir.shape[-1] - target.shape[-1])))
-        return ("logmag_delay", *np.round(direction, 6)), target
+    def _position(self, sample):
+        return self._positions([sample])[0]
 
     @staticmethod
-    def _fir(window, filt):
-        return np.sum(filt * window[::-1][None, :], axis=1)
+    def _unit(position):
+        norm = float(np.linalg.norm(position))
+        return None if norm <= 0.0 else np.asarray(position, dtype=np.float64) / norm
+
+    def _needs_new_filter(self, sample: int, direction) -> bool:
+        """Whether the direction has moved far enough to be worth reselecting.
+
+        A fixed interval is the wrong question. What a listener can hear is the
+        angular error between where the source is and the direction whose
+        filter is playing, so that is what is bounded. A path that barely moves
+        keeps its filter for the maximum interval; one crossing the head
+        quickly is reselected as often as the minimum allows.
+        """
+
+        if self._selection is None or direction is None:
+            return True
+        elapsed = sample - (self._selection_sample or 0)
+        if elapsed >= self.spec.max_control_interval_samples:
+            return True
+        if self.spec.max_angular_error_deg is None:
+            return elapsed >= self.spec.control_interval_samples
+        if elapsed < self.spec.min_control_interval_samples:
+            return False
+        cosine = float(np.clip(np.dot(direction, self._selection_direction), -1.0, 1.0))
+        return np.degrees(np.arccos(cosine)) >= float(self.spec.max_angular_error_deg)
+
+    def _select(self, sample: int, direction) -> None:
+        selection = self.interpolator.at(direction)
+        self._selections += 1
+        if selection.extrapolated:
+            self._extrapolated += 1
+        installed = self._convolver.set_filters(selection.hrirs)
+        if installed:
+            self._filter_changes += 1
+        self._selection = selection
+        self._selection_direction = direction
+        self._selection_sample = sample
+
+    def _grid_points(self, start: int, frames: int):
+        """Absolute samples at which a filter change may occur.
+
+        A fixed grid anchored to sample zero, so which points exist does not
+        depend on where the caller cut the stream. Whether a change *happens*
+        at one of them is the adaptive part.
+        """
+
+        step = max(1, int(self.spec.min_control_interval_samples))
+        first = ((start + step - 1) // step) * step
+        return range(max(first, start), start + frames, step)
+
+    def _select_at(self, sample: int) -> bool:
+        """Reselect the filter for ``sample`` if the direction has moved enough."""
+
+        direction = self._unit(self._position(sample))
+        if direction is None:
+            # A source at the listener's own position has no direction; the
+            # filter in force is kept rather than an arbitrary one chosen.
+            direction = self._selection_direction
+            if direction is None:
+                direction = np.array([1.0, 0.0, 0.0])
+        if not self._needs_new_filter(sample, direction):
+            return False
+        self._select(sample, direction)
+        return True
+
+    # --- rendering ----------------------------------------------------------
+
+    def _render_segment(self, source, start: int, offset: int, span: int):
+        """Convolve one stretch of a block under whatever filter is installed."""
+
+        samples = source[offset : offset + span]
+        return self._convolver.process(self._apply_distance(samples, start + offset))
 
     def process(self, mono: ArrayLike, block):
-        if self.dataset is None: raise RuntimeError("prepare() must be called before process()")
+        if self.dataset is None:
+            raise RuntimeError("prepare() must be called before process()")
         source = np.asarray(mono, dtype=np.float64)
-        if source.shape != (block.frames,): raise ValueError(f"mono input must have shape ({block.frames},), got {source.shape}")
-        if int(block.start_sample) != self._next_sample: self.reset(int(block.start_sample))
-        output = np.zeros((2, block.frames), dtype=np.float64)
-        selected = np.empty(block.frames, dtype=np.int64)
-        for local, value in enumerate(source):
-            absolute = int(block.start_sample) + local
-            if self._current_filter is None or absolute % self.spec.control_interval_samples == 0:
-                position = self._position(absolute)
-                # Direction and distance come from the same sampled position:
-                # the filter encodes where the source is, these encode how far.
-                self._update_distance(position, self.spec.control_interval_samples)
-                key, target = self._target_filter(position)
-                if self._current_filter is None:
-                    self._current_filter, self._filter_key = np.asarray(target), key
-                elif key != self._filter_key:
-                    if self._previous_filter is not None and self._fade_position < self._fade_frames:
-                        progress = self._fade_position / self._fade_frames
-                        self._previous_filter = (
-                            np.cos(progress*np.pi/2) * self._previous_filter
-                            + np.sin(progress*np.pi/2) * self._current_filter
-                        )
-                    else:
-                        self._previous_filter = self._current_filter
-                    self._current_filter = np.asarray(target)
-                    self._filter_key, self._fade_position = key, 0
-            selected[local] = self._filter_key[1] if self._filter_key[0] == "nearest" else -1
-            if self._control_remaining > 0:
-                self._gain += self._gain_step
-                self._delay_samples += self._delay_step
-                self._control_remaining -= 1
-            if self.spec.propagation_delay:
-                self._delay_line[self._delay_write] = value
-                self._delay_write = (self._delay_write + 1) % len(self._delay_line)
-                value = self._read_delayed(self._delay_samples)
-            if self.spec.distance_law != "none":
-                value = value * self._gain
-            window = np.concatenate((self._history, [value]))
-            current = self._fir(window, self._current_filter)
-            if self._previous_filter is not None and self._fade_position < self._fade_frames:
-                previous = self._fir(window, self._previous_filter)
-                progress = (self._fade_position + 1) / self._fade_frames
-                output[:, local] = np.cos(progress*np.pi/2)*previous + np.sin(progress*np.pi/2)*current
-                self._fade_position += 1
-                if self._fade_position >= self._fade_frames: self._previous_filter = None
-            else: output[:, local] = current
-            self._history = window[1:]
-        self._next_sample = int(block.start_sample) + block.frames
-        self._diagnostics = {"hrtf_index": selected, "asset_sha256": self.dataset.content_hash,
-            "interpolation": self.spec.interpolation, "delay_policy": DelayPolicy(self.spec.delay_policy).value,
-            "distance_law": self.spec.distance_law, "distance_gain": float(self._gain),
-            "propagation_delay_samples": float(self._delay_samples)}
+        if source.shape != (block.frames,):
+            raise ValueError(f"mono input must have shape ({block.frames},), got {source.shape}")
+        if int(block.start_sample) != self._next_sample:
+            self.reset(int(block.start_sample))
+        if source.size == 0:
+            return np.zeros((2, 0), dtype=AUDIO_DTYPE)
+
+        start = int(block.start_sample)
+        frames = int(block.frames)
+        # Filter changes happen at absolute sample positions, never at block
+        # boundaries: deciding once per block would make the update rate a
+        # function of the caller's block size, so the same render would track a
+        # moving source differently depending on how it was chunked.
+        #
+        # Selection and processing are interleaved rather than planned ahead.
+        # Choosing every filter for the block first and only then convolving
+        # would leave the last filter installed for the block's opening audio,
+        # which sounds like the source jumping ahead of itself.
+        if self._selection is None:
+            self._select_at(start)
+
+        pieces = []
+        cursor = 0
+        for point in self._grid_points(start, frames):
+            offset = point - start
+            if offset > cursor:
+                # Audio up to this point belongs to the filter still in force.
+                pieces.append(self._render_segment(source, start, cursor, offset - cursor))
+                cursor = offset
+            self._select_at(point)
+        if cursor < frames:
+            pieces.append(self._render_segment(source, start, cursor, frames - cursor))
+        output = np.concatenate(pieces, axis=1) if pieces else np.zeros((2, 0))
+
+        self._next_sample = start + frames
+        selection = self._selection
+        self._diagnostics = {
+            "asset_sha256": self.dataset.content_hash,
+            "interpolation": canonical_interpolation(self.spec.interpolation),
+            "delay_policy": DelayPolicy(self.spec.delay_policy).value,
+            "distance_law": self.spec.distance_law,
+            "distance_gain": float(self._gain),
+            "propagation_delay_samples": float(self._delay_samples),
+            "hrtf_indices": None if selection is None else selection.indices,
+            "hrtf_weights": None if selection is None else selection.weights,
+            "angular_distance_deg": 0.0 if selection is None else float(selection.distance_deg),
+            "extrapolated": bool(selection.extrapolated) if selection else False,
+            "selections": int(self._selections),
+            "filter_changes": int(self._filter_changes),
+            "extrapolated_selections": int(self._extrapolated),
+            "taps": 0 if selection is None else int(selection.taps),
+        }
         return output.astype(AUDIO_DTYPE, copy=False)
+
+    @property
+    def last_selection(self):
+        """The most recent :class:`HrirSelection`, for the inspector."""
+
+        return self._selection
+
 
 def render_hrtf(mono, spec, sample_rate_hz, *, block_size=4096, start_sample=0):
     from ..dsp.blocks import RenderContext, iter_blocks
@@ -295,7 +476,7 @@ def render_hrtf(mono, spec, sample_rate_hz, *, block_size=4096, start_sample=0):
 
 from dataclasses import dataclass as _dataclass
 
-from ..dsp.convolution import CrossfadingConvolver, DEFAULT_FILTER_CROSSFADE_MS
+from ..dsp.convolution import DEFAULT_FILTER_CROSSFADE_MS
 from ..hrtf.headphones import HeadphoneCorrection, apply_correction
 from ..hrtf.interpolation import HrtfInterpolator, INTERPOLATION_MODES, NEAREST
 
@@ -347,18 +528,18 @@ class SpatialHrtfRenderer:
             neighbor_count=self.spec.neighbor_count,
             harmonic_order=self.spec.harmonic_order,
         )
-        self._convolvers = [
-            CrossfadingConvolver(
-                crossfade_ms=self.spec.crossfade_ms, sample_rate_hz=self.sample_rate_hz
-            )
-            for _ in range(2)
-        ]
+        # The same convolution core :class:`HRTFRenderer` uses. Two engines that
+        # convolve differently is how an audition and an export of identical
+        # settings came to differ; sharing this is what makes them agree by
+        # construction rather than by testing.
+        self._convolver = BinauralConvolver(
+            sample_rate_hz=self.sample_rate_hz, crossfade_ms=self.spec.crossfade_ms
+        )
         self._last_selection: object = None
         self.reset()
 
     def reset(self) -> None:
-        for convolver in self._convolvers:
-            convolver.reset()
+        self._convolver.reset()
         self._last_selection = None
         self._primed = False
 
@@ -379,16 +560,15 @@ class SpatialHrtfRenderer:
         samples = np.asarray(mono_block, dtype=np.float64).reshape(-1)
         selection = self.interpolator.at(direction)
         self._last_selection = selection
-        for ear, convolver in enumerate(self._convolvers):
-            if self._primed:
-                convolver.set_filter(selection.hrirs[ear])
-            else:
-                # The first block installs its filter outright. Fading into it
-                # would fade up from the convolver's default passthrough, so a
-                # render would open with the dry mono source bleeding through.
-                convolver.reset(selection.hrirs[ear])
-        self._primed = True
-        return np.vstack([convolver.process(samples) for convolver in self._convolvers])
+        if not self._primed:
+            # The first block installs its filter outright. Fading into it
+            # would fade up from silence, so a render would open with a ramp
+            # nobody asked for.
+            self._convolver.reset(selection.hrirs)
+            self._primed = True
+        else:
+            self._convolver.set_filters(selection.hrirs)
+        return self._convolver.process(samples)
 
 
 def render_spatial_hrtf(

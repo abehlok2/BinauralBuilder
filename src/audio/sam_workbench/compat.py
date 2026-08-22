@@ -49,6 +49,7 @@ from src.audio.sam_workbench.dsp.source import (
 )
 from src.audio.sam_workbench.render.geometric import GeometricBinauralRenderer, GeometricSpec
 from src.audio.sam_workbench.render.registry import REGISTRY
+from src.audio.sam_workbench.trajectory.transforms import ListenerTransform
 from src.audio.sam_workbench.trajectory import (
     path_model_from_dict,
     spherical_to_cartesian,
@@ -658,6 +659,26 @@ def render_sam2_voice(
     return to_frame_major(audio).astype(AUDIO_DTYPE, copy=False)
 
 
+def _listener_from(options: Mapping[str, Any]) -> ListenerTransform:
+    """The listener pose a voice's options describe, or the default one.
+
+    Production ignored this entirely: a project could place and orient the
+    listener and be rendered as though the head were at the origin facing
+    forward, which silently moves every source.
+    """
+
+    data = options.get("listener")
+    if not isinstance(data, Mapping):
+        return ListenerTransform()
+    return ListenerTransform(
+        position_m=tuple(float(value) for value in data.get("positionM", (0.0, 0.0, 0.0))),
+        yaw_pitch_roll_deg=tuple(
+            float(value) for value in data.get("yawPitchRollDegrees", (0.0, 0.0, 0.0))
+        ),
+        ear_spacing_m=float(data.get("earSpacingM", 0.18)),
+    )
+
+
 def _hrtf_trajectory(params: Mapping[str, Any], options: Mapping[str, Any]):
     """The position function the HRTF renderer samples, in metres.
 
@@ -778,6 +799,24 @@ def _render_hrtf_voice(
         propagation_delay=bool(
             options.get("propagationDelay", has_trajectory)
         ),
+        # Interpolation settings the production path used to drop on the floor:
+        # a project could ask for a three-neighbour blend at a chosen harmonic
+        # order, have it validate, and be rendered nearest-neighbour anyway.
+        neighbor_count=int(options.get("neighborCount", 3)),
+        harmonic_order=(
+            None if options.get("harmonicOrder") is None
+            else int(options["harmonicOrder"])
+        ),
+        max_angular_error_deg=(
+            None if options.get("maxAngularErrorDeg") is None
+            else _as_float(options["maxAngularErrorDeg"], 1.0)
+        ),
+        min_control_interval_samples=int(
+            options.get("minControlIntervalSamples",
+                        options.get("controlIntervalSamples", 128))
+        ),
+        max_control_interval_samples=int(options.get("maxControlIntervalSamples", 4096)),
+        listener=_listener_from(options),
     )
     # Reconstruct the convolution and crossfade history from the voice origin,
     # since the legacy synth boundary cannot return checkpointed renderer state.
