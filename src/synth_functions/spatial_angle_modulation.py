@@ -362,12 +362,18 @@ def spatial_angle_modulation_sam2(duration, sample_rate=44100, **params):
 
     voice_params = dict(params)
     initial_offset = float(voice_params.pop("initial_offset", 0.0) or 0.0)
+    sam_scene = voice_params.pop("_sam_scene", None)
+    source_id = voice_params.pop("_sam_source_id", "source.1")
+    scene_start_s = voice_params.pop("_sam_scene_start_s", None)
     return render_sam2_voice(
         duration,
         sample_rate,
         params=voice_params,
         is_transition=False,
         initial_offset=initial_offset,
+        sam_scene=sam_scene,
+        source_id=source_id,
+        scene_start_s=scene_start_s,
     )
 
 
@@ -384,13 +390,20 @@ def spatial_angle_modulation_sam2_transition(
 
     from src.audio.sam_workbench.compat import render_sam2_voice
 
+    voice_params = dict(params)
+    sam_scene = voice_params.pop("_sam_scene", None)
+    source_id = voice_params.pop("_sam_source_id", "source.1")
+    scene_start_s = voice_params.pop("_sam_scene_start_s", None)
     return render_sam2_voice(
         duration,
         sample_rate,
-        params=dict(params),
+        params=voice_params,
         is_transition=True,
         initial_offset=float(initial_offset or 0.0),
         transition_duration=transition_duration,
+        sam_scene=sam_scene,
+        source_id=source_id,
+        scene_start_s=scene_start_s,
     )
 
 

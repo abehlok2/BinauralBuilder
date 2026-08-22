@@ -699,6 +699,10 @@ def generate_voice_audio(voice_data, duration, sample_rate, global_start_time, c
         
         if not is_transition:
             call_params['initial_offset'] = float(chunk_start_time)
+        if "_sam_scene_start_s" in call_params:
+            call_params["_sam_scene_start_s"] = (
+                float(call_params["_sam_scene_start_s"]) + float(chunk_start_time)
+            )
         
         synth_state_input = None
         if isinstance(previous_state, dict):
@@ -934,7 +938,31 @@ def assemble_track_from_data(track_data, sample_rate, crossfade_duration, crossf
     how much of each crossfade duration is actually overlapped (0.0-1.0).
     Includes per-step normalization to prevent excessive peaks before final mix.
     """
-    steps_data = track_data.get("steps", [])
+    steps_data = copy.deepcopy(track_data.get("steps", []))
+    # Scene state belongs to the track.  Attach a private render context to
+    # copied voices only; it is never serialized back into voice parameters.
+    from src.audio.sam_workbench.scene_state import (
+        ensure_source_ids, migrate_voice_scene, normalize_sam_scene,
+    )
+    scene_seed = track_data.get("sam_scene")
+    scene = normalize_sam_scene(scene_seed) if scene_seed is not None else None
+    for step in steps_data:
+        for voice in step.get("voices", ()):
+            params = voice.setdefault("params", {})
+            migrated = migrate_voice_scene(params)
+            if scene is None and migrated is not None:
+                scene = migrated
+    if scene is not None:
+        ensure_source_ids(steps_data, scene)
+        running_start = 0.0
+        for step in steps_data:
+            step_start = float(step.get("start", step.get("start_time", running_start)))
+            for voice in step.get("voices", ()):
+                if "spatial_angle_modulation_sam2" in str(voice.get("synth_function_name", "")):
+                    voice["params"]["_sam_scene"] = scene
+                    voice["params"]["_sam_source_id"] = voice["sam_source_id"]
+                    voice["params"]["_sam_scene_start_s"] = step_start
+            running_start = step_start + float(step.get("duration", 0.0))
     if not steps_data:
         print("Warning: No steps found in track data.")
         return np.zeros((sample_rate, 2)) # Return 1 second silence
@@ -1408,6 +1436,7 @@ def load_track_from_json(filepath):
                 "steps": raw.get("progression", []),
                 "background_noise": raw.get("background_noise", raw.get("noise", {})),
                 "clips": raw.get("overlay_clips", raw.get("clips", [])),
+                "sam_scene": raw.get("sam_scene"),
             }
             raw = new_data
 
@@ -1467,6 +1496,10 @@ def save_track_to_json(track_data, filepath):
             "background_noise": track_data.get("background_noise", {}),
             "overlay_clips": track_data.get("clips", []),
         }
+        if track_data.get("sam_scene") is not None:
+            from src.audio.sam_workbench.scene_state import normalize_sam_scene
+
+            v2_data["sam_scene"] = normalize_sam_scene(track_data["sam_scene"])
 
         crossfade = float(track_data.get("global_settings", {}).get("crossfade_duration", 0.0))
         crossfade_overlap = _resolve_crossfade_overlap_factor(track_data.get("global_settings", {}).get("crossfade_overlap", 1.0))

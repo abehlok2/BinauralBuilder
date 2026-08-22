@@ -47,6 +47,11 @@ from src.audio.sam_workbench.preview import (
     to_pcm16_bytes,
 )
 from src.audio.sam_workbench.state import load_parameter_state, save_parameter_state
+from src.audio.sam_workbench.scene_state import (
+    LEGACY_SCENE_KEYS,
+    migrate_voice_scene,
+    normalize_sam_scene,
+)
 
 from .sam_analysis_panel import SamAnalysisPanel
 from .sam_basic_panel import SamBasicPanel
@@ -121,6 +126,7 @@ class SamWorkbenchDialog(QDialog):
         sample_rate: int = 44_100,
         parent: QWidget | None = None,
         on_apply: Callable[[dict[str, Any]], None] | None = None,
+        scene_data: Mapping[str, Any] | None = None,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("SAM/HRTF Workbench")
@@ -135,6 +141,15 @@ class SamWorkbenchDialog(QDialog):
         # touched when Apply or OK is pressed.
         self._voice = copy.deepcopy(dict(voice_data))
         self._voice.setdefault("params", {})
+        legacy_scene = migrate_voice_scene(self._voice["params"])
+        self._scene = normalize_sam_scene(scene_data or legacy_scene)
+        source_id = str(self._voice.get("sam_source_id", "")).strip()
+        if not source_id:
+            routed = self._scene.get("routing", {}).get("sources", ())
+            source_id = str(routed[0].get("sourceId", "source.1")) if routed else "source.1"
+            self._voice["sam_source_id"] = source_id
+        if not any(str(item.get("id")) == source_id for item in self._scene["sources"]):
+            self._scene["sources"].append({"id": source_id, "name": source_id})
         self._original = copy.deepcopy(self._voice)
         self._sample_rate = int(sample_rate)
         self._on_apply = on_apply
@@ -484,9 +499,9 @@ class SamWorkbenchDialog(QDialog):
         self.parameter_panel.set_params(params)
         self.path_panel.set_params(params)
         self.hrtf_panel.set_params(params)
-        self.stage_panel.set_params(params)
-        self.modulation_panel.set_params(params)
-        self.routing_panel.set_params(params)
+        self.stage_panel.set_timeline(self._scene.get("stages"))
+        self.modulation_panel.set_matrix(self._scene.get("modulation"))
+        self.routing_panel.set_params({"samRouting": self._scene.get("routing")})
         self._on_mode_changed(self.mode_combo.currentText())
 
     def collect_params(self) -> dict[str, Any]:
@@ -514,10 +529,19 @@ class SamWorkbenchDialog(QDialog):
         )
         merged.update(self.path_panel.params())
         merged.update(self.hrtf_panel.params())
-        merged.update(self.stage_panel.params())
-        merged.update(self.modulation_panel.params())
-        merged.update(self.routing_panel.params())
+        for key in LEGACY_SCENE_KEYS:
+            merged.pop(key, None)
         return merged
+
+    def scene_data(self) -> dict[str, Any]:
+        """The track-level scene edited by the three Scene panels."""
+
+        scene = copy.deepcopy(self._scene)
+        scene["stages"] = self.stage_panel.timeline.describe()
+        scene["modulation"] = self.modulation_panel.matrix.describe()
+        scene["routing"] = self.routing_panel.describe()
+        scene["buses"] = copy.deepcopy(scene["routing"].get("buses", []))
+        return normalize_sam_scene(scene)
 
     def voice_data(self) -> dict[str, Any]:
         """The edited voice dictionary, ready for the existing save path."""
@@ -528,6 +552,7 @@ class SamWorkbenchDialog(QDialog):
 
     def _on_params_changed(self, _params: dict[str, Any]) -> None:
         self._voice["params"] = self.collect_params()
+        self._scene = self.scene_data()
         self._revalidate()
 
     # --- parameter-state persistence ---------------------------------------
@@ -670,8 +695,14 @@ class SamWorkbenchDialog(QDialog):
         self.preview_button.setEnabled(False)
         self.status_label.setText("Rendering preview…")
 
+        preview_voice = self.voice_data()
+        preview_voice["params"]["_sam_scene"] = self.scene_data()
+        preview_voice["params"]["_sam_source_id"] = str(
+            preview_voice.get("sam_source_id", "source.1")
+        )
+        preview_voice["params"]["_sam_scene_start_s"] = self.preview_start_seconds.value()
         worker = PreviewWorker(
-            self.voice_data(),
+            preview_voice,
             self._sample_rate,
             self.preview_seconds.value(),
             self.preview_start_seconds.value(),
