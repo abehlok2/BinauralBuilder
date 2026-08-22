@@ -1,0 +1,947 @@
+"""The three-dimensional path designer.
+
+Two ideas shape this dialog.
+
+The first is that *depth is ambiguous in a single view*, so there are four:
+a perspective view to see the shape, and top, front and side views in which
+every axis is directly editable.  Selecting a point in any of them selects it
+in all of them, and the numeric editor beside them is a fifth view of the same
+point - in metres and in azimuth/elevation/distance at once, because the two
+ways of thinking about a position are both worth having and neither is the
+stored format on its own.
+
+The second is that *path geometry and path traversal are different things*.
+Where the source can be, and how it moves along that shape over time, are
+edited in separate panels and stored separately.  A circle stays one circle
+whether it is walked at constant speed, eased, reversed or driven from the
+stage timeline; keeping the two apart is what lets either grow without
+disturbing the other.
+"""
+
+from __future__ import annotations
+
+import copy
+import dataclasses
+import math
+from pathlib import Path
+
+import numpy as np
+from PyQt5.QtCore import Qt, QTimer, pyqtSignal
+from PyQt5.QtWidgets import (
+    QCheckBox,
+    QComboBox,
+    QDialog,
+    QDialogButtonBox,
+    QDoubleSpinBox,
+    QFileDialog,
+    QFormLayout,
+    QGridLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QMessageBox,
+    QPushButton,
+    QScrollArea,
+    QSpinBox,
+    QSplitter,
+    QTableWidget,
+    QTableWidgetItem,
+    QTabWidget,
+    QVBoxLayout,
+    QWidget,
+)
+
+from src.audio.sam_workbench.render.hybrid import SIGNAL_CHAIN_TEXT
+from src.audio.sam_workbench.trajectory import (
+    PRIMITIVE_TYPES,
+    Keyframe,
+    KeyframedPath,
+    PathModel,
+    cartesian_array_to_spherical,
+    geometry_to_dict,
+    keyframes_from_csv,
+    keyframes_from_json,
+    path_model_from_dict,
+    spherical_to_cartesian,
+)
+from src.audio.sam_workbench.trajectory.serialization import _SPATIAL
+
+from .sam_path3d_views import PLANES, OrthographicPathView, PerspectivePathView
+
+#: Geometry kinds edited as draggable control points rather than as parameters.
+_POINT_KINDS = ("polyline", "polygon", "spline", "bezier", "line")
+
+#: How many samples the drawn curve uses. Enough that a dome with several turns
+#: reads as a curve rather than as a polygon, cheap enough to redraw on drag.
+_CURVE_SAMPLES = 400
+
+
+class _AxisRow(QWidget):
+    """Three linked spin boxes, for a vector-valued parameter."""
+
+    changed = pyqtSignal()
+
+    def __init__(self, suffix="", minimum=-1e4, maximum=1e4, parent=None):
+        super().__init__(parent)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        self.spins = []
+        for _ in range(3):
+            spin = QDoubleSpinBox()
+            spin.setRange(minimum, maximum)
+            spin.setDecimals(3)
+            spin.setSingleStep(0.1)
+            spin.setSuffix(suffix)
+            spin.valueChanged.connect(self.changed)
+            layout.addWidget(spin)
+            self.spins.append(spin)
+
+    def value(self):
+        return [spin.value() for spin in self.spins]
+
+    def set_value(self, values):
+        for spin, value in zip(self.spins, values):
+            spin.blockSignals(True)
+            spin.setValue(float(value))
+            spin.blockSignals(False)
+
+
+class SamPath3DDialog(QDialog):
+    """Multi-view editor for a canonical three-dimensional trajectory."""
+
+    def __init__(self, trajectory_spec=None, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("SAM 3D Path Designer")
+        self.resize(1180, 820)
+        self._spec = copy.deepcopy(trajectory_spec or {})
+        self._updating = False
+        self._selected = -1
+        self._points: list[list[float]] = []
+        self._keyframes: list[Keyframe] = []
+        self._parameters: dict[str, object] = {}
+        self._parameter_widgets: dict[str, object] = {}
+        self._preview_time = 0.0
+
+        self._build_ui()
+        self._load_spec()
+        self._timer = QTimer(self)
+        self._timer.setInterval(50)
+        self._timer.timeout.connect(self._advance_preview)
+
+    # ------------------------------------------------------------------ setup
+
+    def _build_ui(self):
+        layout = QVBoxLayout(self)
+        layout.addWidget(self._build_header())
+        splitter = QSplitter(Qt.Horizontal)
+        splitter.addWidget(self._build_views())
+        splitter.addWidget(self._build_side_panel())
+        splitter.setStretchFactor(0, 3)
+        splitter.setStretchFactor(1, 2)
+        layout.addWidget(splitter, 1)
+
+        chain = QLabel(f"Signal chain:  {SIGNAL_CHAIN_TEXT}")
+        chain.setToolTip(
+            "Phase manipulation before binaural filtering and after it produce "
+            "meaningfully different results, so the order is stated explicitly."
+        )
+        chain.setStyleSheet("color: #9aa0aa;")
+        layout.addWidget(chain)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def _build_header(self):
+        header = QWidget()
+        row = QHBoxLayout(header)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.addWidget(QLabel("Geometry:"))
+        self.primitive_combo = QComboBox()
+        self.primitive_combo.addItem("— points —")
+        for kind in _POINT_KINDS:
+            self.primitive_combo.addItem(kind)
+        self.primitive_combo.insertSeparator(self.primitive_combo.count())
+        self.primitive_combo.addItem("keyframes")
+        self.primitive_combo.insertSeparator(self.primitive_combo.count())
+        for kind in PRIMITIVE_TYPES:
+            self.primitive_combo.addItem(kind)
+        self.primitive_combo.setToolTip(
+            "Point kinds are edited by dragging. Three-dimensional primitives "
+            "are edited by their own numbers, so a dome stays a dome when the "
+            "project is reopened instead of becoming a spline through samples "
+            "of one."
+        )
+        self.primitive_combo.currentTextChanged.connect(self._primitive_changed)
+        row.addWidget(self.primitive_combo)
+
+        self.shell_check = QCheckBox("HRTF coverage shell")
+        self.shell_check.setToolTip(
+            "Draw the sphere an HRTF dataset measures on. A path that leaves it "
+            "is being extrapolated rather than reproduced."
+        )
+        self.shell_check.toggled.connect(self._shell_toggled)
+        row.addWidget(self.shell_check)
+
+        self.preview_button = QPushButton("Preview motion")
+        self.preview_button.setCheckable(True)
+        self.preview_button.setToolTip(
+            "Animate the marker along the compiled trajectory - the positions "
+            "the renderer is actually sent, including easing, direction and "
+            "the constant-speed law, not the authored curve."
+        )
+        self.preview_button.toggled.connect(self._preview_toggled)
+        row.addWidget(self.preview_button)
+        row.addStretch(1)
+        return header
+
+    def _build_views(self):
+        container = QWidget()
+        grid = QGridLayout(container)
+        grid.setContentsMargins(0, 0, 0, 0)
+        self.perspective = PerspectivePathView()
+        self.views = {"perspective": self.perspective}
+        grid.addWidget(self.perspective, 0, 0)
+        for index, plane in enumerate(("top", "front", "side")):
+            view = OrthographicPathView(plane)
+            view.pointMoved.connect(self._point_dragged)
+            self.views[plane] = view
+            grid.addWidget(view, (index + 1) // 2, (index + 1) % 2)
+        for view in self.views.values():
+            view.selectionChanged.connect(self._select_point)
+        return container
+
+    def _build_side_panel(self):
+        tabs = QTabWidget()
+        tabs.addTab(self._scrolled(self._build_position_tab()), "Position")
+        tabs.addTab(self._scrolled(self._build_geometry_tab()), "Geometry")
+        tabs.addTab(self._scrolled(self._build_traversal_tab()), "Traversal")
+        return tabs
+
+    @staticmethod
+    def _scrolled(widget):
+        area = QScrollArea()
+        area.setWidgetResizable(True)
+        area.setWidget(widget)
+        return area
+
+    # --- position tab -------------------------------------------------------
+
+    def _build_position_tab(self):
+        page = QWidget()
+        layout = QVBoxLayout(page)
+
+        numeric = QGroupBox("Selected point")
+        form = QFormLayout(numeric)
+        self.cartesian_row = _AxisRow(" m")
+        self.cartesian_row.changed.connect(self._cartesian_edited)
+        form.addRow("X / Y / Z", self.cartesian_row)
+
+        self.azimuth_spin = QDoubleSpinBox()
+        self.azimuth_spin.setRange(-180.0, 180.0)
+        self.azimuth_spin.setSuffix(" °")
+        self.elevation_spin = QDoubleSpinBox()
+        self.elevation_spin.setRange(-90.0, 90.0)
+        self.elevation_spin.setSuffix(" °")
+        self.distance_spin = QDoubleSpinBox()
+        self.distance_spin.setRange(0.0, 1000.0)
+        self.distance_spin.setDecimals(3)
+        self.distance_spin.setSuffix(" m")
+        for spin in (self.azimuth_spin, self.elevation_spin, self.distance_spin):
+            spin.valueChanged.connect(self._spherical_edited)
+        form.addRow("Azimuth", self.azimuth_spin)
+        form.addRow("Elevation", self.elevation_spin)
+        form.addRow("Distance", self.distance_spin)
+
+        self.keyframe_time_spin = QDoubleSpinBox()
+        self.keyframe_time_spin.setRange(0.0, 36000.0)
+        self.keyframe_time_spin.setDecimals(3)
+        self.keyframe_time_spin.setSuffix(" s")
+        self.keyframe_time_spin.valueChanged.connect(self._keyframe_time_edited)
+        form.addRow("Keyframe time", self.keyframe_time_spin)
+        layout.addWidget(numeric)
+
+        self.table = QTableWidget(0, 4)
+        self.table.setHorizontalHeaderLabels(["Time (s)", "X", "Y", "Z"])
+        self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.itemSelectionChanged.connect(self._table_selection_changed)
+        self.table.itemChanged.connect(self._table_edited)
+        layout.addWidget(self.table, 1)
+
+        buttons = QHBoxLayout()
+        for text, slot, tip in (
+            ("Add", self._add_point, "Append a point after the selection"),
+            ("Remove", self._remove_point, "Delete the selected point"),
+            ("Import…", self._import_points, "Read points from CSV or JSON"),
+        ):
+            button = QPushButton(text)
+            button.setToolTip(tip)
+            button.clicked.connect(slot)
+            buttons.addWidget(button)
+        layout.addLayout(buttons)
+
+        helpers = QGroupBox("Whole-path helpers")
+        helper_layout = QVBoxLayout(helpers)
+        for text, slot, tip in (
+            ("Snap to horizontal plane", self._snap_horizontal,
+             "Set every height to zero, flattening the path into the ear-height plane"),
+            ("Snap to listener height", self._snap_listener_height,
+             "Move the path vertically so its mean height is the listener's"),
+            ("Normalize distance", self._normalize_distance,
+             "Scale the path so its mean distance is one metre"),
+            ("Maintain constant distance", self._constant_distance,
+             "Push every point onto one sphere, keeping its direction. "
+             "This is the surface an HRTF dataset measures."),
+            ("Reverse direction", self._reverse,
+             "Traverse the same geometry the other way round"),
+        ):
+            button = QPushButton(text)
+            button.setToolTip(tip)
+            button.clicked.connect(slot)
+            helper_layout.addWidget(button)
+        layout.addWidget(helpers)
+        return page
+
+    # --- geometry tab -------------------------------------------------------
+
+    def _build_geometry_tab(self):
+        page = QWidget()
+        layout = QVBoxLayout(page)
+
+        self.parameter_box = QGroupBox("Primitive parameters")
+        self.parameter_form = QFormLayout(self.parameter_box)
+        layout.addWidget(self.parameter_box)
+
+        transform = QGroupBox("Path transform")
+        form = QFormLayout(transform)
+        self.offset_row = _AxisRow(" m")
+        self.offset_row.changed.connect(self._refresh)
+        form.addRow("Centre offset", self.offset_row)
+        self.scale_row = _AxisRow("")
+        self.scale_row.set_value((1.0, 1.0, 1.0))
+        self.scale_row.changed.connect(self._refresh)
+        for spin in self.scale_row.spins:
+            spin.setRange(-100.0, 100.0)
+        form.addRow("Scale per axis", self.scale_row)
+        self.rotation_row = _AxisRow(" °", -360.0, 360.0)
+        self.rotation_row.changed.connect(self._refresh)
+        form.addRow("Yaw / pitch / roll", self.rotation_row)
+        transform.setToolTip(
+            "Applied to the whole path after its own geometry: tilt an orbit, "
+            "stretch it on one axis, or move its centre away from the listener."
+        )
+        layout.addWidget(transform)
+
+        frame = QGroupBox("Coordinate model")
+        frame_form = QFormLayout(frame)
+        self.frame_combo = QComboBox()
+        self.frame_combo.addItem("Listener-relative", "listener_relative_cartesian")
+        self.frame_combo.addItem("World", "world_cartesian")
+        self.frame_combo.setToolTip(
+            "Listener-relative coordinates follow the head; world coordinates "
+            "stay fixed in the room and are resolved against the listener pose."
+        )
+        frame_form.addRow("Coordinates", self.frame_combo)
+        self.interpolation_combo = QComboBox()
+        self.interpolation_combo.addItems(["hold", "linear", "cubic", "catmull_rom"])
+        self.interpolation_combo.setCurrentText("cubic")
+        self.interpolation_combo.currentTextChanged.connect(self._refresh)
+        frame_form.addRow("Interpolation", self.interpolation_combo)
+        self.closed_check = QCheckBox("Closed path")
+        self.closed_check.toggled.connect(self._refresh)
+        frame_form.addRow(self.closed_check)
+        frame_form.addRow(
+            QLabel(
+                "Right-handed metres: +x forward, +y left, +z up.\n"
+                "Azimuth 0° is in front and increases to the left."
+            )
+        )
+        layout.addWidget(frame)
+        layout.addStretch(1)
+        return page
+
+    # --- traversal tab ------------------------------------------------------
+
+    def _build_traversal_tab(self):
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        note = QLabel(
+            "Traversal is how the source moves along the geometry over time. "
+            "Changing it never changes the shape."
+        )
+        note.setWordWrap(True)
+        note.setStyleSheet("color: #9aa0aa;")
+        layout.addWidget(note)
+
+        box = QGroupBox("Time law")
+        form = QFormLayout(box)
+        self.mode_combo = QComboBox()
+        self.mode_combo.addItems(["loop", "ping_pong", "one_shot", "discontinuous"])
+        self.mode_combo.currentTextChanged.connect(self._refresh)
+        form.addRow("Looping mode", self.mode_combo)
+
+        self.duration_spin = QDoubleSpinBox()
+        self.duration_spin.setRange(0.01, 36000.0)
+        self.duration_spin.setValue(5.0)
+        self.duration_spin.setSuffix(" s")
+        self.duration_spin.valueChanged.connect(self._refresh)
+        form.addRow("Cycle duration", self.duration_spin)
+
+        self.easing_combo = QComboBox()
+        self.easing_combo.addItems(["linear", "sine", "smoothstep"])
+        self.easing_combo.setToolTip(
+            "Ease in and out of each cycle. 'sine' and 'smoothstep' start and "
+            "end slowly; 'linear' holds one speed throughout."
+        )
+        self.easing_combo.currentTextChanged.connect(self._refresh)
+        form.addRow("Ease in / out", self.easing_combo)
+
+        self.direction_combo = QComboBox()
+        self.direction_combo.addItem("Forward", 1)
+        self.direction_combo.addItem("Reverse", -1)
+        self.direction_combo.currentIndexChanged.connect(self._refresh)
+        form.addRow("Direction", self.direction_combo)
+
+        self.speed_combo = QComboBox()
+        self.speed_combo.addItem("Constant linear speed", "constant_speed")
+        self.speed_combo.addItem("Curve parameter speed", "parameter_speed")
+        self.speed_combo.setToolTip(
+            "Constant speed advances by physical distance, so the source covers "
+            "metres at an even rate. Parameter speed advances along the curve's "
+            "own parameter, which on a circle is constant angular speed instead."
+        )
+        self.speed_combo.currentIndexChanged.connect(self._refresh)
+        form.addRow("Speed law", self.speed_combo)
+
+        self.steps_spin = QSpinBox()
+        self.steps_spin.setRange(2, 128)
+        self.steps_spin.setValue(8)
+        self.steps_spin.valueChanged.connect(self._refresh)
+        form.addRow("Jump positions", self.steps_spin)
+
+        self.crossfade_spin = QDoubleSpinBox()
+        self.crossfade_spin.setRange(0.0, 10.0)
+        self.crossfade_spin.setDecimals(3)
+        self.crossfade_spin.setSuffix(" s")
+        self.crossfade_spin.valueChanged.connect(self._refresh)
+        form.addRow("Jump crossfade", self.crossfade_spin)
+        layout.addWidget(box)
+
+        self.metrics_label = QLabel()
+        self.metrics_label.setWordWrap(True)
+        layout.addWidget(self.metrics_label)
+        layout.addStretch(1)
+        return page
+
+    # ------------------------------------------------------------------- load
+
+    def _load_spec(self):
+        geometry = self._spec.get("geometry", {}) or {}
+        kind = str(geometry.get("type", "spline"))
+        self._parameters = dict(geometry.get("parameters", {}) or {})
+        if kind == "keyframes":
+            self._keyframes = [
+                Keyframe.from_mapping(dict(entry))
+                for entry in geometry.get("keyframes", ())
+            ] or self._default_keyframes()
+        points = geometry.get("controlPointsM")
+        self._points = (
+            [list(map(float, point[:3])) for point in points]
+            if isinstance(points, list) and len(points) >= 2
+            else [[1.0, 1.0, 0.0], [1.5, 0.0, 0.4], [1.0, -1.0, 0.0]]
+        )
+
+        self.primitive_combo.blockSignals(True)
+        index = self.primitive_combo.findText(kind)
+        self.primitive_combo.setCurrentIndex(index if index >= 0 else self.primitive_combo.findText("spline"))
+        self.primitive_combo.blockSignals(False)
+
+        traversal = self._spec.get("traversal", {}) or {}
+        self.mode_combo.setCurrentText(str(traversal.get("mode", "loop")))
+        self.duration_spin.setValue(float(traversal.get("durationS", 5.0)))
+        self.easing_combo.setCurrentText(str(traversal.get("easing", "linear")))
+        self.direction_combo.setCurrentIndex(0 if int(traversal.get("direction", 1)) == 1 else 1)
+        self.steps_spin.setValue(int(traversal.get("steps", 8)))
+        self.crossfade_spin.setValue(float(traversal.get("crossfadeS", 0.0)))
+        self.closed_check.setChecked(bool(geometry.get("closed", False)))
+        self.interpolation_combo.setCurrentText(str(self._spec.get("interpolation", "cubic")))
+
+        law = str(self._spec.get("speedLaw", "constant_speed" if self._spec.get("arcLength", True) else "parameter_speed"))
+        self.speed_combo.setCurrentIndex(0 if law == "constant_speed" else 1)
+        frame = str(self._spec.get("coordinateSystem", "listener_relative_cartesian"))
+        self.frame_combo.setCurrentIndex(0 if frame == "listener_relative_cartesian" else 1)
+
+        transform = self._spec.get("transform", {}) or {}
+        self.offset_row.set_value(transform.get("translationM", (0.0, 0.0, 0.0)))
+        self.scale_row.set_value(transform.get("scale", (1.0, 1.0, 1.0)))
+        self.rotation_row.set_value(transform.get("yawPitchRollDegrees", (0.0, 0.0, 0.0)))
+
+        self._rebuild_parameter_form()
+        self._refresh()
+
+    @staticmethod
+    def _default_keyframes():
+        return [
+            Keyframe(0.0, (0.0, 1.0, 0.0)),
+            Keyframe(5.0, (1.0, 0.0, 1.5)),
+            Keyframe(10.0, (0.0, -1.0, 0.5)),
+        ]
+
+    # ------------------------------------------------------------------- mode
+
+    @property
+    def kind(self):
+        return self.primitive_combo.currentText()
+
+    @property
+    def is_parametric(self):
+        return self.kind in _SPATIAL
+
+    @property
+    def is_keyframed(self):
+        return self.kind == "keyframes"
+
+    def _primitive_changed(self, kind):
+        if kind.startswith("—"):
+            return
+        if kind == "keyframes" and not self._keyframes:
+            self._keyframes = self._default_keyframes()
+        if kind in _SPATIAL:
+            # Start from the primitive's own defaults rather than from whatever
+            # numbers the previous primitive happened to use.
+            self._parameters = {}
+        self._selected = -1
+        self._rebuild_parameter_form()
+        self._refresh()
+
+    def _rebuild_parameter_form(self):
+        while self.parameter_form.rowCount():
+            self.parameter_form.removeRow(0)
+        self._parameter_widgets = {}
+        factory = _SPATIAL.get(self.kind)
+        self.parameter_box.setVisible(factory is not None)
+        if factory is None:
+            return
+        # Generated from the dataclass, so a primitive added to the core shows
+        # up here without the dialog having to be edited to know about it.
+        for field in dataclasses.fields(factory):
+            widget = self._parameter_widget(field)
+            if widget is None:
+                continue
+            label = field.name.replace("_", " ").replace(" deg", " (°)").replace(" m", " (m)")
+            self.parameter_form.addRow(label.capitalize(), widget)
+            self._parameter_widgets[field.name] = widget
+
+    def _parameter_widget(self, field):
+        current = self._parameters.get(field.name, field.default)
+        if isinstance(current, (list, tuple)) or isinstance(
+            getattr(field, "default", None), tuple
+        ):
+            row = _AxisRow(" m")
+            row.set_value(current if isinstance(current, (list, tuple)) else (0.0, 0.0, 0.0))
+            row.changed.connect(self._parameter_edited)
+            return row
+        if isinstance(current, bool):
+            check = QCheckBox()
+            check.setChecked(bool(current))
+            check.toggled.connect(self._parameter_edited)
+            return check
+        if isinstance(current, int) and not isinstance(current, bool):
+            spin = QSpinBox()
+            spin.setRange(0, 100000)
+            spin.setValue(int(current))
+            spin.valueChanged.connect(self._parameter_edited)
+            return spin
+        spin = QDoubleSpinBox()
+        spin.setRange(-3600.0, 3600.0)
+        spin.setDecimals(3)
+        spin.setSingleStep(0.1)
+        spin.setValue(float(current if current is not None else 0.0))
+        spin.valueChanged.connect(self._parameter_edited)
+        return spin
+
+    def _parameter_edited(self):
+        if self._updating:
+            return
+        for name, widget in self._parameter_widgets.items():
+            if isinstance(widget, _AxisRow):
+                self._parameters[name] = widget.value()
+            elif isinstance(widget, QCheckBox):
+                self._parameters[name] = widget.isChecked()
+            else:
+                self._parameters[name] = widget.value()
+        self._refresh()
+
+    # -------------------------------------------------------------- selection
+
+    def _select_point(self, index):
+        self._selected = int(index)
+        for view in self.views.values():
+            view.set_selected(self._selected)
+        self._updating = True
+        if 0 <= self._selected < self.table.rowCount():
+            self.table.selectRow(self._selected)
+        self._updating = False
+        self._refresh_numeric()
+
+    def _table_selection_changed(self):
+        if self._updating:
+            return
+        rows = {index.row() for index in self.table.selectedIndexes()}
+        if rows:
+            self._select_point(min(rows))
+
+    def _editable_points(self):
+        """The points the user can move, whichever geometry kind is active."""
+
+        if self.is_keyframed:
+            return [list(key.position_m) for key in self._keyframes]
+        if self.is_parametric:
+            return []
+        return self._points
+
+    def _set_editable_point(self, index, position):
+        if self.is_keyframed:
+            self._keyframes[index] = Keyframe(
+                self._keyframes[index].time_s, tuple(float(v) for v in position)
+            )
+        else:
+            self._points[index] = [float(value) for value in position]
+
+    def _point_dragged(self, index, position):
+        points = self._editable_points()
+        if not (0 <= index < len(points)):
+            return
+        self._set_editable_point(index, position)
+        self._selected = index
+        self._refresh()
+
+    # ------------------------------------------------------------ numeric edit
+
+    def _refresh_numeric(self):
+        points = self._editable_points()
+        active = 0 <= self._selected < len(points)
+        for widget in (
+            self.cartesian_row,
+            self.azimuth_spin,
+            self.elevation_spin,
+            self.distance_spin,
+        ):
+            widget.setEnabled(active)
+        self.keyframe_time_spin.setEnabled(active and self.is_keyframed)
+        if not active:
+            return
+        point = points[self._selected]
+        self._updating = True
+        self.cartesian_row.set_value(point)
+        azimuth, elevation, distance = cartesian_array_to_spherical(np.asarray([point]))[0]
+        self.azimuth_spin.setValue(float(azimuth))
+        self.elevation_spin.setValue(float(elevation))
+        self.distance_spin.setValue(float(distance))
+        if self.is_keyframed:
+            self.keyframe_time_spin.setValue(self._keyframes[self._selected].time_s)
+        self._updating = False
+
+    def _cartesian_edited(self):
+        if self._updating or not (0 <= self._selected < len(self._editable_points())):
+            return
+        self._set_editable_point(self._selected, self.cartesian_row.value())
+        self._refresh()
+
+    def _spherical_edited(self):
+        if self._updating or not (0 <= self._selected < len(self._editable_points())):
+            return
+        # Spherical entry is converted here, at the boundary, so what is stored
+        # stays Cartesian and there is never a second position format to
+        # reconcile.
+        position = spherical_to_cartesian(
+            self.azimuth_spin.value(),
+            self.elevation_spin.value(),
+            self.distance_spin.value(),
+        )
+        self._set_editable_point(self._selected, [float(value) for value in position])
+        self._refresh()
+
+    def _keyframe_time_edited(self):
+        if self._updating or not self.is_keyframed:
+            return
+        if not (0 <= self._selected < len(self._keyframes)):
+            return
+        existing = self._keyframes[self._selected]
+        self._keyframes[self._selected] = Keyframe(
+            self.keyframe_time_spin.value(), existing.position_m
+        )
+        self._keyframes.sort(key=lambda key: key.time_s)
+        self._refresh()
+
+    def _table_edited(self, item):
+        if self._updating:
+            return
+        points = self._editable_points()
+        if not (0 <= item.row() < len(points)):
+            return
+        try:
+            value = float(item.text())
+        except ValueError:
+            self._refresh()
+            return
+        if item.column() == 0:
+            if self.is_keyframed:
+                self._keyframes[item.row()] = Keyframe(
+                    value, self._keyframes[item.row()].position_m
+                )
+                self._keyframes.sort(key=lambda key: key.time_s)
+        else:
+            point = list(points[item.row()])
+            point[item.column() - 1] = value
+            self._set_editable_point(item.row(), point)
+        self._refresh()
+
+    # ------------------------------------------------------------------ points
+
+    def _add_point(self):
+        points = self._editable_points()
+        if self.is_parametric:
+            return
+        anchor = points[self._selected] if 0 <= self._selected < len(points) else [1.0, 0.0, 0.0]
+        new = [anchor[0], anchor[1], anchor[2] + 0.25]
+        if self.is_keyframed:
+            last = self._keyframes[-1].time_s if self._keyframes else 0.0
+            self._keyframes.append(Keyframe(last + 1.0, tuple(new)))
+            self._selected = len(self._keyframes) - 1
+        else:
+            self._points.insert(self._selected + 1 if self._selected >= 0 else len(self._points), new)
+            self._selected = min(self._selected + 1, len(self._points) - 1)
+        self._refresh()
+
+    def _remove_point(self):
+        points = self._editable_points()
+        # Two points is the minimum any path geometry can be built from.
+        if len(points) <= 2 or not (0 <= self._selected < len(points)):
+            return
+        if self.is_keyframed:
+            self._keyframes.pop(self._selected)
+        else:
+            self._points.pop(self._selected)
+        self._selected = min(self._selected, len(self._editable_points()) - 1)
+        self._refresh()
+
+    def _import_points(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Import path", "", "Path data (*.csv *.json *.txt);;All files (*)"
+        )
+        if not path:
+            return
+        try:
+            text = Path(path).read_text(encoding="utf-8")
+            keyframes = (
+                keyframes_from_json(text)
+                if Path(path).suffix.lower() == ".json"
+                else keyframes_from_csv(text)
+            )
+        except (OSError, ValueError) as error:
+            QMessageBox.warning(self, "Import failed", str(error))
+            return
+        self._keyframes = list(keyframes)
+        self.primitive_combo.setCurrentText("keyframes")
+        self._selected = 0
+        self._rebuild_parameter_form()
+        self._refresh()
+
+    # ----------------------------------------------------------------- helpers
+
+    def _apply_to_points(self, transform):
+        """Run a whole-path helper over whichever points are editable."""
+
+        points = self._editable_points()
+        if not points:
+            QMessageBox.information(
+                self,
+                "Not available for this geometry",
+                "This primitive is defined by its parameters rather than by "
+                "points. Adjust its numbers on the Geometry tab instead.",
+            )
+            return
+        moved = transform(np.asarray(points, dtype=float))
+        for index, point in enumerate(moved):
+            self._set_editable_point(index, point)
+        self._refresh()
+
+    def _snap_horizontal(self):
+        self._apply_to_points(lambda points: np.column_stack((points[:, :2], np.zeros(len(points)))))
+
+    def _snap_listener_height(self):
+        def shift(points):
+            result = points.copy()
+            result[:, 2] -= float(np.mean(result[:, 2]))
+            return result
+
+        self._apply_to_points(shift)
+
+    def _normalize_distance(self):
+        def scale(points):
+            mean = float(np.mean(np.linalg.norm(points, axis=1)))
+            return points if mean <= 1e-9 else points / mean
+
+        self._apply_to_points(scale)
+
+    def _constant_distance(self):
+        def project(points):
+            radii = np.linalg.norm(points, axis=1, keepdims=True)
+            target = float(np.mean(radii))
+            # A point at the listener's own position has no direction to keep,
+            # so it is left where it is rather than sent somewhere arbitrary.
+            return np.where(radii > 1e-9, points / np.maximum(radii, 1e-9) * target, points)
+
+        self._apply_to_points(project)
+
+    def _reverse(self):
+        index = self.direction_combo.currentIndex()
+        self.direction_combo.setCurrentIndex(1 - index)
+
+    def _shell_toggled(self, visible):
+        radius = 1.5
+        points = self._sample_curve()
+        if len(points):
+            radius = float(np.mean(np.linalg.norm(points, axis=1))) or 1.5
+        for view in self.views.values():
+            view.set_coverage_shell(visible, radius)
+
+    # ----------------------------------------------------------------- refresh
+
+    def _geometry_dict(self):
+        if self.is_keyframed:
+            return {
+                "type": "keyframes",
+                "interpolation": self.interpolation_combo.currentText(),
+                "keyframes": [key.describe() for key in self._keyframes],
+            }
+        if self.is_parametric:
+            return {"type": self.kind, "parameters": dict(self._parameters)}
+        kind = self.kind if self.kind in _POINT_KINDS else "spline"
+        return {
+            "type": kind,
+            "controlPointsM": [list(map(float, point)) for point in self._points],
+            "closed": self.closed_check.isChecked(),
+        }
+
+    def trajectory_spec(self):
+        """The saved form: geometry, traversal, and the metadata to read them."""
+
+        return {
+            "schemaVersion": 2,
+            "coordinateSystem": self.frame_combo.currentData(),
+            "handedness": "right",
+            "units": "metres",
+            "interpolation": self.interpolation_combo.currentText(),
+            "speedLaw": self.speed_combo.currentData(),
+            "closed": self.closed_check.isChecked(),
+            "geometry": self._geometry_dict(),
+            "transform": {
+                "translationM": self.offset_row.value(),
+                "yawPitchRollDegrees": self.rotation_row.value(),
+                "scale": self.scale_row.value(),
+                "shear": [0.0, 0.0, 0.0],
+            },
+            "traversal": {
+                "mode": self.mode_combo.currentText(),
+                "durationS": self.duration_spin.value(),
+                "easing": self.easing_combo.currentText(),
+                "direction": self.direction_combo.currentData(),
+                "steps": self.steps_spin.value(),
+                "crossfadeS": self.crossfade_spin.value(),
+            },
+            # Kept for builds that read the schema version 1 spelling.
+            "arcLength": self.speed_combo.currentData() == "constant_speed",
+        }
+
+    def path_model(self):
+        """The compiled model, or ``None`` when the current edit is invalid."""
+
+        try:
+            return path_model_from_dict(self.trajectory_spec())
+        except (ValueError, TypeError, KeyError):
+            return None
+
+    def _sample_curve(self):
+        model = self.path_model()
+        if model is None:
+            return np.zeros((0, 3))
+        # Sampled through the traversal, not the raw geometry: what is drawn is
+        # what the renderer will be sent.
+        times = np.linspace(0.0, self.duration_spin.value(), _CURVE_SAMPLES)
+        try:
+            return np.asarray(model.positions(times), dtype=float)
+        except (ValueError, TypeError):
+            return np.zeros((0, 3))
+
+    def _refresh(self):
+        if self._updating:
+            return
+        curve = self._sample_curve()
+        points = self._editable_points()
+        for view in self.views.values():
+            view.set_path(points, curve)
+            view.set_selected(self._selected)
+        self._refresh_table(points)
+        self._refresh_numeric()
+        self._refresh_metrics(curve)
+        if self.shell_check.isChecked():
+            self._shell_toggled(True)
+
+    def _refresh_table(self, points):
+        self._updating = True
+        self.table.setRowCount(len(points))
+        for row, point in enumerate(points):
+            time_text = f"{self._keyframes[row].time_s:.3f}" if self.is_keyframed else "—"
+            item = QTableWidgetItem(time_text)
+            if not self.is_keyframed:
+                item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+            self.table.setItem(row, 0, item)
+            for column, value in enumerate(point):
+                self.table.setItem(row, column + 1, QTableWidgetItem(f"{value:.4f}"))
+        self._updating = False
+
+    def _refresh_metrics(self, curve):
+        if len(curve) < 2:
+            self.metrics_label.setText("Path is not valid yet.")
+            return
+        spherical = cartesian_array_to_spherical(curve)
+        duration = max(self.duration_spin.value(), 1e-6)
+        length = float(np.sum(np.linalg.norm(np.diff(curve, axis=0), axis=1)))
+        self.metrics_label.setText(
+            f"Length {length:.2f} m over {duration:.2f} s "
+            f"(mean {length / duration:.2f} m/s).\n"
+            f"Elevation {spherical[:, 1].min():.1f}° to {spherical[:, 1].max():.1f}°, "
+            f"distance {spherical[:, 2].min():.2f} m to {spherical[:, 2].max():.2f} m."
+        )
+
+    # ----------------------------------------------------------------- preview
+
+    def _preview_toggled(self, running):
+        if running:
+            self._preview_time = 0.0
+            self._timer.start()
+        else:
+            self._timer.stop()
+            for view in self.views.values():
+                view.set_marker(None)
+
+    def _advance_preview(self):
+        model = self.path_model()
+        if model is None:
+            return
+        self._preview_time += self._timer.interval() / 1000.0
+        duration = max(self.duration_spin.value(), 1e-6)
+        if self.mode_combo.currentText() == "one_shot" and self._preview_time > duration:
+            self._preview_time = 0.0
+        try:
+            # Evaluated through the same model the renderer uses, so the marker
+            # follows the trajectory actually being sent rather than the drawn
+            # curve. With easing or reverse in play the two differ.
+            position = np.asarray(model.positions(np.array([self._preview_time])))[0]
+        except (ValueError, TypeError):
+            return
+        for view in self.views.values():
+            view.set_marker(position)

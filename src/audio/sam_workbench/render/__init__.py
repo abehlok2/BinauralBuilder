@@ -38,3 +38,18 @@ __all__ += [
     "GeometricBinauralRenderer", "GeometricSpec", "cubic_fractional_sample",
     "distance_gains", "geometric_cues", "HRTFRenderer", "HRTFRendererSpec", "render_hrtf",
 ]
+from .creative import (
+    CREATIVE_MAPPING_NOTICE,
+    MAPPING_TARGETS,
+    PATH_QUANTITIES,
+    CreativeMapping,
+    CreativeMappingSpec,
+    TrajectoryControl,
+)
+from .hybrid import SIGNAL_CHAIN, SIGNAL_CHAIN_TEXT, HybridResult, HybridSpec, render_hybrid
+
+__all__ += [
+    "CREATIVE_MAPPING_NOTICE", "MAPPING_TARGETS", "PATH_QUANTITIES",
+    "CreativeMapping", "CreativeMappingSpec", "TrajectoryControl",
+    "SIGNAL_CHAIN", "SIGNAL_CHAIN_TEXT", "HybridResult", "HybridSpec", "render_hybrid",
+]

@@ -29,6 +29,7 @@ from src.audio.sam_workbench.trajectory import (
     trajectory_from_dict,
 )
 from .sam_analysis_panel import PlotSeries, PlotWidget
+from .sam_path3d_dialog import SamPath3DDialog
 from .sam_path_editor_dialog import SamPathEditorDialog
 
 
@@ -90,6 +91,15 @@ class SamPathPanel(QWidget):
         )
         self.designer_button.clicked.connect(self.open_designer)
         buttons.addWidget(self.designer_button)
+        self.designer_3d_button = QPushButton("Open 3D path designer…")
+        self.designer_3d_button.setToolTip(
+            "Edit the full three-dimensional path: perspective, top, front and "
+            "side views, numeric x/y/z and azimuth/elevation/distance entry, "
+            "keyframes, and the 3-D primitives. Geometry and traversal are "
+            "edited separately."
+        )
+        self.designer_3d_button.clicked.connect(self.open_3d_designer)
+        buttons.addWidget(self.designer_3d_button)
         buttons.addStretch(1)
         layout.addLayout(buttons)
         self.metadata_label = QLabel()
@@ -131,6 +141,20 @@ class SamPathPanel(QWidget):
         dialog = SamPathEditorDialog(self._profile, self._trajectory_spec, self)
         if dialog.exec_() == QDialog.Accepted:
             self._profile = dialog.compatibility_profile()
+            self._trajectory_spec = dialog.trajectory_spec()
+            self.refresh_preview()
+            self.paramsChanged.emit(self.params())
+
+    def open_3d_designer(self):
+        """Edit the canonical trajectory in the multi-view three-dimensional editor.
+
+        The legacy compatibility profile is left alone: this editor writes the
+        canonical path, and a two-dimensional projection of a path with height
+        in it would be a worse record of the author's intent than no update.
+        """
+
+        dialog = SamPath3DDialog(self._trajectory_spec, self)
+        if dialog.exec_() == QDialog.Accepted:
             self._trajectory_spec = dialog.trajectory_spec()
             self.refresh_preview()
             self.paramsChanged.emit(self.params())
