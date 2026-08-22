@@ -5,6 +5,8 @@ import soundfile as sf
 import os
 import copy  # For deep copying voice data
 import traceback  # For error reporting
+import tempfile
+from pathlib import Path
 from collections import OrderedDict
 
 from PyQt5.QtWidgets import (
@@ -69,6 +71,27 @@ from src.ui.subliminal_dialog import SubliminalDialog
 from src.utils.timeline_visualizer import visualize_track_timeline
 from src.ui.overlay_clip_dialog import OverlayClipDialog
 from src.ui.collapsible_box import CollapsibleBox
+from src.audio.sam_workbench.recovery import DEFAULT_AUTOSAVE_SECONDS, RecoveryStore
+
+
+def _recovery_fallback_directory() -> Path:
+    """Where a never-saved track's snapshot goes.
+
+    Beside the project when there is one; in the application's own data folder
+    otherwise, so unsaved work still survives a crash.
+    """
+
+    try:
+        from PyQt5.QtCore import QStandardPaths
+
+        root = QStandardPaths.writableLocation(QStandardPaths.AppLocalDataLocation)
+        if root:
+            directory = Path(root) / "recovery"
+            directory.mkdir(parents=True, exist_ok=True)
+            return directory
+    except Exception:  # pragma: no cover - headless or restricted install
+        pass
+    return Path(tempfile.gettempdir())
 from src.ui.binaural_encoder_dialog import BinauralEncoderDialog
 from src.models import StepModel, VoiceModel
 from src.utils.voice_file import (
@@ -255,6 +278,17 @@ class TrackEditorApp(QMainWindow):
 
         self.track_data = self._get_default_track_data()
         self.current_json_path = None
+
+        # Autosave writes a recovery snapshot beside the track, never over it:
+        # an autosave is not the user's save, and must not commit edits they
+        # were still deciding about.
+        self._recovery = RecoveryStore(
+            None, fallback_directory=str(_recovery_fallback_directory())
+        )
+        self._autosave_timer = QTimer(self)
+        self._autosave_timer.setInterval(int(DEFAULT_AUTOSAVE_SECONDS * 1000))
+        self._autosave_timer.timeout.connect(self._write_recovery_snapshot)
+        self._autosave_timer.start()
 
         # Validators (reusable)
         self.int_validator_positive = QIntValidator(1, 999999, self)
@@ -1979,6 +2013,9 @@ class TrackEditorApp(QMainWindow):
                 self.refresh_steps_tree() # This calls on_step_select -> _update_step_actions_state
                 self.refresh_clips_tree()
                 QMessageBox.information(self, "Load Success", f"Track loaded from\n{filepath}")
+                # A snapshot newer than the file just opened is unsaved work
+                # from a session that did not close cleanly.
+                self._offer_recovery(filepath)
                 self._push_history_state()
             elif loaded_data is not None:
                 QMessageBox.critical(self, "Load Error", "Invalid JSON structure for track data.")
@@ -2008,6 +2045,7 @@ class TrackEditorApp(QMainWindow):
             if not self._update_global_settings_from_ui(): return
             try:
                 if sound_creator.save_track_to_json(self.track_data, self.current_json_path):
+                    self._recovery.adopt(self.current_json_path)
                     QMessageBox.information(self, "Save Success", f"Track saved to\n{self.current_json_path}")
                     self.setWindowTitle(f"Binaural Track Editor (PyQt5) - {os.path.basename(self.current_json_path)}")
             except Exception as e:
@@ -2029,6 +2067,7 @@ class TrackEditorApp(QMainWindow):
         if not filepath: return
         try:
             if sound_creator.save_track_to_json(self.track_data, filepath):
+                self._recovery.adopt(filepath)
                 self.current_json_path = filepath
                 self.setWindowTitle(f"Binaural Track Editor (PyQt5) - {os.path.basename(filepath)}")
                 QMessageBox.information(self, "Save Success", f"Track saved to\n{filepath}")
@@ -2912,6 +2951,9 @@ class TrackEditorApp(QMainWindow):
     def generate_audio_action(self):
         self._normalize_voice_descriptions_for_phase_locking()
         if not self._update_global_settings_from_ui(): return
+        # A render can take a long time and is where a crash is most likely to
+        # cost something, so the snapshot is taken before it starts.
+        self._write_recovery_snapshot("before rendering")
         current_track_data = self.track_data
         output_filepath = current_track_data["global_settings"].get("output_filename")
         if output_filepath and self.prefs.export_dir and not os.path.isabs(output_filepath):
@@ -3531,11 +3573,62 @@ class TrackEditorApp(QMainWindow):
                 indices.append(int(data))
         return sorted(indices)
 
+    # --- autosave and crash recovery ---------------------------------------
+
+    def _write_recovery_snapshot(self, reason: str = "autosave") -> bool:
+        """Take a snapshot of the working track. Never raises into the UI."""
+
+        try:
+            self._recovery.save(self.track_data, reason=reason)
+            return True
+        except OSError as error:
+            # A snapshot that cannot be written is worth one status line, not a
+            # modal dialog interrupting whatever the user was doing.
+            print(f"Could not write a recovery snapshot: {error}")
+            return False
+
+    def _offer_recovery(self, filepath: str) -> bool:
+        """Offer a snapshot newer than the file just opened. True if restored."""
+
+        self._recovery.project_path = Path(filepath)
+        snapshot = self._recovery.offer()
+        if snapshot is None:
+            return False
+
+        choice = QMessageBox.question(
+            self,
+            "Recover unsaved work?",
+            f"{snapshot.summary()}\n\nThis track was not saved before the "
+            "application closed. Recover that work, or open the saved file as "
+            "it is?\n\nRecovering does not overwrite the saved file until you "
+            "save.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes,
+        )
+        if choice != QMessageBox.Yes:
+            # A declined snapshot is deleted: offering it again on every launch
+            # teaches people to dismiss the prompt without reading it.
+            self._recovery.discard()
+            return False
+
+        payload = dict(snapshot.payload)
+        if not isinstance(payload.get("steps"), list):
+            QMessageBox.warning(
+                self, "Recovery failed", "That snapshot does not contain a track."
+            )
+            return False
+        self.track_data = payload
+        self.refresh_steps_tree()
+        self.refresh_clips_tree()
+        self._update_ui_from_global_settings()
+        return True
+
     def closeEvent(self, event):
         if self.test_audio_output:
             self.test_audio_output.stop()
         if self.is_clip_playing:
             self._stop_clip_playback()
+        self._autosave_timer.stop()
         super().closeEvent(event)
 
 # --- Run the Application ---

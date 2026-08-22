@@ -29,6 +29,7 @@ from numpy.typing import NDArray
 __all__ = [
     "DEFAULT_CROSSOVER_ORDER",
     "CrossoverBank",
+    "CrossoverStream",
     "linkwitz_riley_sections",
     "split_bands",
 ]
@@ -110,11 +111,132 @@ class CrossoverBank:
         return tuple((edges[index], edges[index + 1]) for index in range(self.band_count))
 
     def split(self, signal: NDArray[np.floating]) -> NDArray[np.float64]:
-        """Split into ``(bands, ...)``, ordered from lowest band upward."""
+        """Split a *whole* signal into ``(bands, ...)``, lowest band first.
+
+        For a signal arriving in blocks use :meth:`stream`: this call starts
+        every filter from rest, which is right for one complete signal and
+        wrong for a stream, where it would restart the filters at every block
+        boundary.
+        """
 
         return split_bands(
             signal, self.crossovers_hz, self.sample_rate_hz, order=self.order
         )
+
+    def stream(self) -> "CrossoverStream":
+        """A stateful splitter for audio arriving block by block."""
+
+        return CrossoverStream(self)
+
+
+@dataclass
+class _Stage:
+    """One Butterworth pass with the state that spans a block boundary."""
+
+    sections: NDArray[np.float64]
+    zi: NDArray[np.float64] | None = None
+
+    def process(self, signal: NDArray[np.float64]) -> NDArray[np.float64]:
+        from scipy.signal import sosfilt
+
+        if self.zi is None:
+            # The state's shape follows the signal's, with the filtered axis
+            # replaced by the two delays each section carries.
+            self.zi = np.zeros(
+                (self.sections.shape[0], *signal.shape[:-1], 2), dtype=np.float64
+            )
+        filtered, self.zi = sosfilt(self.sections, signal, axis=-1, zi=self.zi)
+        return filtered
+
+    def reset(self) -> None:
+        self.zi = None
+
+
+class CrossoverStream:
+    """Split a stream into bands, carrying filter state across blocks.
+
+    The stateless :func:`split_bands` restarts every filter at the start of
+    whatever it is given. Called once per block that is a defect rather than an
+    approximation: a biquad's output depends on the samples before it, and
+    zeroing that history at each boundary steps the output of every band. The
+    error is not small - roughly a quarter of the signal's peak at a 512-sample
+    block - and it is a step, which is audible as a click rather than as a
+    change of tone.
+
+    So the filters live here instead, designed once and holding their state
+    between calls. Feeding this a stream in blocks gives exactly what
+    :func:`split_bands` gives for the whole stream at once.
+    """
+
+    def __init__(self, bank: "CrossoverBank") -> None:
+        self.bank = bank
+        # Designing the sections costs a Butterworth solve per crossover, which
+        # does not belong on the audio path: it is the same filter every block.
+        self._sections = [
+            linkwitz_riley_sections(cutoff, bank.sample_rate_hz, order=bank.order)
+            for cutoff in bank.crossovers_hz
+        ]
+        self._build_stages()
+
+    def _build_stages(self) -> None:
+        # Linkwitz-Riley is a Butterworth applied twice, so each half is two
+        # stages; the correction path needs its own state for every earlier
+        # band it has to bring back into step.
+        self._main: list[tuple[list[_Stage], list[_Stage]]] = []
+        self._correction: list[list[tuple[list[_Stage], list[_Stage]]]] = []
+        for position, (low, high) in enumerate(self._sections):
+            self._main.append(
+                ([_Stage(low), _Stage(low)], [_Stage(high), _Stage(high)])
+            )
+            self._correction.append(
+                [
+                    ([_Stage(low), _Stage(low)], [_Stage(high), _Stage(high)])
+                    for _ in range(position)
+                ]
+            )
+
+    @property
+    def band_count(self) -> int:
+        return self.bank.band_count
+
+    def reset(self) -> None:
+        """Forget the history, as at the start of a new stream."""
+
+        for low, high in self._main:
+            for stage in (*low, *high):
+                stage.reset()
+        for group in self._correction:
+            for low, high in group:
+                for stage in (*low, *high):
+                    stage.reset()
+
+    @staticmethod
+    def _run(stages: list[_Stage], signal: NDArray[np.float64]) -> NDArray[np.float64]:
+        for stage in stages:
+            signal = stage.process(signal)
+        return signal
+
+    def process(self, block: NDArray[np.floating]) -> NDArray[np.float64]:
+        """Split one block into ``(bands, ...)``, lowest band first."""
+
+        samples = np.asarray(block, dtype=np.float64)
+        if not self.bank.crossovers_hz:
+            return samples[None, ...].copy()
+
+        bands: list[NDArray[np.float64]] = []
+        remainder = samples
+        for position, (low_stages, high_stages) in enumerate(self._main):
+            low = self._run(low_stages, remainder)
+            high = self._run(high_stages, remainder)
+            for index, earlier in enumerate(bands):
+                correction_low, correction_high = self._correction[position][index]
+                bands[index] = self._run(correction_low, earlier) + self._run(
+                    correction_high, earlier
+                )
+            bands.append(low)
+            remainder = high
+        bands.append(remainder)
+        return np.stack(bands, axis=0)
 
 
 def split_bands(

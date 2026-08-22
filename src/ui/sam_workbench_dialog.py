@@ -15,7 +15,7 @@ from __future__ import annotations
 import copy
 from typing import Any, Callable, Mapping
 
-from PyQt5.QtCore import QBuffer, QIODevice, QObject, QThread, pyqtSignal, pyqtSlot
+from PyQt5.QtCore import QBuffer, QIODevice, QObject, Qt, QThread, pyqtSignal, pyqtSlot
 from PyQt5.QtWidgets import (
     QComboBox,
     QDialog,
@@ -151,6 +151,7 @@ class SamWorkbenchDialog(QDialog):
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
+        layout.addWidget(self._build_onboarding())
 
         header = QHBoxLayout()
         header.addWidget(
@@ -256,6 +257,9 @@ class SamWorkbenchDialog(QDialog):
         self.status_label.setWordWrap(True)
         layout.addWidget(self.status_label)
 
+        self._apply_accessibility()
+        self._install_shortcuts()
+
         self.buttons = QDialogButtonBox(
             QDialogButtonBox.Ok | QDialogButtonBox.Cancel | QDialogButtonBox.Apply
         )
@@ -263,6 +267,133 @@ class SamWorkbenchDialog(QDialog):
         self.buttons.rejected.connect(self.reject)
         self.buttons.button(QDialogButtonBox.Apply).clicked.connect(self.apply_changes)
         layout.addWidget(self.buttons)
+
+    # --- orientation, keyboard, and assistive technology --------------------
+
+    def _build_onboarding(self) -> QWidget:
+        """A short orientation, shown until it is dismissed.
+
+        Not a wizard and not a modal: the workbench has five tabs and a
+        disclosure control, and someone opening it for the first time mostly
+        needs to know that those exist and where to start. Once they do, the
+        banner is in the way, so dismissing it is remembered.
+        """
+
+        self.onboarding = QWidget()
+        row = QHBoxLayout(self.onboarding)
+        row.setContentsMargins(0, 0, 0, 0)
+
+        message = QLabel(
+            "<b>New here?</b> Parameters holds the voice's numbers, and the "
+            "Disclosure control on the right decides how many of them you see. "
+            "HRTF Lab is where you choose and audition a head-related transfer "
+            "function - start with its localization test. Scene covers stages, "
+            "modulation and routing. Nothing is applied to your project until "
+            "you press OK or Apply."
+        )
+        message.setWordWrap(True)
+        message.setTextFormat(Qt.RichText)
+        row.addWidget(message, 1)
+
+        dismiss = QPushButton("Got it")
+        dismiss.setToolTip("Hide this note. It will not come back.")
+        dismiss.clicked.connect(self.dismiss_onboarding)
+        row.addWidget(dismiss)
+
+        self.onboarding.setVisible(not self._onboarding_dismissed())
+        return self.onboarding
+
+    @staticmethod
+    def _onboarding_settings():
+        from PyQt5.QtCore import QSettings
+
+        return QSettings("BinauralBuilder", "SamWorkbench")
+
+    def _onboarding_dismissed(self) -> bool:
+        try:
+            return bool(self._onboarding_settings().value("onboardingDismissed", False, type=bool))
+        except Exception:  # pragma: no cover - restricted or read-only settings
+            return False
+
+    def dismiss_onboarding(self) -> None:
+        self.onboarding.setVisible(False)
+        try:
+            self._onboarding_settings().setValue("onboardingDismissed", True)
+        except Exception:  # pragma: no cover - restricted or read-only settings
+            pass
+
+    def _apply_accessibility(self) -> None:
+        """Name every control for assistive technology.
+
+        A screen reader announces a widget's accessible name; without one it
+        reads the widget's class, so a row of spin boxes becomes "spin box,
+        spin box, spin box". The tooltips already explain what each control
+        does, so they serve as the description and the name stays short.
+        """
+
+        named = (
+            (self.renderer_combo, "Renderer", "Algorithm used by both preview and export"),
+            (self.mode_combo, "Disclosure mode", "How much of the parameter space to show"),
+            (
+                self.tabs,
+                "Workbench sections",
+                "Parameters, path and geometry, HRTF Lab, scene, analysis, "
+                "and the compatibility report. Control and a number switches "
+                "sections.",
+            ),
+            (
+                self.preview_seconds,
+                "Preview length in seconds",
+                "How much audio the preview renders",
+            ),
+            (self.preview_button, "Render preview", "Render a preview of the current settings"),
+            (self.play_button, "Play preview", "Play the rendered preview"),
+            (self.stop_button, "Stop preview", "Stop playback"),
+            (self.status_label, "Status", "Validation messages and preview progress"),
+            (
+                self.compatibility_view,
+                "Compatibility report",
+                "What this voice will carry forward, and what validation found",
+            ),
+        )
+        for widget, name, description in named:
+            widget.setAccessibleName(name)
+            widget.setAccessibleDescription(description or widget.toolTip())
+
+        # The status line is where errors appear, so it must be announced when
+        # it changes rather than only when it happens to be focused.
+        self.status_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+
+    def _install_shortcuts(self) -> None:
+        """Everything reachable from the keyboard, and labelled as such."""
+
+        from PyQt5.QtGui import QKeySequence
+        from PyQt5.QtWidgets import QShortcut
+
+        self.preview_button.setShortcut(QKeySequence("Ctrl+R"))
+        self.play_button.setShortcut(QKeySequence("Ctrl+P"))
+        self.stop_button.setShortcut(QKeySequence("Ctrl+."))
+        for button in (self.preview_button, self.play_button, self.stop_button):
+            # The shortcut is only discoverable if it is written down.
+            button.setToolTip(
+                f"{button.toolTip() or button.text()} ({button.shortcut().toString()})"
+            )
+
+        self._tab_shortcuts = []
+        for index in range(self.tabs.count()):
+            shortcut = QShortcut(QKeySequence(f"Ctrl+{index + 1}"), self)
+            shortcut.activated.connect(lambda position=index: self.tabs.setCurrentIndex(position))
+            self._tab_shortcuts.append(shortcut)
+
+        # Tab order follows the reading order of the dialog rather than the
+        # order the widgets happened to be constructed in.
+        for earlier, later in zip(
+            (self.renderer_combo, self.mode_combo, self.tabs, self.preview_seconds,
+             self.preview_button, self.play_button),
+            (self.mode_combo, self.tabs, self.preview_seconds, self.preview_button,
+             self.play_button, self.stop_button),
+        ):
+            self.setTabOrder(earlier, later)
 
     @staticmethod
     def _scrolled(widget: QWidget) -> QWidget:
