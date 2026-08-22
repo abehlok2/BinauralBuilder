@@ -938,22 +938,31 @@ def assemble_track_from_data(track_data, sample_rate, crossfade_duration, crossf
     how much of each crossfade duration is actually overlapped (0.0-1.0).
     Includes per-step normalization to prevent excessive peaks before final mix.
     """
-    steps_data = copy.deepcopy(track_data.get("steps", []))
-    # Scene state belongs to the track.  Attach a private render context to
-    # copied voices only; it is never serialized back into voice parameters.
+    # Scene state belongs to the track, and so do the identifiers that name its
+    # sources.  Those are assigned to `track_data` itself, before the render
+    # copy is taken: identifiers written only onto the copy are discarded with
+    # it, so every render invented new ones and any automation route or mute
+    # that referred to a source by identifier attached to a different source as
+    # soon as a voice was reordered.
     from src.audio.sam_workbench.scene_state import (
-        ensure_source_ids, migrate_voice_scene, normalize_sam_scene,
+        assign_source_ids, migrate_voice_scene, normalize_sam_scene,
     )
     scene_seed = track_data.get("sam_scene")
     scene = normalize_sam_scene(scene_seed) if scene_seed is not None else None
-    for step in steps_data:
-        for voice in step.get("voices", ()):
-            params = voice.setdefault("params", {})
-            migrated = migrate_voice_scene(params)
+    for step in track_data.get("steps", ()) or ():
+        for voice in step.get("voices", ()) or ():
+            migrated = migrate_voice_scene(voice.setdefault("params", {}))
             if scene is None and migrated is not None:
                 scene = migrated
-    if scene is not None:
-        ensure_source_ids(steps_data, scene)
+    # Identifiers are assigned whether or not this track uses scene features,
+    # so a voice keeps the same name across renders and reorderings either way.
+    # The scene itself is only written back when the track already had one.
+    scene = assign_source_ids(track_data, scene)
+
+    steps_data = copy.deepcopy(track_data.get("steps", []))
+    # The private render context is attached to copied voices only; it is never
+    # serialized back into voice parameters.
+    if track_data.get("sam_scene") is not None:
         running_start = 0.0
         for step in steps_data:
             step_start = float(step.get("start", step.get("start_time", running_start)))
