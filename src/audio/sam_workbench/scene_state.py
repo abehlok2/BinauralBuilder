@@ -599,8 +599,18 @@ def scene_gain_envelope(
     start_sample: int,
     frames: int,
     sample_rate: float,
+    *,
+    include_routing: bool = True,
 ) -> np.ndarray:
-    """Evaluate audible stage/modulation/routing gain for one source."""
+    """Evaluate audible stage/modulation/routing gain for one source.
+
+    ``include_routing`` exists because routing must be applied exactly once.
+    Folding a source's bus gain and its mute/solo state into its own envelope
+    gets the level right when nothing downstream sums buses, and is wrong the
+    moment something does. A caller that mixes through
+    :class:`~.render.scene_mix.SceneMixer` passes ``False`` and lets the mixer
+    apply routing, where there is an actual bus to meter and to process.
+    """
 
     if not scene_data or frames <= 0:
         return np.ones(max(0, frames), dtype=np.float64)
@@ -623,6 +633,9 @@ def scene_gain_envelope(
             value = modulators.get(route.modulator_id)
             if value is not None:
                 gain += float(route.depth * route.polarity) * value
+
+    if not include_routing:
+        return gain
 
     routing = dict(scene.get("routing") or {})
     buses = {str(bus.get("id", "master")): bus for bus in routing.get("buses", ())}

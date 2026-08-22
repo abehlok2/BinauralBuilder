@@ -37,6 +37,17 @@ MAX_BATCH_SIZE = 8
 # Sequential offline chunking can introduce non-step boundary phase resets
 # depending on synth internals. Keep it disabled by default so each step is
 # rendered as one uninterrupted segment.
+# Off, and not merely unfinished: measured against the unchunked path, chunked
+# generation diverges at every chunk boundary. Each chunk fades in from zero
+# rather than continuing the previous one, because the synth functions do not
+# carry their oscillator phase across a chunk - `binaural_beat`, for one, has no
+# state to return. Turning this on would put an audible fade into every long
+# render at each boundary while appearing to save memory.
+#
+# Making it correct means giving each synth function state that survives a
+# chunk, which is a per-function change rather than a flag. Until then the flag
+# stays off, and test_sequential_chunking_is_not_silently_enabled pins the
+# reason so it cannot be flipped on by someone reading only its name.
 ENABLE_SEQUENTIAL_CHUNKING = False
 # Kept for compatibility if chunking is re-enabled in the future.
 SEQUENTIAL_CHUNK_DURATION_SECONDS = 30.0
@@ -971,6 +982,8 @@ def assemble_track_from_data(track_data, sample_rate, crossfade_duration, crossf
                     voice["params"]["_sam_scene"] = scene
                     voice["params"]["_sam_source_id"] = voice["sam_source_id"]
                     voice["params"]["_sam_scene_start_s"] = step_start
+                    # The step mixer applies routing, so the voice must not.
+                    voice["params"]["_sam_apply_routing"] = False
             running_start = step_start + float(step.get("duration", 0.0))
     if not steps_data:
         print("Warning: No steps found in track data.")
@@ -1828,6 +1841,60 @@ def _synthesize_voice_task(args):
 
     return (i, voice_type, func_name_short, voice_audio, new_state)
 
+def _sam_source_ids_for(step_data) -> dict:
+    """Voice index to scene source identifier, for the voices that have one."""
+
+    result = {}
+    for index, voice in enumerate(step_data.get("voices", ()) or ()):
+        if not isinstance(voice, dict):
+            continue
+        params = voice.get("params") or {}
+        source_id = str(params.get("_sam_source_id", "")).strip()
+        if source_id and params.get("_sam_scene"):
+            result[index] = source_id
+    return result
+
+
+def _sam_scene_for(step_data):
+    """The scene attached to this step's voices, if any."""
+
+    for voice in step_data.get("voices", ()) or ():
+        if isinstance(voice, dict):
+            scene = (voice.get("params") or {}).get("_sam_scene")
+            if scene:
+                return scene
+    return None
+
+
+def _mix_scene_sources(stems, scene, sample_rate, frames):
+    """Route scene stems through their buses and bands into one stereo mix.
+
+    Frame-major on the way in and out, channel-major inside: the mixer works in
+    the core's convention and this is the adapter boundary, as it is everywhere
+    else audio crosses between the two.
+    """
+
+    from src.audio.sam_workbench.plan import plan_from_track
+    from src.audio.sam_workbench.render.scene_mix import mixer_from_plan
+
+    try:
+        plan = plan_from_track(
+            {"global_settings": {"sample_rate": int(sample_rate)}, "sam_scene": scene, "steps": []}
+        )
+        mixer = mixer_from_plan(plan, sample_rate_hz=float(sample_rate))
+        routed = mixer.process(
+            {name: np.asarray(block, dtype=np.float64).T for name, block in stems.items()},
+            frames=int(frames),
+        )
+        return routed.master.T.astype(np.float32, copy=False)
+    except Exception as error:  # noqa: BLE001 - a bad scene must not lose the audio
+        print(f"    Warning: scene mixing failed ({error}); summing sources directly.")
+        total = np.zeros((int(frames), 2), dtype=np.float32)
+        for block in stems.values():
+            total += np.asarray(block, dtype=np.float32)
+        return total
+
+
 def generate_single_step_audio_segment(step_data, global_settings, target_duration_seconds, duration_override=None, chunk_start_time=0.0, continuity_context=None, voice_states=None, return_state=False):
     """
     Generates a raw audio segment for a single step, looping or truncating 
@@ -1883,6 +1950,11 @@ def generate_single_step_audio_segment(step_data, global_settings, target_durati
     # Generate one iteration of the step's audio
     binaural_mix = np.zeros((step_generation_samples, 2), dtype=np.float32)
     noise_mix = np.zeros((step_generation_samples, 2), dtype=np.float32)
+    # Scene sources are collected by identifier so the mixer can route them
+    # through their buses; everything else keeps the plain sum.
+    sam_stems: dict[str, np.ndarray] = {}
+    sam_source_ids = _sam_source_ids_for(step_data)
+    sam_scene = _sam_scene_for(step_data)
     
     # print(f"  Generating single iteration for step (Duration: {step_generation_duration:.2f}s, Samples: {step_generation_samples})")
     
@@ -1995,6 +2067,13 @@ def generate_single_step_audio_segment(step_data, global_settings, target_durati
             if voice_type == 'noise':
                 noise_mix += voice_audio
                 has_noise = True
+            elif i in sam_source_ids:
+                # A scene source is held back as its own stem rather than
+                # summed here. Summing first would leave nothing for a bus to
+                # be a bus *of*: no per-bus level, no per-bus band processing,
+                # and no way to meter anything but the total.
+                sam_stems[sam_source_ids[i]] = voice_audio
+                has_binaural = True
             else:
                 binaural_mix += voice_audio
                 has_binaural = True
@@ -2050,6 +2129,11 @@ def generate_single_step_audio_segment(step_data, global_settings, target_durati
             print("    Warning: Noise mix is silent.")
 
     # 3. Combine
+    if sam_stems:
+        binaural_mix = binaural_mix + _mix_scene_sources(
+            sam_stems, sam_scene, sample_rate, step_generation_samples
+        )
+
     single_iteration_audio_mix = binaural_mix + noise_mix
 
     # 4. Optional continuity gain to preserve perceived loudness across steps.

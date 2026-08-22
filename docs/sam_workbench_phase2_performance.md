@@ -94,5 +94,51 @@ more memory than one.
 This bounds the *export*. The renderer still materializes the track before
 handing it over; `iter_track_blocks` bridges from an array that already exists,
 and the memory tests measure the encoder against a generator precisely so that
-distinction is not blurred. Making the renderer produce blocks of its own is the
-remaining half.
+distinction is not blurred.
+
+### Why `ENABLE_SEQUENTIAL_CHUNKING` is still off
+
+There is a flag that looks like it would bound the render, and it would not.
+
+Measured against the unchunked path, chunked generation **diverges at every
+chunk boundary**. Each chunk fades in from zero rather than continuing the
+previous one, because the synth functions do not carry their oscillator phase
+across a boundary — `binaural_beat`, for one, has no state to return at all.
+Turning it on would put an audible fade into every long render at every 30 s
+boundary while appearing to save memory.
+
+Making it correct means giving each synth function state that survives a chunk.
+That is a per-function change, not a flag. `test_long_render_memory.py` pins the
+measurement so the reason cannot be lost; when the state work lands, that test
+should be inverted rather than deleted.
+
+## Scene mixing
+
+The pieces for real bus mixing existed and were tested, and nothing used them.
+Production folded a source's bus gain and its mute/solo state into a single
+scalar on that source's own audio — right level, no mixer: nothing to meter,
+nothing to process, nothing a band setting could act on.
+
+`render/scene_mix.py` sums sources into buses, band-processes and gains each
+bus, and sums buses to master, keeping every stem so it can be metered. It is
+stateful because band splitting is: restarting the crossover filters each block
+steps every band's output by roughly a quarter of the signal's peak — a click,
+not a change of tone. Blocked and whole renders are bit-identical at every block
+size tested.
+
+## The filter cache, and a bug it found
+
+Caching interpolated filters per interpolator bought nothing — 1.00 to 1.02×,
+measured. The adaptive control interval already declines to reselect until the
+direction has moved past its tolerance, so within one render consecutive lookups
+are genuinely different directions.
+
+What repeats is *renders*: preview then export, the two halves of an A/B,
+several sources on one trajectory. Moved to module scope, a second render of the
+same voice is **1.25–1.59×** faster and byte-identical.
+
+Writing the key-correctness tests found a real bug in the first version. The key
+used the dataset's SOFA content hash — and a cue-modified dataset is a *view* of
+the file it came from and forwards that hash, so a hybrid render with cue
+modification would have been served the unmodified filters. Silently, and only
+in hybrid mode. The fingerprint now hashes the impulse responses themselves.
