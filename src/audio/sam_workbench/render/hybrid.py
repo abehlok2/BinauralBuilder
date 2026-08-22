@@ -34,7 +34,31 @@ from ..hrtf.modification import CueTransform, transform_dataset
 from .anchor import AnchorSpec, anchor_directions, make_anchor_signal
 from .hrtf import SpatialHrtfSpec, render_spatial_hrtf
 
-__all__ = ["HybridResult", "HybridSpec", "render_hybrid"]
+__all__ = [
+    "HybridResult",
+    "HybridSpec",
+    "render_hybrid",
+    "SIGNAL_CHAIN",
+    "SIGNAL_CHAIN_TEXT",
+]
+
+#: The order the stages run in, for the GUI to show verbatim.
+#:
+#: The order is not a presentation detail. Phase manipulation applied before
+#: binaural filtering is modulating the signal the HRIRs then act on; applied
+#: after, it is modulating an already-spatialized pair, and the interaural
+#: phase it imposes fights the phase the HRTF just established. The two sound
+#: meaningfully different, so which one a render used has to be visible.
+SIGNAL_CHAIN: tuple[str, ...] = (
+    "Source",
+    "SAM",
+    "3D trajectory",
+    "HRTF interpolation",
+    "Cue modification",
+    "Output",
+)
+
+SIGNAL_CHAIN_TEXT = " \u2192 ".join(SIGNAL_CHAIN)
 
 
 @dataclass(frozen=True)

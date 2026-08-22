@@ -26,6 +26,28 @@ class HRTFRendererSpec:
     expected_sha256: str | None = None
     project_directory: str | Path | None = None
 
+    # --- distance ----------------------------------------------------------
+    #
+    # A SOFA measurement encodes a direction. Distance is not in the filter, so
+    # a renderer that only looks up a direction reproduces a path's azimuth and
+    # elevation and silently discards how near or far it goes. These fields are
+    # what make the third dimension of a trajectory audible.
+    #
+    # The defaults are neutral, so a caller that does not ask for distance
+    # handling gets exactly the direction-only render it got before.
+    #: ``"none"`` leaves level alone; the others attenuate with distance.
+    distance_law: Literal["none", "inverse", "inverse_square"] = "none"
+    #: Distance at which the distance law is unity gain.
+    reference_distance_m: float = 1.0
+    #: Distances are clamped into this range before the law is applied, so a
+    #: path through the listener cannot produce unbounded gain.
+    minimum_distance_m: float = 0.15
+    maximum_distance_m: float = 100.0
+    #: Delay the source by the time sound takes to travel the distance. This is
+    #: what makes an approaching source arrive early and a receding one late.
+    propagation_delay: bool = False
+    speed_of_sound_m_s: float = 343.0
+
     def __post_init__(self):
         if self.interpolation not in ("nearest", "logmag_delay"):
             raise ValueError(f"unsupported interpolation {self.interpolation!r}")
@@ -34,6 +56,23 @@ class HRTFRendererSpec:
             raise ValueError("crossfade_ms must be finite and non-negative")
         if self.control_interval_samples <= 0:
             raise ValueError("control_interval_samples must be positive")
+        if self.distance_law not in ("none", "inverse", "inverse_square"):
+            raise ValueError(f"unsupported distance law {self.distance_law!r}")
+        for name in ("reference_distance_m", "minimum_distance_m", "speed_of_sound_m_s"):
+            value = float(getattr(self, name))
+            if not math.isfinite(value) or value <= 0.0:
+                raise ValueError(f"{name} must be finite and positive")
+        if self.maximum_distance_m < self.minimum_distance_m:
+            raise ValueError("maximum_distance_m must not be smaller than minimum_distance_m")
+
+    def distance_gain(self, distance_m: float) -> float:
+        """Gain for one distance, under the configured law."""
+
+        if self.distance_law == "none":
+            return 1.0
+        clamped = min(max(float(distance_m), self.minimum_distance_m), self.maximum_distance_m)
+        ratio = self.reference_distance_m / clamped
+        return float(ratio * ratio if self.distance_law == "inverse_square" else ratio)
 
 class HRTFRenderer:
     """Streaming FIR renderer with continuous history and equal-power switches."""
@@ -66,6 +105,7 @@ class HRTFRenderer:
             self._render_ir = delayed
         else:
             self._render_ir = self.dataset.ir
+        # After the sample rate is known, so the delay line is sized for it.
         self.reset(0)
 
     def reset(self, sample_index=0):
@@ -75,6 +115,66 @@ class HRTFRenderer:
         self._current_filter = self._previous_filter = None
         self._filter_key = None
         self._fade_position = self._fade_frames
+        # Propagation delay needs the input from up to maximum_distance_m ago,
+        # held in a ring buffer so the per-sample read stays constant time.
+        self._delay_line = np.zeros(self._delay_capacity(), dtype=np.float64)
+        self._delay_write = 0
+        self._gain = self._gain_step = 0.0
+        self._delay_samples = self._delay_step = 0.0
+        self._control_remaining = 0
+        self._primed_distance = False
+
+    def _delay_capacity(self):
+        if not self.spec.propagation_delay:
+            return 4
+        span = self.spec.maximum_distance_m / self.spec.speed_of_sound_m_s
+        return int(np.ceil(span * self._sample_rate_hz)) + 8
+
+    def _read_delayed(self, delay_samples):
+        """Four-point interpolated read from the ring buffer.
+
+        Cubic rather than linear because a linearly interpolated fractional
+        delay low-passes the signal by an amount that changes with the
+        fractional part, which on a moving source is heard as the timbre
+        wobbling in step with the motion.
+        """
+
+        size = len(self._delay_line)
+        newest = self._delay_write - 1
+        target = newest - max(0.0, float(delay_samples))
+        base = int(np.floor(target))
+        fraction = target - base
+        p0, p1, p2, p3 = (self._delay_line[(base + offset) % size] for offset in (-1, 0, 1, 2))
+        return p1 + 0.5 * fraction * (
+            p2 - p0
+            + fraction * (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3
+                          + fraction * (3.0 * (p1 - p2) + p3 - p0))
+        )
+
+    def _update_distance(self, position, frames_until_next):
+        """Retarget gain and delay, ramping over the coming control interval.
+
+        Stepping either one at a control boundary is audible - gain as a click,
+        delay as a tear in the waveform - so both slew across the interval
+        instead. The delay slewing is what produces the Doppler shift of an
+        approaching or receding source.
+        """
+
+        distance = float(np.linalg.norm(position))
+        gain = self.spec.distance_gain(distance)
+        delay = 0.0
+        if self.spec.propagation_delay:
+            clamped = min(max(distance, self.spec.minimum_distance_m), self.spec.maximum_distance_m)
+            delay = clamped / self.spec.speed_of_sound_m_s * self._sample_rate_hz
+        if not self._primed_distance:
+            # The first interval starts where it belongs rather than sliding in
+            # from silence and zero delay.
+            self._gain, self._delay_samples = gain, delay
+            self._primed_distance = True
+        span = max(int(frames_until_next), 1)
+        self._gain_step = (gain - self._gain) / span
+        self._delay_step = (delay - self._delay_samples) / span
+        self._control_remaining = span
 
     def latency_samples(self): return 0
     def diagnostics(self): return dict(self._diagnostics)
@@ -118,7 +218,11 @@ class HRTFRenderer:
         for local, value in enumerate(source):
             absolute = int(block.start_sample) + local
             if self._current_filter is None or absolute % self.spec.control_interval_samples == 0:
-                key, target = self._target_filter(self._position(absolute))
+                position = self._position(absolute)
+                # Direction and distance come from the same sampled position:
+                # the filter encodes where the source is, these encode how far.
+                self._update_distance(position, self.spec.control_interval_samples)
+                key, target = self._target_filter(position)
                 if self._current_filter is None:
                     self._current_filter, self._filter_key = np.asarray(target), key
                 elif key != self._filter_key:
@@ -133,6 +237,16 @@ class HRTFRenderer:
                     self._current_filter = np.asarray(target)
                     self._filter_key, self._fade_position = key, 0
             selected[local] = self._filter_key[1] if self._filter_key[0] == "nearest" else -1
+            if self._control_remaining > 0:
+                self._gain += self._gain_step
+                self._delay_samples += self._delay_step
+                self._control_remaining -= 1
+            if self.spec.propagation_delay:
+                self._delay_line[self._delay_write] = value
+                self._delay_write = (self._delay_write + 1) % len(self._delay_line)
+                value = self._read_delayed(self._delay_samples)
+            if self.spec.distance_law != "none":
+                value = value * self._gain
             window = np.concatenate((self._history, [value]))
             current = self._fir(window, self._current_filter)
             if self._previous_filter is not None and self._fade_position < self._fade_frames:
@@ -145,7 +259,9 @@ class HRTFRenderer:
             self._history = window[1:]
         self._next_sample = int(block.start_sample) + block.frames
         self._diagnostics = {"hrtf_index": selected, "asset_sha256": self.dataset.content_hash,
-            "interpolation": self.spec.interpolation, "delay_policy": DelayPolicy(self.spec.delay_policy).value}
+            "interpolation": self.spec.interpolation, "delay_policy": DelayPolicy(self.spec.delay_policy).value,
+            "distance_law": self.spec.distance_law, "distance_gain": float(self._gain),
+            "propagation_delay_samples": float(self._delay_samples)}
         return output.astype(AUDIO_DTYPE, copy=False)
 
 def render_hrtf(mono, spec, sample_rate_hz, *, block_size=4096, start_sample=0):

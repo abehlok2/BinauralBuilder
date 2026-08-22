@@ -48,7 +48,11 @@ from src.audio.sam_workbench.dsp.source import (
     render_source,
 )
 from src.audio.sam_workbench.render.geometric import GeometricBinauralRenderer, GeometricSpec
-from src.audio.sam_workbench.trajectory import trajectory_from_dict
+from src.audio.sam_workbench.trajectory import (
+    path_model_from_dict,
+    spherical_to_cartesian,
+    trajectory_from_dict,
+)
 from src.audio.sam_workbench.trajectory.legacy_paths import SAM2_DEFAULT_SHAPES_BY_TYPE, resolve_sam2_shape
 from src.audio.sam_workbench.waveforms import TWO_PI
 
@@ -515,6 +519,80 @@ def render_sam2_voice(
     return to_frame_major(audio).astype(AUDIO_DTYPE, copy=False)
 
 
+def _hrtf_trajectory(params: Mapping[str, Any], options: Mapping[str, Any]):
+    """The position function the HRTF renderer samples, in metres.
+
+    A saved ``canonicalTrajectory`` is the whole path: azimuth, elevation and
+    distance all vary along it, and all three reach the renderer.  This used to
+    be discarded here - the renderer was handed a sinusoidal azimuth at a fixed
+    ``elevationDeg`` and ``distanceM``, so a three-dimensional path authored in
+    the editor was flattened to a horizontal sweep the moment it was previewed
+    or exported.  A path is now only synthesized from those two options when
+    there is no trajectory to use, which is the genuinely legacy case.
+    """
+
+    payload = params.get("canonicalTrajectory")
+    if isinstance(payload, Mapping) and payload.get("geometry"):
+        model = path_model_from_dict(payload)
+        # ``positions`` resolves a world-frame path against the listener pose,
+        # so the renderer receives listener-relative metres either way.
+        return model.positions
+
+    rate = float(params.get("modFreq", 4.0))
+    width = float(params.get("arcWidthDeg", 90.0))
+    direction = float(params.get("directionOffsetDeg", 0.0))
+    radius = float(options.get("distanceM", 1.0))
+    elevation = float(options.get("elevationDeg", 0.0))
+
+    def legacy(times):
+        azimuth = direction + 0.5 * width * np.sin(TWO_PI * rate * np.asarray(times))
+        return spherical_to_cartesian(azimuth, elevation, radius)
+
+    return legacy
+
+
+def hrtf_coverage_report(
+    params: Mapping[str, Any],
+    dataset_positions_m,
+    *,
+    sample_rate_hz: float = 44100.0,
+    duration_s: float | None = None,
+):
+    """Check a voice's path against a SOFA dataset's measured directions.
+
+    Sampled at the renderer's own control interval so the direction-change
+    warnings describe the steps the renderer will really take.  Returns
+    ``None`` when the voice is not an HRTF voice, so a caller can ask about any
+    voice without first classifying it.
+    """
+
+    from .hrtf.coverage import assess_path_coverage
+
+    if str(params.get("rendererMode", "abstract_pm")).lower() != "hrtf":
+        return None
+    options = dict(params.get("hrtfOptions") or {})
+    trajectory = _hrtf_trajectory(params, options)
+    interval = max(int(options.get("controlIntervalSamples", 128)), 1)
+
+    if duration_s is None:
+        payload = params.get("canonicalTrajectory")
+        traversal = (payload or {}).get("traversal", {}) if isinstance(payload, Mapping) else {}
+        duration_s = float(traversal.get("durationS", 5.0))
+    count = max(2, int(float(duration_s) * float(sample_rate_hz) / interval))
+    # Cap the sample count: a long path checked at the control rate would
+    # otherwise build a very large direction array to answer a yes/no question.
+    count = min(count, 20_000)
+    times = np.arange(count, dtype=np.float64) * (interval / float(sample_rate_hz))
+    return assess_path_coverage(
+        dataset_positions_m,
+        np.asarray(trajectory(times), dtype=np.float64),
+        sample_rate_hz=sample_rate_hz,
+        control_interval_samples=interval,
+        crossfade_ms=float(options.get("crossfadeMs", 10.0)),
+        interpolation=str(options.get("interpolation", "nearest")),
+    )
+
+
 def _render_hrtf_voice(
     params: Mapping[str, Any],
     frames: int,
@@ -535,21 +613,16 @@ def _render_hrtf_voice(
 
     carrier = float(params.get("carrierFreq", 440.0))
     amplitude = float(params.get("amp", 0.7))
-    rate = float(params.get("modFreq", 4.0))
-    width = float(params.get("arcWidthDeg", 90.0))
-    direction = float(params.get("directionOffsetDeg", 0.0))
-    radius = float(options.get("distanceM", 1.0))
+    trajectory = _hrtf_trajectory(params, options)
 
-    def trajectory(times):
-        azimuth = direction + 0.5 * width * np.sin(TWO_PI * rate * np.asarray(times))
-        radians = np.radians(azimuth)
-        elevation = np.radians(float(options.get("elevationDeg", 0.0)))
-        return np.column_stack((
-            radius * np.cos(elevation) * np.cos(radians),
-            radius * np.cos(elevation) * np.sin(radians),
-            np.full_like(radians, radius * np.sin(elevation)),
-        ))
-
+    # Distance handling is opt-in, and stays off for a voice that has no
+    # trajectory: those sit at one fixed distance, where attenuation and
+    # propagation delay are a constant gain and a constant latency that only
+    # change how the voice lines up against the rest of the mix.
+    has_trajectory = isinstance(params.get("canonicalTrajectory"), Mapping)
+    distance_law = str(
+        options.get("distanceLaw", "inverse" if has_trajectory else "none")
+    )
     renderer_spec = HRTFRendererSpec(
         sofa_path=asset,
         trajectory=trajectory,
@@ -559,6 +632,13 @@ def _render_hrtf_voice(
         control_interval_samples=int(options.get("controlIntervalSamples", 128)),
         expected_sha256=params.get("hrtfAssetHash"),
         project_directory=options.get("projectDirectory"),
+        distance_law=distance_law,
+        reference_distance_m=_as_float(options.get("referenceDistanceM", 1.0), 1.0),
+        minimum_distance_m=_as_float(options.get("minimumDistanceM", 0.15), 0.15),
+        maximum_distance_m=_as_float(options.get("maximumDistanceM", 100.0), 100.0),
+        propagation_delay=bool(
+            options.get("propagationDelay", has_trajectory)
+        ),
     )
     # Reconstruct the convolution and crossfade history from the voice origin,
     # since the legacy synth boundary cannot return checkpointed renderer state.
