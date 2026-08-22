@@ -432,3 +432,91 @@ def test_a_track_without_a_scene_still_compiles():
     plan = plan_from_track(_track())
     assert plan.is_renderable
     assert plan.sources[0].controls == {}
+
+
+# --- the trajectory system is the existing one, in every mode ---------------
+
+TRAJECTORY_SPECS = {
+    "listener_relative": {
+        "geometry": {"type": "dome_traversal", "parameters": {"turns": 2}},
+        "traversal": {"durationS": 2.0},
+    },
+    "world_relative": {
+        "coordinateSystem": "world_cartesian",
+        "listener": {"positionM": [1.0, 0.0, 0.0]},
+        "geometry": {"type": "horizontal_orbit", "parameters": {"radiusM": 1.0}},
+        "traversal": {"durationS": 2.0},
+    },
+    "keyframed": {
+        "geometry": {
+            "type": "keyframes",
+            "interpolation": "catmull_rom",
+            "keyframes": [
+                {"timeSeconds": 0.0, "position": [0.0, 1.0, 0.0]},
+                {"timeSeconds": 1.0, "position": [1.0, 0.0, 1.5]},
+                {"timeSeconds": 2.0, "position": [0.0, -1.0, 0.5]},
+            ],
+        },
+        "traversal": {"durationS": 2.0},
+    },
+    "parameter_speed": {
+        "speedLaw": "parameter_speed",
+        "geometry": {"type": "horizontal_orbit", "parameters": {}},
+        "traversal": {"durationS": 2.0},
+    },
+    "oriented": {
+        "geometry": {"type": "torus", "parameters": {}},
+        "traversal": {"durationS": 2.0},
+        "sourceOrientation": {"mode": "toward_listener"},
+    },
+    "with_unknown_fields": {
+        "geometry": {"type": "dome_traversal", "parameters": {}},
+        "traversal": {"durationS": 2.0},
+        "somethingNew": {"a": 1},
+    },
+}
+
+
+def _planned_trajectory(spec):
+    plan = plan_from_track(
+        _track(voices=[_voice("P", "hrtf", hrtfAsset="a.sofa", canonicalTrajectory=spec)])
+    )
+    return plan.sources[0].trajectory
+
+
+@pytest.mark.parametrize("name", sorted(TRAJECTORY_SPECS))
+def test_the_plan_reads_a_path_exactly_as_the_editor_does(name):
+    """One interpretation of a saved path, not a second one built here."""
+
+    from src.audio.sam_workbench.trajectory import path_model_from_dict
+
+    spec = TRAJECTORY_SPECS[name]
+    times = np.linspace(0.0, 2.0, 17)
+    planned = _planned_trajectory(spec)
+    assert isinstance(planned, PathModel)
+    assert planned.positions(times) == pytest.approx(
+        path_model_from_dict(spec).positions(times)
+    )
+
+
+def test_source_orientation_metadata_survives_compilation():
+    assert _planned_trajectory(TRAJECTORY_SPECS["oriented"]).orientation.mode == "toward_listener"
+
+
+def test_a_world_frame_path_is_resolved_against_the_listener():
+    model = _planned_trajectory(TRAJECTORY_SPECS["world_relative"])
+    assert not model.is_listener_relative
+    # An orbit centred a metre in front of the listener is not equidistant.
+    distances = np.linalg.norm(model.positions(np.linspace(0.0, 2.0, 33)), axis=1)
+    assert np.ptp(distances) > 0.5
+
+
+def test_geometry_and_traversal_stay_separable_in_the_plan():
+    model = _planned_trajectory(TRAJECTORY_SPECS["listener_relative"])
+    assert model.with_traversal(model.traversal).geometry is model.geometry
+
+
+def test_the_plan_evaluates_a_path_at_whatever_rate_it_is_asked_for():
+    model = _planned_trajectory(TRAJECTORY_SPECS["listener_relative"])
+    for count in (8, 64, 512):
+        assert model.positions(np.linspace(0.0, 2.0, count)).shape == (count, 3)
