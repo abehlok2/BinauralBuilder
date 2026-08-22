@@ -38,6 +38,12 @@ class HRTFRendererSpec:
     listener: ListenerTransform = ListenerTransform()
     expected_sha256: str | None = None
     project_directory: str | Path | None = None
+    #: A dataset to render with instead of loading ``sofa_path``. The hybrid
+    #: path passes its cue-modified dataset here, so the creative stage acts on
+    #: the filters - where interaural time and level differences actually live -
+    #: rather than on an already-mixed stereo signal that would have to be
+    #: unpicked first.
+    dataset_override: object | None = None
 
     # --- interpolation -----------------------------------------------------
     #: How many measurements the three-neighbour blend uses.
@@ -148,12 +154,17 @@ class HRTFRenderer:
         from ..hrtf.interpolation import HrtfInterpolator
 
         self._sample_rate_hz = int(context.sample_rate_hz)
-        self.dataset = default_hrtf_cache.get(
+        loaded = default_hrtf_cache.get(
             self.spec.sofa_path, self._sample_rate_hz, self.spec.delay_policy,
             self.spec.project_directory,
         )
-        if self.spec.expected_sha256 and self.dataset.content_hash.lower() != self.spec.expected_sha256.lower():
+        if self.spec.expected_sha256 and loaded.content_hash.lower() != self.spec.expected_sha256.lower():
             raise ValueError("SOFA asset hash does not match hrtfAssetHash")
+        # The hash is always checked against the asset on disk, even when
+        # rendering happens through a modified view of it: what a manifest has
+        # to be able to state is which measurements the render came from.
+        self.dataset = self.spec.dataset_override or loaded
+        self._asset_hash = loaded.content_hash
         self.interpolator = HrtfInterpolator(
             self.dataset,
             mode=canonical_interpolation(self.spec.interpolation),
@@ -421,7 +432,7 @@ class HRTFRenderer:
         self._next_sample = start + frames
         selection = self._selection
         self._diagnostics = {
-            "asset_sha256": self.dataset.content_hash,
+            "asset_sha256": self._asset_hash,
             "interpolation": canonical_interpolation(self.spec.interpolation),
             "delay_policy": DelayPolicy(self.spec.delay_policy).value,
             "distance_law": self.spec.distance_law,

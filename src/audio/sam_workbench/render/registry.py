@@ -619,7 +619,6 @@ _HYBRID = REGISTRY.register(
         version=1,
         cost_weight=1.15,
         config_key="hrtfOptions",
-        voice_renderable=False,
         capabilities=RendererCapabilities(
             label="Hybrid",
             description="HRTF for spectrum, with declared extra cues.",

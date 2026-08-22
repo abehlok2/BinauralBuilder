@@ -38,7 +38,7 @@ from typing import Any, Mapping
 import numpy as np
 from numpy.typing import NDArray
 
-from src.audio.sam_workbench.conventions import AUDIO_DTYPE, seconds_to_samples, to_frame_major
+from src.audio.sam_workbench.conventions import AUDIO_DTYPE, db_to_linear, seconds_to_samples, to_frame_major
 from src.audio.sam_workbench.dsp.blocks import RenderBlock, RenderContext
 from src.audio.sam_workbench.dsp.source import (
     EAR_POLARITY_CANONICAL,
@@ -635,7 +635,12 @@ def render_sam2_voice(
         )
     if automation and renderer_mode == "abstract_pm":
         spec = _with_automation(spec, automation, sample_rate)
-    if renderer_mode == "hrtf":
+    if renderer_mode == "hybrid":
+        audio = _render_hybrid_voice(
+            voice_params, frames, sample_rate, start_sample=start_sample,
+            block_size=block_size,
+        )
+    elif renderer_mode == "hrtf":
         audio = _render_hrtf_voice(
             voice_params, frames, sample_rate, start_sample=start_sample,
             block_size=block_size,
@@ -753,6 +758,115 @@ def hrtf_coverage_report(
     )
 
 
+def _headphone_from(options: Mapping[str, Any]):
+    """The headphone correction a voice asks for, if any."""
+
+    from .hrtf.headphones import HeadphoneCorrection
+
+    if not options.get("headphoneAsset") and not options.get("headphoneMode"):
+        return None
+    try:
+        return HeadphoneCorrection.from_mapping(dict(options))
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
+def _render_hybrid_voice(
+    params: Mapping[str, Any],
+    frames: int,
+    sample_rate: float,
+    *,
+    start_sample: int,
+    block_size: int | None,
+) -> NDArray[np.float64]:
+    """Source -> SAM -> trajectory -> HRTF -> cue -> headphone -> output.
+
+    The order is the point, and it is why each stage sits where it does. Cue
+    modification acts on the *filters*: interaural time and level differences
+    are properties of the filter pair for a direction, and recovering them from
+    an already-mixed stereo signal would mean undoing the convolution first.
+    Headphone correction runs once over the finished mix, because applying it
+    per stem would apply it twice. Everything past the HRTF stage is a declared
+    departure from the measured cues rather than a measurement.
+    """
+
+    from .hrtf.headphones import apply_correction
+    from .hrtf.modification import transform_dataset
+    from .render.anchor import anchor_directions, make_anchor_signal
+    from .render.hybrid import HybridSpec, _ModifiedDatasetView
+
+    options = dict(params.get("hrtfOptions") or {})
+    spec = HybridSpec.from_options(options, headphone=_headphone_from(options))
+
+    dataset = None
+    if not spec.cue.is_neutral:
+        from .hrtf import default_hrtf_cache
+
+        loaded = default_hrtf_cache.get(
+            params.get("hrtfAsset"), int(sample_rate),
+            str(options.get("delayPolicy", "bake_delay_into_ir")),
+            options.get("projectDirectory"),
+        )
+        dataset = _ModifiedDatasetView(loaded, transform_dataset(loaded, spec.cue).hrirs)
+
+    mixed = _render_hrtf_voice(
+        params, frames, sample_rate, start_sample=start_sample,
+        block_size=block_size, dataset_override=dataset,
+    )
+
+    if spec.anchor.enabled:
+        # A second source through the same filters, offset from the first. It
+        # is rendered rather than faked so it carries the same spatial
+        # treatment as the source it anchors.
+        trajectory = _hrtf_trajectory(params, options)
+        times = (np.arange(frames, dtype=np.float64) + int(start_sample)) / float(sample_rate)
+        directions = anchor_directions(
+            np.asarray(trajectory(times), dtype=np.float64), spec.anchor
+        )
+        signal = make_anchor_signal(spec.anchor, frames, float(sample_rate))
+        mixed = mixed + _render_directions(
+            signal, directions, params, options, sample_rate, block_size, dataset
+        )
+
+    if spec.headphone is not None and spec.headphone.is_active:
+        mixed = apply_correction(mixed, spec.headphone)
+    if spec.output_gain_db != 0.0:
+        mixed = mixed * float(db_to_linear(spec.output_gain_db))
+    return mixed
+
+
+def _render_directions(
+    mono, directions, params, options, sample_rate, block_size, dataset
+) -> NDArray[np.float64]:
+    """Render a signal along an explicit direction array rather than a path."""
+
+    from .render.hrtf import HRTFRendererSpec, render_hrtf
+
+    positions = np.asarray(directions, dtype=np.float64)
+
+    def path(times):
+        index = np.clip(
+            (np.asarray(times) * float(sample_rate)).astype(int), 0, len(positions) - 1
+        )
+        return positions[index]
+
+    spec = HRTFRendererSpec(
+        sofa_path=params.get("hrtfAsset"),
+        trajectory=path,
+        interpolation=str(options.get("interpolation", "nearest")),
+        delay_policy=str(options.get("delayPolicy", "bake_delay_into_ir")),
+        crossfade_ms=float(options.get("crossfadeMs", 10.0)),
+        neighbor_count=int(options.get("neighborCount", 3)),
+        dataset_override=dataset,
+        distance_law="none",
+        propagation_delay=False,
+    )
+    return np.asarray(
+        render_hrtf(mono, spec, int(sample_rate), block_size=block_size or 4096),
+        dtype=np.float64,
+    )
+
+
 def _render_hrtf_voice(
     params: Mapping[str, Any],
     frames: int,
@@ -760,6 +874,7 @@ def _render_hrtf_voice(
     *,
     start_sample: int,
     block_size: int | None,
+    dataset_override: object | None = None,
 ) -> NDArray[np.float64]:
     """Translate the versioned voice envelope into the explicit-SOFA renderer."""
 
@@ -817,6 +932,7 @@ def _render_hrtf_voice(
         ),
         max_control_interval_samples=int(options.get("maxControlIntervalSamples", 4096)),
         listener=_listener_from(options),
+        dataset_override=dataset_override,
     )
     # Reconstruct the convolution and crossfade history from the voice origin,
     # since the legacy synth boundary cannot return checkpointed renderer state.

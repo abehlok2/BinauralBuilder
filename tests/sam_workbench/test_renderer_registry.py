@@ -87,13 +87,11 @@ def test_the_hybrid_renderer_states_its_stage_order():
     assert "Cue modification" in renderer("hybrid").capabilities.honesty_note
 
 
-def test_the_hybrid_renderer_is_defined_but_not_offered_for_a_single_voice():
-    """Its config and cost are real; the per-voice adapter cannot drive it yet."""
+def test_every_registered_renderer_can_now_drive_a_single_voice():
+    """Hybrid used to be defined but undriveable; the adapter reaches it now."""
 
-    assert renderer("hybrid").voice_renderable is False
-    assert [entry.identifier for entry in REGISTRY.voice_renderable] == [
-        "abstract_pm", "geometric", "hrtf",
-    ]
+    assert renderer("hybrid").voice_renderable is True
+    assert [entry.identifier for entry in REGISTRY.voice_renderable] == list(EXPECTED)
 
 
 # --- configuration ----------------------------------------------------------
@@ -226,11 +224,11 @@ def test_validate_renderer_config_routes_to_the_named_renderer():
     )
 
 
-def test_the_compatibility_adapter_refuses_a_mode_it_cannot_drive():
+def test_the_compatibility_adapter_refuses_a_mode_that_does_not_exist():
     from src.audio.sam_workbench.compat import render_sam2_voice
 
     with pytest.raises(ValueError, match="not available in this build"):
-        render_sam2_voice(0.01, 44100, params={"rendererMode": "hybrid"})
+        render_sam2_voice(0.01, 44100, params={"rendererMode": "nonsense"})
 
 
 def test_a_config_field_validates_its_own_kind():
