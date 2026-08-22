@@ -177,9 +177,21 @@ class SamWorkbenchDialog(QDialog):
         )
         header.addWidget(QLabel("Renderer:"))
         self.renderer_combo = QComboBox()
-        self.renderer_combo.addItem("Abstract phase modulation", "abstract_pm")
-        self.renderer_combo.addItem("Geometric binaural", "geometric")
-        self.renderer_combo.addItem("HRTF (explicit SOFA)", "hrtf")
+        # Built from the registry, so a renderer added there appears here - and
+        # one the per-voice adapter cannot drive yet does not.
+        from src.audio.sam_workbench.render.registry import REGISTRY
+
+        for definition in REGISTRY.voice_renderable:
+            self.renderer_combo.addItem(
+                definition.capabilities.label or definition.identifier, definition.identifier
+            )
+            position = self.renderer_combo.count() - 1
+            note = definition.capabilities.honesty_note
+            self.renderer_combo.setItemData(
+                position,
+                f"{definition.capabilities.description}\n{note}".strip(),
+                Qt.ToolTipRole,
+            )
         self.renderer_combo.setToolTip(
             "Select the algorithm used by both Python preview and export.\n"
             "HRTF needs a SOFA asset chosen in the HRTF Lab tab."

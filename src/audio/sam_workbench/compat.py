@@ -48,6 +48,7 @@ from src.audio.sam_workbench.dsp.source import (
     render_source,
 )
 from src.audio.sam_workbench.render.geometric import GeometricBinauralRenderer, GeometricSpec
+from src.audio.sam_workbench.render.registry import REGISTRY
 from src.audio.sam_workbench.trajectory import (
     path_model_from_dict,
     spherical_to_cartesian,
@@ -493,6 +494,16 @@ def render_sam2_voice(
     )
     start_sample = 0 if is_transition else seconds_to_samples(initial_offset, sample_rate)
     renderer_mode = str(voice_params.get("rendererMode", "abstract_pm")).lower()
+    # The registry decides which modes exist and which the per-voice adapter can
+    # drive; this dispatch only says how. A mode it does not carry is refused
+    # with the registry's own message rather than a list repeated here.
+    definition = REGISTRY.get(renderer_mode) if renderer_mode in REGISTRY else None
+    if definition is None or not definition.voice_renderable:
+        raise ValueError(
+            f"rendererMode {renderer_mode!r} is not available in this build; "
+            f"expected one of "
+            f"{', '.join(entry.identifier for entry in REGISTRY.voice_renderable)}"
+        )
     if renderer_mode == "hrtf":
         audio = _render_hrtf_voice(
             voice_params, frames, sample_rate, start_sample=start_sample,
@@ -503,10 +514,8 @@ def render_sam2_voice(
             spec, voice_params, frames, sample_rate, start_sample=start_sample,
             block_size=block_size,
         )
-    elif renderer_mode == "abstract_pm":
-        audio = render_sam2(spec, frames, sample_rate, start_sample=start_sample, block_size=block_size)
     else:
-        raise ValueError(f"rendererMode {renderer_mode!r} is not available in this build")
+        audio = render_sam2(spec, frames, sample_rate, start_sample=start_sample, block_size=block_size)
     if sam_scene:
         from .scene_state import scene_gain_envelope
 

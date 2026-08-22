@@ -64,12 +64,18 @@ _INTERPOLATION_WEIGHTS = {
 }
 
 #: Renderers that do not convolve at all cost far less per sample.
-_RENDERER_WEIGHTS = {
-    "abstract_pm": 0.02,
-    "geometric": 0.08,
-    "hrtf": 1.0,
-    "hybrid": 1.15,
-}
+def _renderer_weight(identifier: str) -> float:
+    """Relative cost per sample, from the renderer's own definition.
+
+    The registry owns this so a renderer added there is costed correctly here
+    without a second table needing to be remembered.
+    """
+
+    from src.audio.sam_workbench.render.registry import REGISTRY
+
+    if identifier not in REGISTRY:
+        return 1.0
+    return float(REGISTRY.get(identifier).cost_weight)
 
 
 def interpolation_weight(mode: str) -> float:
@@ -194,7 +200,7 @@ def estimate_cost(
     if not 0.0 < headroom <= 1.0:
         raise ValueError(f"headroom must lie in (0, 1], got {headroom!r}")
 
-    renderer_weight = float(_RENDERER_WEIGHTS.get(str(inputs.renderer), 1.0))
+    renderer_weight = _renderer_weight(str(inputs.renderer))
 
     # Overlap-save convolution is a transform pair per block rather than a tap
     # per sample, so the per-sample cost grows with the log of the filter, not
