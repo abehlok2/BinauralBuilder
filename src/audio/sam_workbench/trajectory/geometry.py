@@ -277,8 +277,16 @@ class Spline:
 
     def evaluate(self, u: ArrayLike) -> NDArray[np.float64]:
         points = _points(self.control_points_m, minimum=3)
-        if self.closed and not np.allclose(points[0], points[-1]):
-            points = np.vstack((points, points[0]))
+        if self.closed:
+            # A periodic spline needs its ends to match *exactly*. Points that
+            # merely come close - a sampled Lissajous figure that almost
+            # returns to its start - passed the approximate check, skipped the
+            # join, and then made the solver refuse the curve outright. Closing
+            # the ring explicitly covers both cases.
+            if np.allclose(points[0], points[-1]):
+                points = np.vstack((points[:-1], points[0]))
+            else:
+                points = np.vstack((points, points[0]))
         parameter = np.linspace(0.0, 1.0, len(points))
         boundary = "periodic" if self.closed else "natural"
         spline = CubicSpline(parameter, points, axis=0, bc_type=boundary)

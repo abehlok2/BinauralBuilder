@@ -551,7 +551,47 @@ def _validate_cue_options(options: Mapping[str, Any]) -> list[ValidationIssue]:
     from .hrtf.modification import CUE_PARAMETERS, EXPERT_RANGES
     from .render.anchor import ANCHOR_PATH_MODES, ANCHOR_SOURCE_TYPES
 
+    from .hrtf.interpolation import INTERPOLATION_MODES
+
     found: list[ValidationIssue] = []
+
+    interpolation = options.get("interpolation")
+    if interpolation is not None and interpolation not in INTERPOLATION_MODES:
+        found.append(
+            ValidationIssue(
+                "hrtfOptions.interpolation",
+                f"must be one of {', '.join(INTERPOLATION_MODES)}",
+            )
+        )
+
+    neighbours = options.get("neighborCount")
+    if neighbours is not None:
+        try:
+            count = int(neighbours)
+        except (TypeError, ValueError):
+            count = 0
+        if count < 2:
+            found.append(
+                ValidationIssue(
+                    "hrtfOptions.neighborCount",
+                    "must be at least 2; a blend of one is the nearest mode",
+                )
+            )
+
+    order = options.get("harmonicOrder")
+    if order is not None:
+        try:
+            value = int(order)
+        except (TypeError, ValueError):
+            value = -1
+        if value < 0:
+            found.append(
+                ValidationIssue(
+                    "hrtfOptions.harmonicOrder",
+                    "must not be negative; omit it to fit at the highest order "
+                    "the dataset supports",
+                )
+            )
 
     cue = options.get("cue")
     if cue is not None and not isinstance(cue, dict):

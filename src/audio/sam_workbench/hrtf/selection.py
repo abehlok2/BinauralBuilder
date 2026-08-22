@@ -102,16 +102,23 @@ class DirectionIndex:
     # --- k nearest ----------------------------------------------------------
 
     def nearest_k(self, direction: NDArray[np.floating], count: int = 3) -> DirectionWeights:
-        """The ``count`` closest measurements, weighted by unit-sphere distance.
+        """The ``count`` closest measurements, weighted so the blend is continuous.
 
-        Weights are inverse-distance on the sphere, so a query sitting exactly
-        on a measurement returns that measurement alone rather than a blend
-        that would blur it.
+        Plain inverse distance has a seam in it. As the query moves, the set of
+        k nearest measurements changes, and the member that drops out is still
+        carrying weight when it goes - so the blend jumps. Modified Shepard
+        weighting removes the seam by measuring against the *next* neighbour
+        out: a measurement's weight falls to zero exactly as it reaches the
+        edge of the set, so joining and leaving cost nothing.
+
+        A query sitting on a measurement still returns that measurement alone,
+        rather than a blend that would blur something needing no blending.
         """
 
         distances = angular_distance_deg(_as_direction(direction), self.directions)
         count = int(max(1, min(count, self.measurements)))
-        order = np.argsort(distances)[:count]
+        # One neighbour beyond the blend gives the radius the weights taper to.
+        order = np.argsort(distances)[: min(count + 1, self.measurements)]
         chosen = distances[order]
 
         if chosen[0] <= _COINCIDENT_DEG:
@@ -121,7 +128,23 @@ class DirectionIndex:
                 distance_deg=float(chosen[0]),
             )
 
-        weights = 1.0 / np.maximum(chosen, _EPSILON)
+        if chosen.size > count:
+            radius = float(chosen[count])
+            order, chosen = order[:count], chosen[:count]
+        else:
+            # Every measurement is in the blend, so there is no next one to
+            # taper towards and nothing can drop out of the set anyway.
+            radius = float("inf")
+
+        if np.isfinite(radius) and radius > _EPSILON:
+            weights = np.square(
+                np.maximum(radius - chosen, 0.0) / (radius * np.maximum(chosen, _EPSILON))
+            )
+        else:
+            weights = 1.0 / np.maximum(chosen, _EPSILON)
+
+        if not np.any(weights > _EPSILON):  # pragma: no cover - all at one radius
+            weights = np.ones_like(chosen)
         return DirectionWeights(
             indices=order.astype(np.int64), weights=weights, distance_deg=float(chosen[0])
         )

@@ -43,6 +43,8 @@ class HybridSpec:
 
     # --- physical -----------------------------------------------------------
     interpolation: str = "nearest"
+    neighbor_count: int = 3
+    harmonic_order: int | None = None
     crossfade_ms: float = 12.0
 
     # --- creative -----------------------------------------------------------
@@ -85,6 +87,10 @@ class HybridSpec:
         known: dict[str, Any] = {}
         if "interpolation" in values:
             known["interpolation"] = str(values["interpolation"])
+        if "neighborCount" in values:
+            known["neighbor_count"] = int(values["neighborCount"])
+        if values.get("harmonicOrder") is not None:
+            known["harmonic_order"] = int(values["harmonicOrder"])
         if "crossfadeMs" in values:
             known["crossfade_ms"] = float(values["crossfadeMs"])
         if "outputGainDb" in values:
@@ -98,6 +104,8 @@ class HybridSpec:
     def describe(self) -> dict[str, Any]:
         return {
             "interpolation": self.interpolation,
+            "neighborCount": int(self.neighbor_count),
+            "harmonicOrder": self.harmonic_order,
             "crossfadeMs": float(self.crossfade_ms),
             "cue": self.cue.describe(),
             "anchor": self.anchor.describe(),
@@ -169,6 +177,8 @@ def render_hybrid(
     # --- physical stage ----------------------------------------------------
     render_spec = SpatialHrtfSpec(
         interpolation=spec.interpolation,
+        neighbor_count=spec.neighbor_count,
+        harmonic_order=spec.harmonic_order,
         crossfade_ms=spec.crossfade_ms,
         # Headphone correction belongs to the output stage, not to this one:
         # applying it per stem would apply it twice to the mix.

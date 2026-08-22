@@ -509,6 +509,11 @@ class SamWorkbenchDialog(QDialog):
         known = {
             name
             for entry in SAM2_FIELDS
+            # Transition timing belongs to the voice's envelope, shared with
+            # every other synth function, so it is edited in the voice editor
+            # and only carried through here. Counting it as known made this
+            # report claim the workbench edits something it does not.
+            if entry.transition != "timing"
             for name in (entry.name, *entry.aliases, entry.start_name, entry.end_name)
         }
         # The workbench edits its own keys through the tabs above, so listing
@@ -532,6 +537,14 @@ class SamWorkbenchDialog(QDialog):
             lines.extend(
                 f"  {key} = {value!r}" for key, value in sorted(preserved.items())
             )
+            timing = {
+                entry.name for entry in SAM2_FIELDS if entry.transition == "timing"
+            } & set(preserved)
+            if timing:
+                lines.append(
+                    "  (" + ", ".join(sorted(timing)) + " are this voice's transition "
+                    "timing, edited in the voice editor rather than here)"
+                )
         else:
             lines.append("  (none)")
         if issues:

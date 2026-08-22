@@ -197,9 +197,11 @@ class SamPathEditorDialog(QDialog):
         self.primitive_combo.addItems(
             [
                 "polyline",
+                "polygon",
                 "spline",
                 "bezier",
                 "line",
+                "arc",
                 "circle",
                 "ellipse",
                 "spiral",
@@ -207,6 +209,11 @@ class SamPathEditorDialog(QDialog):
                 "lissajous",
                 "mathematical",
             ]
+        )
+        self.primitive_combo.setToolTip(
+            "Seeds the path with a shape. Every seed becomes control points you "
+            "can drag, so the saved path is whatever is on the canvas rather "
+            "than the primitive it started from."
         )
         self.primitive_combo.currentTextChanged.connect(self.seed_primitive)
         self.closed_check = QCheckBox("Closed path")
@@ -383,6 +390,18 @@ class SamPathEditorDialog(QDialog):
     def seed_primitive(self, primitive):
         if primitive == "line":
             self._points = [[1, 1, 0], [1, -1, 0]]
+        elif primitive == "arc":
+            self._points = [
+                [1.25 * math.cos(t), 1.25 * math.sin(t), 0]
+                for t in [math.radians(-45.0 + 90.0 * i / 8) for i in range(9)]
+            ]
+            self.closed_check.setChecked(False)
+        elif primitive == "polygon":
+            self._points = [
+                [1.2 * math.cos(t), 1.2 * math.sin(t), 0]
+                for t in [2 * math.pi * i / 6 for i in range(6)]
+            ]
+            self.closed_check.setChecked(True)
         elif primitive in ("circle", "ellipse"):
             ry = 1.0 if primitive == "circle" else 0.6
             self._points = [

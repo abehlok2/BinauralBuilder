@@ -117,6 +117,11 @@ DELAY_MAGNITUDE = "delay_magnitude"
 SPHERICAL_HARMONIC = "spherical_harmonic"
 
 #: In the order the specification asks for them to be implemented and adopted.
+#: Strength of the ridge term on the spherical-harmonic fit, relative to the
+#: mean diagonal of the normal equations. Small enough not to bias the fit,
+#: large enough to keep it bounded where the measurement grid thins out.
+HARMONIC_REGULARIZATION = 1e-6
+
 INTERPOLATION_MODES = (
     NEAREST,
     THREE_NEIGHBOR,
@@ -188,7 +193,7 @@ class HrtfInterpolator:
         *,
         mode: str = NEAREST,
         neighbor_count: int = 3,
-        harmonic_order: int = 4,
+        harmonic_order: int | None = None,
     ) -> None:
         if mode not in INTERPOLATION_MODES:
             raise ValueError(
@@ -197,8 +202,54 @@ class HrtfInterpolator:
         self.dataset = dataset
         self.mode = mode
         self.neighbor_count = int(neighbor_count)
-        self.harmonic_order = int(harmonic_order)
         self.index = DirectionIndex(unit_vectors(dataset.positions_m))
+
+        #: What the caller asked for, before the dataset had its say.
+        self.requested_harmonic_order = (
+            None if harmonic_order is None else int(harmonic_order)
+        )
+        self.harmonic_order = self._resolve_harmonic_order(self.requested_harmonic_order)
+
+    # --- the spherical-harmonic order ---------------------------------------
+
+    @property
+    def max_supportable_harmonic_order(self) -> int:
+        """The highest order this many measurements can actually determine.
+
+        An order ``N`` fit has ``(N + 1)**2`` coefficients. Asking for more of
+        them than there are measurements leaves the fit underdetermined: least
+        squares still returns an answer, but it is the minimum-norm one, which
+        is a choice nothing in the data made. So the order is capped here, and
+        the cap is a property rather than a hidden clamp so the interface can
+        say what it did.
+        """
+
+        return max(0, int(np.floor(np.sqrt(self.index.measurements))) - 1)
+
+    def _resolve_harmonic_order(self, requested: int | None) -> int:
+        """Pick the order to fit at, from the request and the measurements.
+
+        Unset means "as high as the data supports", which is the useful default:
+        the fixed low order this used to carry could not reproduce a measured
+        response at its own direction on any real dataset - a 25-coefficient
+        fit through 144 measurements was half the peak out.
+        """
+
+        supportable = self.max_supportable_harmonic_order
+        if requested is None:
+            return supportable
+        if requested < 0:
+            raise ValueError(f"harmonic_order must not be negative, got {requested}")
+        return min(int(requested), supportable)
+
+    @property
+    def harmonic_order_was_reduced(self) -> bool:
+        """True when the requested order was more than the data supports."""
+
+        return (
+            self.requested_harmonic_order is not None
+            and self.requested_harmonic_order > self.harmonic_order
+        )
 
     # --- lazily prepared representations ------------------------------------
 
@@ -235,10 +286,18 @@ class HrtfInterpolator:
         magnitudes = self._log_magnitudes
         measurements, ears, bins = magnitudes.shape
 
-        magnitude_coefficients, *_ = np.linalg.lstsq(
-            basis, magnitudes.reshape(measurements, ears * bins), rcond=None
+        # Tikhonov regularization, at a strength scaled to the basis itself.
+        # Without it a fit at the highest supportable order is well behaved at
+        # the measurements and free to do anything between them, because the
+        # directions are never distributed evenly enough to constrain every
+        # coefficient equally. This costs a little accuracy at the nodes and
+        # buys a fit that stays bounded where the grid is sparse.
+        scale = HARMONIC_REGULARIZATION * float(np.trace(basis.T @ basis)) / basis.shape[1]
+        normal = basis.T @ basis + scale * np.eye(basis.shape[1])
+        magnitude_coefficients = np.linalg.solve(
+            normal, basis.T @ magnitudes.reshape(measurements, ears * bins)
         )
-        delay_coefficients, *_ = np.linalg.lstsq(basis, delays, rcond=None)
+        delay_coefficients = np.linalg.solve(normal, basis.T @ delays)
         return magnitude_coefficients.reshape(-1, ears, bins), delay_coefficients
 
     # --- selection ----------------------------------------------------------

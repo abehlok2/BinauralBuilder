@@ -190,8 +190,13 @@ class SpatialHrtfSpec:
 
     interpolation: str = NEAREST
     crossfade_ms: float = DEFAULT_FILTER_CROSSFADE_MS
+    #: How many measurements the three-neighbour blend uses.
     neighbor_count: int = 3
-    harmonic_order: int = 4
+    #: Spherical-harmonic order, or None to use the highest the dataset
+    #: supports. A fixed order cannot suit every dataset: too high for a sparse
+    #: set leaves the fit underdetermined, too low for a dense one throws away
+    #: most of what was measured.
+    harmonic_order: int | None = None
     #: Applied after binaural rendering, never before it.
     headphone: HeadphoneCorrection | None = None
 
@@ -203,6 +208,14 @@ class SpatialHrtfSpec:
             )
         if not np.isfinite(self.crossfade_ms) or self.crossfade_ms < 0:
             raise ValueError("crossfade_ms must be finite and non-negative")
+        if int(self.neighbor_count) < 1:
+            raise ValueError(
+                f"neighbor_count must be at least 1, got {self.neighbor_count!r}"
+            )
+        if self.harmonic_order is not None and int(self.harmonic_order) < 0:
+            raise ValueError(
+                f"harmonic_order must not be negative, got {self.harmonic_order!r}"
+            )
 
 
 class SpatialHrtfRenderer:
