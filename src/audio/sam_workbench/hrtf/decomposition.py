@@ -157,18 +157,39 @@ def shift_response(
 ) -> NDArray[np.float64]:
     """Shift a finite response by a fractional delay, padding with silence.
 
-    Reads outside the response return zero rather than holding its edge: a
-    clamped read would smear the first sample into a plateau and destroy the
-    response it was meant to move.
+    The shift is a linear phase term rather than an interpolation between
+    samples. That distinction is the whole reason this function exists in this
+    form: interpolating between samples is a lowpass filter, and a bad one. A
+    cubic read at half a sample puts more than six decibels of ripple across
+    the band, so every response that was aligned and put back came out dulled -
+    and none of the interpolation modes could reproduce a measurement at its
+    own direction, which is the one thing interpolation must do.
+
+    A phase ramp leaves every magnitude untouched by construction, so an
+    integer shift is exact and a fractional one is exact in magnitude and
+    correct in phase. The buffer is padded first so that neither a delayed tail
+    nor an advanced onset can wrap around onto the part that is kept.
     """
 
     samples = np.asarray(hrir, dtype=np.float64)
     length = int(taps or samples.size)
-    headroom = int(np.ceil(abs(delay_samples))) + 4
-    padded = np.concatenate((samples, np.zeros(headroom)))
-    shifted = read_fractional(
-        padded, np.full(padded.size, float(delay_samples)), outside="zero"
-    )
+    delay = float(delay_samples)
+    if samples.size == 0:
+        return np.zeros(length, dtype=np.float64)
+
+    span = max(samples.size, length) + int(np.ceil(abs(delay))) + 8
+    padded_length = 1 << int(np.ceil(np.log2(max(span, 2))))
+
+    padded = np.zeros(padded_length, dtype=np.float64)
+    padded[: samples.size] = samples
+
+    ramp = np.exp(-2j * np.pi * np.fft.rfftfreq(padded_length) * delay)
+    if padded_length % 2 == 0:
+        # The Nyquist bin has no imaginary partner to pair with, so a complex
+        # value there would make the result complex. Its real projection is
+        # what a real shift actually does at that frequency.
+        ramp[-1] = np.cos(np.pi * delay)
+    shifted = np.fft.irfft(np.fft.rfft(padded) * ramp, padded_length)
     return shifted[:length]
 
 

@@ -204,8 +204,11 @@ class AuditionWorker(QObject):
         else:
             path = pointing
 
+        harmonic_order = self._options.get("harmonicOrder")
         spec = SpatialHrtfSpec(
             interpolation=self._options.get("interpolation", "nearest"),
+            neighbor_count=int(self._options.get("neighborCount", 3)),
+            harmonic_order=None if harmonic_order is None else int(harmonic_order),
             crossfade_ms=float(self._options.get("crossfadeMs", 12.0)),
             headphone=self._headphone_correction(sample_rate),
         )
@@ -361,7 +364,37 @@ class SamHrtfLab(QWidget):
             "Nearest never blends, so it cannot smear a transient. Every other "
             "mode aligns the responses before blending them."
         )
+        self.interpolation_combo.currentIndexChanged.connect(
+            self._update_interpolation_settings
+        )
         rendering_form.addRow("Interpolation", self.interpolation_combo)
+
+        # The two modes that take a setting of their own. Shown only for the
+        # mode they belong to: a neighbour count next to "nearest" would invite
+        # someone to set a number that changes nothing.
+        self.neighbor_spin = QSpinBox()
+        self.neighbor_spin.setRange(2, 16)
+        self.neighbor_spin.setValue(3)
+        self.neighbor_spin.setToolTip(
+            "How many measurements the three-neighbour blend uses. More is "
+            "smoother and blurrier; the weights taper to nothing at the edge "
+            "of the set either way, so the blend stays continuous."
+        )
+        self.neighbor_label = QLabel("Neighbours")
+        rendering_form.addRow(self.neighbor_label, self.neighbor_spin)
+
+        self.harmonic_spin = QSpinBox()
+        self.harmonic_spin.setRange(0, 40)
+        self.harmonic_spin.setValue(0)
+        self.harmonic_spin.setSpecialValueText("automatic")
+        self.harmonic_spin.setToolTip(
+            "Spherical-harmonic order. Automatic uses the highest the dataset "
+            "can determine, which is what its measurement count allows: an "
+            "order needing more coefficients than there are measurements is "
+            "capped, and the asset panel says when that happened."
+        )
+        self.harmonic_label = QLabel("Harmonic order")
+        rendering_form.addRow(self.harmonic_label, self.harmonic_spin)
 
         self.crossfade_spin = QDoubleSpinBox()
         self.crossfade_spin.setRange(0.0, 100.0)
@@ -432,10 +465,16 @@ class SamHrtfLab(QWidget):
         ):
             widget.currentIndexChanged.connect(self._on_control_changed)
         self.subject_combo.currentIndexChanged.connect(self._on_subject_changed)
-        self.crossfade_spin.valueChanged.connect(self._on_control_changed)
-        self.interval_spin.valueChanged.connect(self._on_control_changed)
+        for spin in (
+            self.crossfade_spin,
+            self.interval_spin,
+            self.neighbor_spin,
+            self.harmonic_spin,
+        ):
+            spin.valueChanged.connect(self._on_control_changed)
         for widget in (self.source_combo, self.processing_combo, self.rate_combo):
             widget.currentIndexChanged.connect(self._populate_subjects)
+        self._update_interpolation_settings()
         return page
 
     def _build_audition_tab(self) -> QWidget:
@@ -665,6 +704,20 @@ class SamHrtfLab(QWidget):
         dialog = SamMeasurementDialog(parent=self)
         dialog.exec_()
         return dialog
+
+    def _update_interpolation_settings(self) -> None:
+        """Show each mode's own setting, and only when it applies."""
+
+        mode = self.interpolation_combo.currentData()
+        uses_neighbours = mode == "three_neighbor"
+        uses_harmonics = mode == "spherical_harmonic"
+        for widget, applies in (
+            (self.neighbor_label, uses_neighbours),
+            (self.neighbor_spin, uses_neighbours),
+            (self.harmonic_label, uses_harmonics),
+            (self.harmonic_spin, uses_harmonics),
+        ):
+            widget.setVisible(applies)
 
     def _populate_audition_choices(self) -> None:
         from src.audio.sam_workbench.hrtf.subject_test import (
@@ -1102,6 +1155,9 @@ class SamHrtfLab(QWidget):
             self._select_data(self.rate_combo, int(options.get("sampleRateHz", 48_000) or 48_000))
             self._select_data(self.delay_combo, options.get("delayPolicy", "bake_delay_into_ir"))
             self._select_data(self.interpolation_combo, options.get("interpolation", "nearest"))
+            self.neighbor_spin.setValue(int(options.get("neighborCount", 3)))
+            harmonic_order = options.get("harmonicOrder")
+            self.harmonic_spin.setValue(0 if harmonic_order is None else int(harmonic_order))
             self._select_data(self.headphone_combo, options.get("headphoneCorrection", "off"))
             self.crossfade_spin.setValue(float(options.get("crossfadeMs", 12.0)))
             self.interval_spin.setValue(int(options.get("controlIntervalSamples", 128)))
@@ -1148,6 +1204,11 @@ class SamHrtfLab(QWidget):
                 "sampleRateHz": int(self.rate_combo.currentData()),
                 "delayPolicy": self.delay_combo.currentData(),
                 "interpolation": self.interpolation_combo.currentData(),
+                "neighborCount": int(self.neighbor_spin.value()),
+                # Zero is the spin box's "automatic", not an order of zero.
+                "harmonicOrder": (
+                    None if self.harmonic_spin.value() == 0 else int(self.harmonic_spin.value())
+                ),
                 "crossfadeMs": float(self.crossfade_spin.value()),
                 "controlIntervalSamples": int(self.interval_spin.value()),
                 "headphoneCorrection": self.headphone_combo.currentData(),
