@@ -94,13 +94,27 @@ INTERPOLATION_CHOICES = _interpolation_choices()
 
 DELAY_LABELS = {
     DelayPolicy.BAKE.value: "Embedded in HRIR",
-    DelayPolicy.PRESERVE.value: "SOFA Data.Delay",
+    DelayPolicy.KEEP.value: "SOFA Data.Delay",
 }
 
 DELAY_CHOICES = tuple(
     (DELAY_LABELS.get(policy.value, policy.value), policy.value)
     for policy in DelayPolicy
 )
+
+
+def canonical_delay_policy(value):
+    """The stored value for a delay policy, reading historical spellings.
+
+    Documents saved before ``keep_external_delay`` was named carry
+    ``preserve_external_delay``; they must select the same control rather than
+    silently falling back to whichever entry was selected last.
+    """
+
+    try:
+        return DelayPolicy(value).value
+    except ValueError:
+        return value
 
 SOURCE_CHOICES = (
     ("Measured", "measured"),
@@ -1179,7 +1193,9 @@ class SamHrtfLab(QWidget):
             self._select_data(self.source_combo, options.get("source", "measured"))
             self._select_data(self.processing_combo, options.get("processing", "FreeFieldComp"))
             self._select_data(self.rate_combo, int(options.get("sampleRateHz", 48_000) or 48_000))
-            self._select_data(self.delay_combo, options.get("delayPolicy", "bake_delay_into_ir"))
+            self._select_data(
+                self.delay_combo, canonical_delay_policy(options.get("delayPolicy", "bake_delay_into_ir"))
+            )
             self._select_data(self.interpolation_combo, options.get("interpolation", "nearest"))
             self.neighbor_spin.setValue(int(options.get("neighborCount", 3)))
             harmonic_order = options.get("harmonicOrder")
@@ -1244,8 +1260,14 @@ class SamHrtfLab(QWidget):
         if root:
             options["libraryRoot"] = root
 
-        # The modify panel owns the cue and anchor sub-objects.
-        options.update(self.modify_panel.params().get("hrtfOptions", {}))
+        # The modify panel owns the cue and anchor sub-objects. Merging its
+        # whole options copy here used to replay stale strings over the values
+        # these controls just wrote - including a historical delayPolicy
+        # spelling that would then outlive its own rename.
+        panel_options = self.modify_panel.params().get("hrtfOptions", {})
+        for key in ("cue", "anchor"):
+            if key in panel_options:
+                options[key] = panel_options[key]
 
         result: dict[str, Any] = {"hrtfOptions": options}
         if self._params.get("hrtfAsset"):

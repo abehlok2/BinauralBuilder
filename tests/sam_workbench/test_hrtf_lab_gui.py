@@ -67,7 +67,7 @@ def test_every_requested_control_is_present(lab):
         "FreeFieldCompMinPhase",
     ]
     assert combo_values(lab.rate_combo) == [44_100, 48_000, 96_000]
-    assert combo_values(lab.delay_combo) == ["bake_delay_into_ir", "preserve_external_delay"]
+    assert combo_values(lab.delay_combo) == ["bake_delay_into_ir", "keep_external_delay"]
     assert combo_values(lab.interpolation_combo) == [
         "nearest",
         "three_neighbor",
@@ -106,6 +106,7 @@ def test_params_round_trip_through_the_project_dictionary(lab):
             "hrtfAsset": FIXTURE,
             "hrtfOptions": {
                 "interpolation": "spherical_triangular",
+                # The policy's historical spelling, as older documents carry it.
                 "delayPolicy": "preserve_external_delay",
                 "sampleRateHz": 96_000,
                 "processing": "Windowed",
@@ -115,16 +116,21 @@ def test_params_round_trip_through_the_project_dictionary(lab):
         }
     )
     assert lab.interpolation_combo.currentData() == "spherical_triangular"
-    assert lab.delay_combo.currentData() == "preserve_external_delay"
+    # The old spelling selects the same control and is saved under its
+    # canonical name rather than falling back to whichever entry came last.
+    assert lab.delay_combo.currentData() == "keep_external_delay"
     assert lab.rate_combo.currentData() == 96_000
     assert lab.processing_combo.currentData() == "Windowed"
     assert lab.crossfade_spin.value() == pytest.approx(8.0)
 
     options = lab.params()["hrtfOptions"]
     assert options["interpolation"] == "spherical_triangular"
-    assert options["delayPolicy"] == "preserve_external_delay"
+    assert options["delayPolicy"] == "keep_external_delay"
     assert options["sampleRateHz"] == 96_000
     assert options["schemaVersion"] == 1
+
+    lab.set_params({"hrtfAsset": FIXTURE, "hrtfOptions": {"delayPolicy": "keep_external_delay"}})
+    assert lab.delay_combo.currentData() == "keep_external_delay"
 
 
 def test_only_the_path_and_subject_identify_the_dataset(lab):

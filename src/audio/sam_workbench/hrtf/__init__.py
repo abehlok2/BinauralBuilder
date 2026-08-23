@@ -9,7 +9,14 @@ minimal installations.
 from .cache import HRTFCache, default_hrtf_cache
 from .coordinates import cartesian_to_sofa_spherical, sofa_positions_to_cartesian
 from .interpolation import interpolate_log_magnitude_delay, nearest_indices
-from .sofa_io import DelayPolicy, HRTFDataset, SofaDependencyError, load_sofa, resolve_sofa_path
+from .sofa_io import (
+    DELAY_POLICY_ALIASES,
+    DelayPolicy,
+    HRTFDataset,
+    SofaDependencyError,
+    load_sofa,
+    resolve_sofa_path,
+)
 from .datasets import (
     HD650,
     KEMAR_VARIANTS,
@@ -73,6 +80,7 @@ __all__ = [
     "AUDITION_ELEVATIONS_DEG",
     "CORRECTION_MODES",
     "DELAY_MAGNITUDE",
+    "DELAY_POLICY_ALIASES",
     "DelayPolicy",
     "HD650",
     "HRTFCache",

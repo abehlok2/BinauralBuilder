@@ -483,6 +483,23 @@ def _interpolation_choices() -> tuple[str, ...]:
 
 _INTERPOLATION_CHOICES = _interpolation_choices()
 
+
+def _delay_policy_choices() -> tuple[str, ...]:
+    """Every delay policy production accepts, aliases included.
+
+    Taken from the SOFA loader's policy enum rather than listed here, so the
+    registry cannot advertise a spelling the engine refuses - the failure that
+    left ``keep_external_delay`` selectable but unrenderable while older
+    documents carrying ``preserve_external_delay`` failed validation.
+    """
+
+    from ..hrtf.sofa_io import DELAY_POLICY_ALIASES, DelayPolicy
+
+    return tuple(policy.value for policy in DelayPolicy) + tuple(DELAY_POLICY_ALIASES)
+
+
+_DELAY_POLICY_CHOICES = _delay_policy_choices()
+
 _ABSTRACT_PM = REGISTRY.register(
     RendererDefinition(
         identifier="abstract_pm",
@@ -559,7 +576,13 @@ _HRTF_FIELDS = (
     ),
     ConfigField(
         "delayPolicy", "choice", "bake_delay_into_ir",
-        choices=("bake_delay_into_ir", "keep_external_delay"), label="Delay policy",
+        choices=_DELAY_POLICY_CHOICES, label="Delay policy",
+        description=(
+            "'bake_delay_into_ir' shifts each HRIR by its SOFA Data.Delay; "
+            "'keep_external_delay' leaves the delay outside the filters. "
+            "'preserve_external_delay' is the old name for 'keep_external_delay' "
+            "and is still accepted."
+        ),
     ),
     ConfigField("crossfadeMs", "float", 10.0, minimum=0.0, label="Filter crossfade"),
     ConfigField("controlIntervalSamples", "int", 128, minimum=1, label="Control interval"),

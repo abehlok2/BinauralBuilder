@@ -244,7 +244,7 @@ Production interpolation modes currently include:
 4. `delay_magnitude`, with legacy alias `logmag_delay`;
 5. `spherical_harmonic`.
 
-Every interpolated mode aligns delay before blending. Do not average raw unaligned HRIR samples. Delay policies are explicit: `bake_delay_into_ir` or `keep_external_delay`. Never ignore nonzero `Data_Delay`, and never add a second geometric ITD on top of an HRTF unless hybrid configuration explicitly requests an extra cue.
+Every interpolated mode aligns delay before blending. Do not average raw unaligned HRIR samples. Delay policies are explicit: `bake_delay_into_ir` or `keep_external_delay` (the historical spelling `preserve_external_delay` is still read and validates as an alias). Never ignore nonzero `Data_Delay`, and never add a second geometric ITD on top of an HRTF unless hybrid configuration explicitly requests an extra cue.
 
 ### 8.2 Time-varying convolution
 

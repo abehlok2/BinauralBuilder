@@ -116,6 +116,30 @@ def test_a_value_outside_its_range_is_reported():
     assert any("at least" in issue.message for issue in renderer("hrtf").validate(params))
 
 
+def test_the_delay_policy_choices_are_the_ones_the_engine_loads():
+    """The registry once advertised keep_external_delay while the engine only
+    knew preserve_external_delay: the offered choice crashed the renderer and
+    the saved spelling failed validation. The list now comes from the engine's
+    own enum, so the two cannot drift apart again.
+    """
+
+    from src.audio.sam_workbench.hrtf.sofa_io import DELAY_POLICY_ALIASES, DelayPolicy
+
+    field = next(f for f in renderer("hrtf").config_fields if f.name == "delayPolicy")
+    assert tuple(policy.value for policy in DelayPolicy) == (
+        "bake_delay_into_ir",
+        "keep_external_delay",
+    )
+    assert field.choices == tuple(policy.value for policy in DelayPolicy) + tuple(
+        DELAY_POLICY_ALIASES
+    )
+
+    base = {"rendererMode": "hrtf", "hrtfAsset": "a.sofa"}
+    for spelling in field.choices:
+        issues = renderer("hrtf").validate({**base, "hrtfOptions": {"delayPolicy": spelling}})
+        assert [issue.path for issue in issues if issue.path == "hrtfOptions.delayPolicy"] == []
+
+
 def test_compiling_fills_in_the_defaults():
     config = renderer("hrtf").compile(VALID_HRTF)
     assert config["interpolation"] == "logmag_delay"   # what was asked for

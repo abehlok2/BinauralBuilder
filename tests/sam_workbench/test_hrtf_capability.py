@@ -79,6 +79,42 @@ def test_data_delay_in_samples_is_not_scaled_by_the_sample_rate(dataset):
     assert dataset.taps == 137
 
 
+def test_keep_external_delay_is_canonical_and_the_old_spelling_is_its_alias():
+    """The registry advertises keep_external_delay; older documents say preserve.
+
+    The registry's spelling used to raise before a single sample was rendered
+    while the saved spelling failed configuration validation: one rename seen
+    from both sides.
+    """
+
+    from src.audio.sam_workbench.hrtf.sofa_io import DELAY_POLICY_ALIASES, DelayPolicy
+    from src.audio.sam_workbench.render.hrtf import HRTFRendererSpec
+
+    assert tuple(policy.value for policy in DelayPolicy) == (
+        "bake_delay_into_ir",
+        "keep_external_delay",
+    )
+    assert DELAY_POLICY_ALIASES == {"preserve_external_delay": "keep_external_delay"}
+    assert DelayPolicy("preserve_external_delay") is DelayPolicy.KEEP
+
+    canonical = load_sofa(FIXTURE, delay_policy="keep_external_delay")
+    legacy = load_sofa(FIXTURE, delay_policy="preserve_external_delay")
+    assert canonical.metadata_report()["delay_policy"] == "keep_external_delay"
+    assert canonical.delay_samples == pytest.approx(legacy.delay_samples)
+    assert canonical.ir == pytest.approx(legacy.ir)
+
+    # The compatibility adapter builds its renderer spec straight from the
+    # stored option string, so both spellings must pass spec validation and
+    # name the same policy afterwards.
+    for spelling in ("keep_external_delay", "preserve_external_delay"):
+        spec = HRTFRendererSpec(
+            sofa_path=FIXTURE,
+            trajectory=lambda times: np.zeros((len(np.atleast_1d(times)), 3)),
+            delay_policy=spelling,
+        )
+        assert DelayPolicy(spec.delay_policy) is DelayPolicy.KEEP
+
+
 # --- direction lookup -------------------------------------------------------
 
 
