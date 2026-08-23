@@ -89,6 +89,7 @@ medical, therapeutic, mental-state, or localization guarantee.</p>
 <li><a href="#hrtf">HRTF Lab</a></li>
 <li><a href="#scene">Scene: stages, modulation, routing and cost</a></li>
 <li><a href="#analysis">Analysis and compatibility</a></li>
+<li><a href="#exporting">Exporting: background renders and manifests</a></li>
 <li><a href="#shortcuts">Keyboard and troubleshooting</a></li>
 </ul>
 
@@ -109,6 +110,18 @@ uses the committed voice and canonical Python renderer.</li>
 </ol>
 
 <h2 id="header">Renderer, disclosure, preview and saving</h2>
+<p>Under the header sits a permanent summary of the signal chain -
+Source, Path, Renderer, Cue transform, Headphone correction, Output - with
+stages shown in parentheses when they are doing nothing. Beside it: the
+renderer, the dataset, the interpolation mode, the path, the scene roster, an
+estimated cost, and any warnings. It is visible from every tab, because the
+configuration is spread across tabs and each part is legible on its own while
+the whole is not.</p>
+<p>Tabs a renderer does not read are disabled rather than hidden, with a tooltip
+saying why. Nothing that is enabled is ignored by preview or export.</p>
+<p><b>Disclosure</b> opens at Basic the first time and afterwards at whatever
+you last chose, so returning to Expert does not have to be repeated. Switching
+mode only changes what is shown; no parameter is lost by working in Basic.</p>
 <h3>Renderers</h3><ul>
 <li><b>Abstract phase modulation:</b> sends opposed phase modulation to the ears.
 It needs no HRTF and is the reproducible SAM reference.</li>
@@ -257,7 +270,19 @@ Add a modulator, search the registry for a target, add its column, select a cell
 then set depth in the target's units, polarity, shaping curve, and enabled state.
 Apply creates/updates the route; Clear removes it. Disabled routes remain stored.
 Dependency cycles are refused and named.</p>
-<h3>Routing &amp; cost</h3><p>Buses and sources expose gain in dB, mute and solo;
+<p>A selected row also carries its own <b>definition</b>: waveform, rate, phase
+and seed. These decide what the modulator actually does. Only the random
+waveform reads the seed, and it is what makes an export match the preview it was
+approved from - the random waveform is a function of absolute time, so it does
+not change with how the render was divided into blocks.</p>
+<h3>Routing &amp; cost</h3><p>The source list is the track's own SAM voices, shown
+by their descriptions and stored by stable identifiers, so renaming a voice does
+not move its routing and reordering voices does not swap two sources' settings.
+Add source offers the voices that are not yet routed rather than a free-text
+box, because a typed identifier could name a source that does not exist. A route
+whose voice has been deleted is kept and marked <i>missing</i> rather than
+dropped, so an undo in the track editor restores its settings with it.</p>
+<p>Buses and sources expose gain in dB, mute and solo;
 sources choose a destination bus. The master bus cannot be removed. Multiband
 crossovers divide the signal, filter order controls steepness, and each band has
 gain and enable. The cost estimator uses source/band counts, HRIR taps, block size,
@@ -273,6 +298,36 @@ not proof of a perceived direction or biological outcome.</p>
 unknown preserved keys and every validation issue. Unversioned voices retain legacy
 ear orientation. Explicit HRTF migration is opt-in and does not rewrite a legacy
 slab/KEMAR preset. Errors disable Apply/OK; warnings describe risks without erasing data.</p>
+
+<h2 id="exporting">Exporting</h2>
+<p>Final export and selected-step export run in the background. The project is
+copied when you press the button, so you can keep editing while it renders and
+the file that appears is the project as it was when you asked for it.</p>
+<p>The status bar shows an estimated duration and peak memory before the render
+starts - measured from your last render once you have done one - and a
+<b>Cancel render</b> button while it runs. Cancelling stops at the next chunk
+boundary rather than instantly. Neither a cancelled nor a failed render leaves a
+file behind, though a file that was already there is left alone. When the render
+finishes you are told how fast it went in audio-seconds per wall-clock second,
+what it peaked at, and how many HRTF filters were reused.</p>
+<p>Closing the window during a render asks first, then cancels and waits.</p>
+<h3>Reconstruction manifests</h3>
+<p>Each export writes a <code>.manifest.json</code> beside the audio. It records
+the schema versions, the renderer and what it claims to reproduce, every source
+with its full parameters, the three-dimensional path, the listener transform,
+the SOFA file with its content hash, interpolation and delay policy, distance
+settings, cue modification, anchor, headphone correction, stages, modulator
+definitions, routing, seeds, normalization and limiter settings, coverage
+warnings, and what the render cost. It is enough to rebuild the track and
+reproduce the audio; that is checked by a test rather than asserted here.</p>
+<h3>Readiness</h3>
+<p>Before rendering, the workbench reports what stands between the project and
+the render it implies: a dataset that has moved or changed since the project was
+authored, a path that leaves the region the dataset measured, a route naming a
+source that no longer exists, a peak that will clip, a configuration too
+expensive to audition live, and any control holding a value the selected
+renderer will not read. That last one matters because from the value alone you
+cannot tell a setting that is off from one that is ignored.</p>
 
 <h2 id="shortcuts">Keyboard and troubleshooting</h2><ul>
 <li><b>F1</b> opens this manual; Ctrl+F focuses its search. Enter finds next,

@@ -147,10 +147,42 @@ _EPSILON = 1e-12
 _FILTER_CACHE: "OrderedDict[tuple, HrirSelection]" = OrderedDict()
 
 
+#: Whole-process totals, alongside the per-interpolator ones. A render builds
+#: an interpolator per source and discards it, so per-instance counts cannot
+#: answer "did this export reuse anything?" - which is the question an export
+#: report is asking.
+_CACHE_HITS = 0
+_CACHE_MISSES = 0
+
+
+def cache_statistics() -> dict:
+    """Hits, misses and size for the process, not for one interpolator."""
+
+    total = _CACHE_HITS + _CACHE_MISSES
+    return {
+        "hits": int(_CACHE_HITS),
+        "misses": int(_CACHE_MISSES),
+        "size": len(_FILTER_CACHE),
+        "hitRate": float(_CACHE_HITS / total) if total else 0.0,
+    }
+
+
+def _note_cache(*, hit: bool) -> None:
+    global _CACHE_HITS, _CACHE_MISSES
+
+    if hit:
+        _CACHE_HITS += 1
+    else:
+        _CACHE_MISSES += 1
+
+
 def clear_filter_cache() -> None:
     """Forget every interpolated filter. For tests and for memory pressure."""
 
+    global _CACHE_HITS, _CACHE_MISSES
+
     _FILTER_CACHE.clear()
+    _CACHE_HITS = _CACHE_MISSES = 0
 
 
 def _dataset_fingerprint(dataset) -> tuple:
@@ -413,8 +445,10 @@ class HrtfInterpolator:
             if cached is not None:
                 _FILTER_CACHE.move_to_end(key)
                 self._cache_hits += 1
+                _note_cache(hit=True)
                 return cached
             self._cache_misses += 1
+            _note_cache(hit=False)
 
         selection = self._select(direction)
         if key is not None and self.CACHE_LIMIT > 0:

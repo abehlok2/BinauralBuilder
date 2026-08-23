@@ -106,6 +106,45 @@ def legacy_profile_geometry(profile):
     return Polyline(tuple(map(tuple, canonical)), closed=bool(metadata.get("closedLoop", False)))
 
 
+def promote_profile_to_trajectory(profile, *, duration_s=10.0):
+    """Turn a legacy two-dimensional profile into a canonical trajectory spec.
+
+    This is the relationship between the two editors, written down. The 2-D
+    creator draws in scene units on a plane at ear height; the 3-D designer
+    edits metres in the canonical listener frame. Without an explicit
+    conversion the two look like unrelated tools and a user who has drawn a
+    path in one has no way to carry it into the other.
+
+    The same evaluator both editors already share does the work, so the
+    promoted path follows the curve the 2-D preview drew rather than merely
+    connecting its control points. The result is a keyframe-free polyline
+    geometry: a promoted path is a shape, not a set of draggable points, and
+    presenting it as points would invite edits that silently discard the
+    smoothing that produced it.
+    """
+
+    geometry = legacy_profile_geometry(profile)
+    metadata = profile if isinstance(profile, dict) else {}
+    return {
+        "schemaVersion": 1,
+        "coordinateSystem": "listener_relative_cartesian",
+        "geometry": {
+            "type": "polyline",
+            "controlPointsM": [list(map(float, point)) for point in geometry.points_m],
+            "closed": bool(geometry.closed),
+        },
+        "traversal": {
+            "durationS": float(duration_s),
+            "loop": "loop" if metadata.get("closedLoop") else "pingpong",
+        },
+        "promotedFrom": {
+            "editor": "custom_path_creator",
+            "coordinateSpace": metadata.get("coordinateSpace", "normalized_listener_2d"),
+            "sceneUnitsPerMetre": float(metadata.get("sceneUnitsPerMetre", 100.0)),
+        },
+    }
+
+
 def progress_open(phase: np.ndarray) -> np.ndarray:
     """Back-and-forth path traversal (0 → 1 → 0)."""
     wrapped = (phase / (2.0 * math.pi)) % 1.0

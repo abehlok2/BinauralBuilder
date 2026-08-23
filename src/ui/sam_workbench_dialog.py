@@ -782,8 +782,6 @@ class SamWorkbenchDialog(QDialog):
         so it has to be reported where the user is looking.
         """
 
-        from src.audio.sam_workbench.scene_state import validate_scene
-
         issues = list(
             validate_sam2_params(
                 self.collect_params(),
@@ -792,7 +790,18 @@ class SamWorkbenchDialog(QDialog):
             )
         )
         try:
-            issues.extend(validate_scene(self.scene_data()))
+            # Readiness runs the scene validation too, so it is not repeated
+            # here. It adds what validity alone cannot say: the dataset moved,
+            # the path leaves the measured region, this control is ignored.
+            from src.audio.sam_workbench.readiness import assess_readiness
+
+            issues.extend(
+                assess_readiness(
+                    self.collect_params(),
+                    scene=self.scene_data(),
+                    sample_rate_hz=self._sample_rate,
+                ).issues
+            )
         except Exception:  # pragma: no cover - a half-built scene must not block editing
             pass
         return tuple(issues)
