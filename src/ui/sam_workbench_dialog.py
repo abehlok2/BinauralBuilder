@@ -226,8 +226,8 @@ class SamWorkbenchDialog(QDialog):
         self.compatibility_view.setReadOnly(True)
 
         self.tabs.addTab(self._scrolled(self.parameter_panel), "Parameters")
-        self.tabs.addTab(self._scrolled(self.path_panel), "Path && Geometry")
-        self.tabs.addTab(self._scrolled(self.hrtf_panel), "HRTF Lab")
+        self._path_tab = self.tabs.addTab(self._scrolled(self.path_panel), "Path && Geometry")
+        self._hrtf_tab = self.tabs.addTab(self._scrolled(self.hrtf_panel), "HRTF Lab")
         # Stages, modulation and routing describe the shape of the scene rather
         # than one voice's parameters, so they share a tab of their own instead
         # of lengthening the parameter list.
@@ -619,6 +619,53 @@ class SamWorkbenchDialog(QDialog):
         self.status_label.setText(f"Parameter state loaded from {path}; press Apply or OK to commit it.")
         return True
 
+    # --- renderer relevance -------------------------------------------------
+
+    def _apply_renderer_relevance(self) -> None:
+        """Leave enabled only what the selected renderer actually reads.
+
+        Which tabs matter is read from the registry rather than from a list
+        kept here: a renderer that declares a SOFA asset needs the HRTF Lab,
+        one that consumes a trajectory needs the path editor. A fifth copy of
+        that mapping is a fifth chance for it to disagree with the renderer.
+
+        Irrelevant tabs are disabled rather than removed. Removing them would
+        renumber the rest and make the HRTF Lab unreachable as a tool for
+        auditioning a dataset, and a control that has silently vanished teaches
+        the user less than one that says why it is unavailable. What matters
+        for correctness is the rule that nothing *enabled* is ignored by
+        preview and export, and disabling satisfies that.
+        """
+
+        from src.audio.sam_workbench.render.registry import REGISTRY
+
+        identifier = self.renderer_combo.currentData() or "abstract_pm"
+        definition = REGISTRY.get(identifier) if identifier in REGISTRY else None
+        if definition is None:
+            return
+
+        wants_hrtf = any(asset.kind == "sofa" for asset in definition.assets)
+        wants_path = bool(definition.capabilities.consumes_trajectory)
+
+        label = definition.capabilities.label
+        self.tabs.setTabEnabled(self._hrtf_tab, wants_hrtf)
+        self.tabs.setTabToolTip(
+            self._hrtf_tab,
+            "Convolution settings and the dataset this render uses."
+            if wants_hrtf
+            else f"{label} does not convolve with a SOFA dataset, so nothing "
+            "here would reach preview or export.",
+        )
+        self.tabs.setTabEnabled(self._path_tab, wants_path)
+        self.tabs.setTabToolTip(
+            self._path_tab,
+            "The trajectory this renderer follows."
+            if wants_path
+            else f"{label} does not read a trajectory.",
+        )
+        if not self.tabs.isTabEnabled(self.tabs.currentIndex()):
+            self.tabs.setCurrentIndex(0)
+
     # --- validation ---------------------------------------------------------
 
     def issues(self) -> tuple[Any, ...]:
@@ -629,6 +676,7 @@ class SamWorkbenchDialog(QDialog):
         )
 
     def _revalidate(self) -> None:
+        self._apply_renderer_relevance()
         issues = self.issues()
         self.parameter_panel.show_issues(issues)
 

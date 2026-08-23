@@ -48,12 +48,11 @@ __all__ = ["SamRoutingPanel", "BandStripView"]
 
 _MIN_HZ = 20.0
 _MAX_HZ = 20_000.0
-_INTERPOLATION_MODES = (
-    "nearest",
-    "three_neighbor",
-    "spherical_triangular",
-    "delay_magnitude",
-    "spherical_harmonic",
+#: Taken from the engine rather than repeated, so this panel cannot offer a
+#: mode that rendering does not implement, and cannot silently omit one that
+#: has been added.
+from src.audio.sam_workbench.hrtf.interpolation import (  # noqa: E402
+    INTERPOLATION_MODES as _INTERPOLATION_MODES,
 )
 
 
