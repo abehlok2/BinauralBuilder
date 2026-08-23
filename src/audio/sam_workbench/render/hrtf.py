@@ -7,7 +7,7 @@ from typing import Literal
 import numpy as np
 from numpy.typing import ArrayLike
 from ..conventions import AUDIO_DTYPE
-from ..dsp.binaural_convolution import BinauralConvolver
+from ..dsp.binaural_convolution import FADE_LINEAR, BinauralConvolver
 from ..hrtf import DelayPolicy, default_hrtf_cache
 from ..trajectory.transforms import ListenerTransform
 
@@ -174,6 +174,12 @@ class HRTFRenderer:
         self._convolver = BinauralConvolver(
             sample_rate_hz=float(self._sample_rate_hz),
             crossfade_ms=float(self.spec.crossfade_ms),
+            # A source moving along a path is rendered through a sequence of
+            # neighbouring filters, so consecutive outputs are strongly
+            # correlated and their amplitudes add. Equal power would raise the
+            # middle of every transition by about 3 dB, which at hundreds of
+            # transitions a second is amplitude modulation at the control rate.
+            fade_curve=FADE_LINEAR,
         )
         self.reset(0)
 
@@ -345,16 +351,49 @@ class HRTFRenderer:
         return np.degrees(np.arccos(cosine)) >= float(self.spec.max_angular_error_deg)
 
     def _select(self, sample: int, direction) -> None:
+        """Move to the filter for ``direction`` over exactly one control interval.
+
+        The transition spans the gap to the next point on the control grid, so
+        it ends precisely where the next one may begin. That is what keeps the
+        filter trajectory continuous: every interval finishes on the filter the
+        following interval starts from, and no transition is ever interrupted.
+
+        ``crossfade_ms`` still sets the length, but it is capped at the control
+        interval so a transition always finishes before the next one is due.
+        Uncapped - 441 samples at the default 10 ms against a 128-sample
+        interval - a fade could not finish inside its interval, so on a fast
+        path every single transition was cut short. At the default the cap
+        binds and the morph spans the whole interval; a shorter setting reaches
+        the new filter sooner and holds it, which is still continuous.
+        """
+
         selection = self.interpolator.at(direction)
         self._selections += 1
         if selection.extrapolated:
             self._extrapolated += 1
-        installed = self._convolver.set_filters(selection.hrirs)
+        installed = self._convolver.set_filters(
+            selection.hrirs, fade_frames=self._fade_frames()
+        )
         if installed:
             self._filter_changes += 1
         self._selection = selection
         self._selection_direction = direction
         self._selection_sample = sample
+
+    def _control_step(self) -> int:
+        """The spacing of the control grid, in samples."""
+
+        return max(1, int(self.spec.min_control_interval_samples))
+
+    def _fade_frames(self) -> int:
+        """How long a transition may take: the setting, bounded by the interval."""
+
+        from ..dsp.envelopes import milliseconds_to_frames
+
+        requested = milliseconds_to_frames(
+            float(self.spec.crossfade_ms), float(self._sample_rate_hz)
+        )
+        return min(requested, self._control_step())
 
     def _grid_points(self, start: int, frames: int):
         """Absolute samples at which a filter change may occur.
@@ -364,7 +403,7 @@ class HRTFRenderer:
         at one of them is the adaptive part.
         """
 
-        step = max(1, int(self.spec.min_control_interval_samples))
+        step = self._control_step()
         first = ((start + step - 1) // step) * step
         return range(max(first, start), start + frames, step)
 
@@ -446,6 +485,11 @@ class HRTFRenderer:
             "filter_changes": int(self._filter_changes),
             "extrapolated_selections": int(self._extrapolated),
             "taps": 0 if selection is None else int(selection.taps),
+            # Transition bookkeeping. ``fade_restarts`` is the one worth
+            # watching: it counts transitions abandoned part-way, which is
+            # audible as a discontinuity at the control rate, and it is zero by
+            # construction now that a running fade is never displaced.
+            **self._convolver.counters,
         }
         return output.astype(AUDIO_DTYPE, copy=False)
 
@@ -544,7 +588,9 @@ class SpatialHrtfRenderer:
         # settings came to differ; sharing this is what makes them agree by
         # construction rather than by testing.
         self._convolver = BinauralConvolver(
-            sample_rate_hz=self.sample_rate_hz, crossfade_ms=self.spec.crossfade_ms
+            sample_rate_hz=self.sample_rate_hz,
+            crossfade_ms=self.spec.crossfade_ms,
+            fade_curve=FADE_LINEAR,
         )
         self._last_selection: object = None
         self.reset()
@@ -578,8 +624,19 @@ class SpatialHrtfRenderer:
             self._convolver.reset(selection.hrirs)
             self._primed = True
         else:
-            self._convolver.set_filters(selection.hrirs)
+            # One direction per block, so a transition has exactly this block to
+            # complete in. Fading over a longer ``crossfade_ms`` would leave it
+            # unfinished when the next block's filter arrives, and the audible
+            # mixture would be abandoned part-way.
+            self._convolver.set_filters(
+                selection.hrirs, fade_frames=min(samples.size, self._fade_frames())
+            )
         return self._convolver.process(samples)
+
+    def _fade_frames(self) -> int:
+        from ..dsp.envelopes import milliseconds_to_frames
+
+        return milliseconds_to_frames(self.spec.crossfade_ms, self.sample_rate_hz)
 
 
 def render_spatial_hrtf(

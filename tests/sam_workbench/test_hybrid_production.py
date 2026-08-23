@@ -135,18 +135,49 @@ def test_the_stage_order_is_the_one_the_specification_names():
 
 
 def test_cue_modification_acts_on_the_filters_rather_than_the_mix():
-    """Scaling the ITD must change the two channels differently.
+    """No per-channel gain can explain what cue modification does.
 
-    A gain applied to an already-mixed signal could not do that, so this is
-    what distinguishes acting on the filter pair from acting on the output.
+    Acting on the filter pair changes the *shape* of each ear's signal; acting
+    on an already-mixed output can only scale it. So fit the best scalar gain
+    to each channel independently and look at what is left over: for any gain,
+    applied per channel or to the mix, the residual is zero to floating point.
+
+    This used to compare the two channels' peak absolute difference, which was
+    a weaker statistic than it looked. That peak saturates at the signal's own
+    dynamic range in both channels, so the two are equal whenever the render is
+    clean; it only distinguished the channels while filter transitions were
+    being abandoned part-way and injecting per-channel discontinuities. The
+    test was reading a defect, and it started failing when that was fixed.
     """
 
     plain = _render("hybrid").astype(np.float64)
     modified = _render("hybrid", cue={"itdScale": 1.8}).astype(np.float64)
     # The adapter returns frame-major (frames, 2), so channels are columns.
-    per_channel = np.abs(modified - plain).max(axis=0)
-    assert per_channel.min() > 0.0
-    assert not np.isclose(per_channel[0], per_channel[1], rtol=1e-3)
+    assert np.abs(modified - plain).max(axis=0).min() > 0.0
+
+    def gain_residual(channel: int) -> float:
+        reference, changed = plain[:, channel], modified[:, channel]
+        best = float(np.dot(reference, changed) / np.dot(reference, reference))
+        return float(
+            np.linalg.norm(changed - best * reference) / np.linalg.norm(changed)
+        )
+
+    assert gain_residual(0) > 0.1
+    assert gain_residual(1) > 0.1
+
+
+def test_a_gain_is_what_the_cue_residual_rules_out():
+    """The statistic above, shown to reject what it claims to reject."""
+
+    plain = _render("hybrid").astype(np.float64)
+    for scaled in (plain * 0.8, plain * np.array([0.8, 0.5])):
+        for channel in range(2):
+            reference, changed = plain[:, channel], scaled[:, channel]
+            best = float(np.dot(reference, changed) / np.dot(reference, reference))
+            residual = float(
+                np.linalg.norm(changed - best * reference) / np.linalg.norm(changed)
+            )
+            assert residual < 1e-9
 
 
 def test_hybrid_still_claims_no_more_than_hrtf_does():
