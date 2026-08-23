@@ -133,6 +133,17 @@ def render_source_window(
         return stem
 
     params = _effective_params(source, int(start_sample) + placement, span)
+    # The plan's bound trajectory is authoritative for modulated path
+    # parameters. Renderers re-read ``canonicalTrajectory`` from the parameter
+    # dictionary, so hand them the bound positions under the one runtime key
+    # they already prefer - otherwise a compiled plan would silently render a
+    # frozen path.
+    if source.trajectory is not None:
+        from ..path_automation import RUNTIME_BOUND_POSITIONS
+
+        positions = getattr(source.trajectory, "positions", None)
+        if callable(positions):
+            params[RUNTIME_BOUND_POSITIONS] = positions
     audio = render_voice_channels(
         params,
         span,

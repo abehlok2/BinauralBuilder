@@ -24,6 +24,7 @@ import copy
 import dataclasses
 import math
 from pathlib import Path
+from typing import Any, Mapping
 
 import numpy as np
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal
@@ -52,6 +53,7 @@ from PyQt5.QtWidgets import (
 )
 
 from src.audio.sam_workbench.render.hybrid import SIGNAL_CHAIN_TEXT
+from src.audio.sam_workbench.stages import CURVES
 from src.audio.sam_workbench.trajectory import (
     PRIMITIVE_TYPES,
     Keyframe,
@@ -63,6 +65,20 @@ from src.audio.sam_workbench.trajectory import (
     keyframes_from_json,
     path_model_from_dict,
     spherical_to_cartesian,
+)
+from src.audio.sam_workbench.trajectory.parameter_catalog import (
+    GEOMETRY_PARAMETER_SPECS,
+    PATH_PREFIX,
+    TRANSFORM_PREFIX,
+    TRANSFORM_PARAMETER_SPECS,
+    primitive_component_fields,
+    route_leaf,
+    split_parameter_path,
+)
+from src.audio.sam_workbench.modulation import ModulationMatrix, ModulationRoute
+from src.audio.sam_workbench.path_automation import (
+    is_reserved_path,
+    compile_bound_trajectory,
 )
 from src.audio.sam_workbench.trajectory.serialization import _SPATIAL
 
@@ -168,21 +184,29 @@ class SamPath3DDialog(QDialog):
     _dataset_positions = None
     _dataset_label = ""
 
-    def __init__(self, trajectory_spec=None, parent=None):
+    def __init__(self, trajectory_spec=None, parent=None, modulation=None):
         super().__init__(parent)
         self.setWindowTitle("SAM 3D Path Designer")
         self.resize(1180, 820)
         self._spec = copy.deepcopy(trajectory_spec or {})
+        # Scene context, when the host can provide one: a stable source
+        # identifier, a callable returning the current scene, and a callable
+        # that persists an edited scene. Without it the Motion group is built
+        # but disabled, so its absence is stated rather than silent.
+        self._motion = dict(modulation or {})
+        self._motion_disclosure = str(self._motion.get("disclosure", "advanced"))
         self._updating = False
         self._selected = -1
         self._points: list[list[float]] = []
         self._keyframes: list[Keyframe] = []
         self._parameters: dict[str, object] = {}
         self._parameter_widgets: dict[str, object] = {}
+        self._motion_rows: dict[str, dict[str, object]] = {}
         self._preview_time = 0.0
 
         self._build_ui()
         self._load_spec()
+        self.set_disclosure(self._motion_disclosure)
         self._timer = QTimer(self)
         self._timer.setInterval(50)
         self._timer.timeout.connect(self._advance_preview)
@@ -371,6 +395,8 @@ class SamPath3DDialog(QDialog):
         self.parameter_box = QGroupBox("Primitive parameters")
         self.parameter_form = QFormLayout(self.parameter_box)
         layout.addWidget(self.parameter_box)
+
+        layout.addWidget(self._build_motion_group())
 
         transform = QGroupBox("Path transform")
         form = QFormLayout(transform)
@@ -606,6 +632,7 @@ class SamPath3DDialog(QDialog):
             label_widget.setToolTip(widget.toolTip())
             self.parameter_form.addRow(label_widget, widget)
             self._parameter_widgets[field.name] = widget
+        self._rebuild_motion_rows()
 
     def _parameter_widget(self, field):
         current = self._parameters.get(field.name, field.default)
@@ -645,6 +672,273 @@ class SamPath3DDialog(QDialog):
                 self._parameters[name] = widget.isChecked()
             else:
                 self._parameters[name] = widget.value()
+        self._refresh()
+
+    # --- parameter motion ----------------------------------------------------
+
+    def set_disclosure(self, mode: str) -> None:
+        """Hide the Motion group in Basic disclosure, but keep it built."""
+
+        self._motion_disclosure = str(mode or "advanced").lower()
+        self.motion_box.setVisible(self._motion_disclosure != "basic")
+
+    def _has_motion_context(self) -> bool:
+        return bool(
+            callable(self._motion.get("scene")) and callable(self._motion.get("commit"))
+        )
+
+    def _motion_scene(self):
+        provider = self._motion.get("scene")
+        if not callable(provider):
+            return None
+        try:
+            scene = provider()
+        except Exception:  # noqa: BLE001 - a broken host must not break editing
+            return None
+        from src.audio.sam_workbench.scene_state import normalize_sam_scene
+
+        return normalize_sam_scene(scene) if isinstance(scene, Mapping) else None
+
+    def _motion_route_key(self, section: str, field: str) -> str:
+        prefix = PATH_PREFIX if section == "geometry" else TRANSFORM_PREFIX
+        return f"{prefix}{field}"
+
+    def _build_motion_group(self):
+        self.motion_box = QGroupBox("Parameter motion")
+        box_layout = QVBoxLayout(self.motion_box)
+        self.motion_status = QLabel()
+        self.motion_status.setWordWrap(True)
+        box_layout.addWidget(self.motion_status)
+        self.motion_form = QFormLayout()
+        box_layout.addLayout(self.motion_form)
+        self.motion_box.setToolTip(
+            "Drive this path's own numbers from the scene's modulators. The "
+            "value here swings around the number above by the depth shown, "
+            "and the routes live in the scene's modulation matrix."
+        )
+        return self.motion_box
+
+    def _motion_fields(self):
+        """Catalogue rows for the selected primitive, then the transform."""
+
+        rows = []
+        factory = _SPATIAL.get(self.kind)
+        if factory is not None:
+            for field_name in sorted(primitive_component_fields(factory)):
+                spec = GEOMETRY_PARAMETER_SPECS.get(field_name)
+                if spec is not None:
+                    rows.append(("geometry", field_name, spec.label, spec.unit))
+        for field_name in sorted(TRANSFORM_PARAMETER_SPECS):
+            spec = TRANSFORM_PARAMETER_SPECS[field_name]
+            rows.append(("transform", field_name, spec.label, spec.unit))
+        return rows
+
+    def _motion_routes_by_field(self) -> dict[str, Any]:
+        scene = self._motion_scene()
+        if scene is None:
+            return {}
+        source_id = str(self._motion.get("source_id", "") or "")
+        matrix = ModulationMatrix.from_mapping(scene.get("modulation"))
+        found: dict[str, Any] = {}
+        for route in matrix.routes:
+            if route.target_id != source_id or not is_reserved_path(route.parameter_path):
+                continue
+            try:
+                section, field_name = split_parameter_path(route.parameter_path)
+            except ValueError:
+                continue
+            found[self._motion_route_key(section, field_name)] = route
+        return found
+
+    def _motion_modulator_ids(self) -> list[str]:
+        scene = self._motion_scene()
+        if scene is None:
+            return []
+        return [
+            str(item.get("id"))
+            for item in scene.get("modulators", ())
+            if str(item.get("id") or "").strip()
+        ]
+
+    def _rebuild_motion_rows(self) -> None:
+        previous = self._updating
+        self._updating = True
+        try:
+            while self.motion_form.rowCount():
+                self.motion_form.removeRow(0)
+            self._motion_rows = {}
+
+            context_ok = self._has_motion_context()
+            routes = self._motion_routes_by_field()
+            modulator_ids = self._motion_modulator_ids()
+
+            for section, field_name, label, unit in self._motion_fields():
+                key = self._motion_route_key(section, field_name)
+                widgets = self._motion_row_widget(label, unit, modulator_ids)
+                route = routes.get(key)
+                widgets["enable"].setChecked(route is not None)
+                if route is not None:
+                    index = widgets["mod"].findData(route.modulator_id)
+                    if index >= 0:
+                        widgets["mod"].setCurrentIndex(index)
+                    widgets["depth"].setValue(route.depth * route.polarity)
+                    curve_index = widgets["curve"].findText(route.curve)
+                    if curve_index >= 0:
+                        widgets["curve"].setCurrentIndex(curve_index)
+                if not context_ok or not modulator_ids:
+                    for widget in widgets.values():
+                        widget.setEnabled(False)
+                self.motion_form.addRow(f"{label}", widgets["container"])
+                self._motion_rows[key] = widgets
+        finally:
+            self._updating = previous
+        self._refresh_motion_status()
+
+    def _motion_row_widget(self, label: str, unit: str, modulator_ids: list[str]) -> dict[str, Any]:
+        container = QWidget()
+        row = QHBoxLayout(container)
+        row.setContentsMargins(0, 0, 0, 0)
+
+        enable = QCheckBox()
+        enable.setToolTip(f"Drive {label} from a scene modulator.")
+        enable.toggled.connect(self._motion_edited)
+        row.addWidget(enable)
+
+        modulator = QComboBox()
+        for identifier in modulator_ids:
+            modulator.addItem(identifier, identifier)
+        modulator.addItem("(new sine LFO)", "@new")
+        modulator.setToolTip(
+            "The scene modulator to use. '(new sine LFO)' adds a 0.25 Hz "
+            "sine definition to the scene."
+        )
+        modulator.currentIndexChanged.connect(self._motion_edited)
+        row.addWidget(modulator, 1)
+
+        suffix = f" {unit}" if unit else ""
+        depth = QDoubleSpinBox()
+        depth.setRange(-10_000.0, 10_000.0)
+        depth.setDecimals(3)
+        depth.setSingleStep(0.1)
+        depth.setSuffix(suffix)
+        depth.setToolTip(
+            "How far the value swings either side of its base. Negative "
+            "depth reverses the direction of the swing."
+        )
+        depth.valueChanged.connect(self._motion_edited)
+        row.addWidget(depth)
+
+        curve = QComboBox()
+        curve.addItems(list(CURVES))
+        curve.setToolTip("Shape applied to the modulator before scaling.")
+        curve.currentTextChanged.connect(self._motion_edited)
+        row.addWidget(curve)
+
+        return {
+            "container": container,
+            "enable": enable,
+            "mod": modulator,
+            "depth": depth,
+            "curve": curve,
+        }
+
+    def _refresh_motion_status(self) -> None:
+        active = [key for key, row in self._motion_rows.items() if row["enable"].isChecked()]
+        if not self._has_motion_context():
+            self.motion_status.setText(
+                "This editor was opened without its scene, so path parameters "
+                "cannot be driven from here. Open it through a voice's Path "
+                "panel inside the SAM workbench."
+            )
+        elif not self.kind in _SPATIAL:
+            self.motion_status.setText(
+                "Point-drawn shapes have no named numbers to drive; pick a "
+                "primitive to expose its parameters."
+            )
+        elif active:
+            self.motion_status.setText("Driven: " + ", ".join(sorted(active)))
+        else:
+            self.motion_status.setText("No parameters driven.")
+
+    def _create_modulator(self, definitions: list) -> str | None:
+        existing = {
+            str(item.get("id"))
+            for item in definitions
+            if str(item.get("id") or "").strip()
+        }
+        serial = 1
+        while f"lfo{serial}" in existing:
+            serial += 1
+        identifier = f"lfo{serial}"
+        definitions.append(
+            {"id": identifier, "waveform": "sine", "rateHz": 0.25, "phaseDeg": 0.0, "seed": 0}
+        )
+        return identifier
+
+    def _motion_edited(self, *_args) -> None:
+        if self._updating or not self._has_motion_context():
+            return
+        scene = self._motion_scene()
+        if scene is None:
+            return
+        source_id = str(self._motion.get("source_id", "") or "")
+        matrix = ModulationMatrix.from_mapping(scene.get("modulation"))
+        kept = tuple(
+            route
+            for route in matrix.routes
+            if not (route.target_id == source_id and is_reserved_path(route.parameter_path))
+        )
+        matrix = dataclasses.replace(matrix, routes=kept)
+        modulators = list(scene.get("modulators") or ())
+
+        previous = self._updating
+        self._updating = True
+        try:
+            for key, row in sorted(self._motion_rows.items()):
+                if not row["enable"].isChecked():
+                    continue
+                depth = float(row["depth"].value())
+                if depth == 0.0:
+                    # Inert rather than refused: the user may be mid-edit, and
+                    # a zero-depth route simply contributes nothing.
+                    continue
+                modulator_id = row["mod"].currentData()
+                if modulator_id == "@new":
+                    modulator_id = self._create_modulator(modulators)
+                    if modulator_id is None:
+                        continue
+                    index = row["mod"].findData(modulator_id)
+                    if index >= 0:
+                        row["mod"].setCurrentIndex(index)
+                route = ModulationRoute(
+                    modulator_id,
+                    source_id,
+                    key,
+                    depth=abs(depth),
+                    polarity=-1 if depth < 0 else 1,
+                    curve=row["curve"].currentText(),
+                )
+                cycle = matrix.find_cycle(route)
+                if cycle:
+                    QMessageBox.warning(
+                        self,
+                        "Modulation cycle",
+                        f"Driving {key} would close a loop:\n"
+                        + " -> ".join(cycle),
+                    )
+                    continue
+                matrix = matrix.with_route(route)
+        finally:
+            self._updating = previous
+
+        scene["modulation"] = matrix.describe()
+        scene["modulators"] = modulators
+        try:
+            self._motion["commit"](scene)
+        except Exception as error:  # noqa: BLE001 - reported rather than lost
+            QMessageBox.warning(self, "Could not save motion", str(error))
+            return
+        self._refresh_motion_status()
         self._refresh()
 
     # -------------------------------------------------------------- selection
@@ -1016,8 +1310,32 @@ class SamPath3DDialog(QDialog):
         except (ValueError, TypeError, KeyError):
             return None
 
+    def _preview_model(self):
+        """What the renderer would move along: the path with the scene's
+        motion attached, or the static path when nothing binds."""
+
+        base = self.path_model()
+        if base is None or not self._has_motion_context():
+            return base
+        scene = self._motion_scene()
+        if scene is None:
+            return base
+        try:
+            bound = compile_bound_trajectory(
+                self.trajectory_spec(),
+                scene,
+                str(self._motion.get("source_id", "") or ""),
+                sample_rate_hz=48_000.0,
+                origin_sample=0,
+                params={},
+            )
+        except Exception:  # noqa: BLE001 - a broken route must not break drawing
+            return base
+        model = bound.model
+        return model if getattr(model, "bindings", None) else base
+
     def _sample_curve(self):
-        model = self.path_model()
+        model = self._preview_model()
         if model is None:
             return np.zeros((0, 3))
         # Sampled through the traversal, not the raw geometry: what is drawn is
@@ -1082,7 +1400,7 @@ class SamPath3DDialog(QDialog):
                 view.set_marker(None)
 
     def _advance_preview(self):
-        model = self.path_model()
+        model = self._preview_model()
         if model is None:
             return
         self._preview_time += self._timer.interval() / 1000.0

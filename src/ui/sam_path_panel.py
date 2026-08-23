@@ -76,6 +76,8 @@ class SamPathPanel(QWidget):
     """Launch and preview the metre-based interactive path designer."""
 
     paramsChanged = pyqtSignal(dict)
+    #: An edited scene coming back from the 3D designer's Motion controls.
+    sceneChanged = pyqtSignal(dict)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -83,6 +85,9 @@ class SamPathPanel(QWidget):
         self._profile = {}
         self._segments = []
         self._trajectory_spec = {}
+        self._scene_provider = None
+        self._source_id = ""
+        self._disclosure = "advanced"
         layout = QVBoxLayout(self)
         buttons = QHBoxLayout()
         self.designer_button = QPushButton("Open visual path designer…")
@@ -137,6 +142,22 @@ class SamPathPanel(QWidget):
             result["canonicalTrajectory"] = copy.deepcopy(self._trajectory_spec)
         return result
 
+    def set_scene_context(self, scene_provider, source_id: str) -> None:
+        """Give the 3D designer the scene it needs to drive path parameters.
+
+        ``scene_provider`` returns a fresh copy of the current track-level
+        scene; the designer edits that copy and hands it to ``commit``, which
+        this panel forwards on :attr:`sceneChanged`.
+        """
+
+        self._scene_provider = scene_provider
+        self._source_id = str(source_id or "")
+
+    def set_disclosure(self, mode: str) -> None:
+        """Remember the workbench's disclosure mode for the next designer."""
+
+        self._disclosure = str(mode or "advanced")
+
     def open_designer(self):
         dialog = SamPathEditorDialog(self._profile, self._trajectory_spec, self)
         if dialog.exec_() == QDialog.Accepted:
@@ -153,7 +174,15 @@ class SamPathPanel(QWidget):
         in it would be a worse record of the author's intent than no update.
         """
 
-        dialog = SamPath3DDialog(self._trajectory_spec, self)
+        modulation = None
+        if callable(self._scene_provider) and self._source_id:
+            modulation = {
+                "source_id": self._source_id,
+                "scene": self._scene_provider,
+                "commit": self.sceneChanged.emit,
+                "disclosure": self._disclosure,
+            }
+        dialog = SamPath3DDialog(self._trajectory_spec, self, modulation=modulation)
         if dialog.exec_() == QDialog.Accepted:
             self._trajectory_spec = dialog.trajectory_spec()
             self.refresh_preview()

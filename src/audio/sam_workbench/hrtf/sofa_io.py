@@ -30,26 +30,25 @@ DELAY_POLICY_ALIASES = {"preserve_external_delay": "keep_external_delay"}
 
 class DelayPolicy(str, Enum):
     BAKE = "bake_delay_into_ir"
+    #: ``keep_external_delay`` is the canonical name the renderer registry
+    #: advertises: SOFA Data.Delay stays outside the impulse response.
     KEEP = "keep_external_delay"
+    #: Historical spelling of :attr:`KEEP`. Older documents still carry it,
+    #: and it has always meant exactly this policy - never another behaviour.
+    PRESERVE = KEEP
 
     @classmethod
-    def _missing_(cls, value):
-        """Accept an older document's spelling of a policy that was renamed.
-
-        Saved projects carry ``preserve_external_delay``; the registry offers
-        ``keep_external_delay``. Both must reach the same policy, or one side
-        of the rename refuses what the other produced.
-        """
-
-        if isinstance(value, str):
-            canonical = DELAY_POLICY_ALIASES.get(value.strip().lower())
-            if canonical is not None:
-                return cls(canonical)
+    def _missing_(cls, value: object) -> DelayPolicy | None:
+        if value == "preserve_external_delay":
+            return cls.KEEP
         return None
 
 
-#: The former member name, so code written against it keeps working.
-DelayPolicy.PRESERVE = DelayPolicy.KEEP
+#: Renamed policy values that persisted documents may still contain, mapped to
+#: their canonical spellings; mirrors INTERPOLATION_ALIASES for logmag_delay.
+DELAY_POLICY_ALIASES: dict[str, str] = {
+    "preserve_external_delay": DelayPolicy.KEEP.value,
+}
 
 
 @dataclass(frozen=True)

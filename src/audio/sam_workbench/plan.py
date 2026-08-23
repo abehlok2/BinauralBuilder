@@ -42,6 +42,7 @@ from numpy.typing import NDArray
 
 from .conventions import DEFAULT_SAMPLE_RATE_HZ, intersect_window, seconds_to_samples
 from .parameters import sam2_parameter_defaults
+from .path_automation import compile_bound_trajectory, is_reserved_path
 from .render.registry import REGISTRY
 from .scene_state import (
     AMPLITUDE_PATHS,
@@ -56,7 +57,7 @@ from .scene_state import (
 )
 from .stages import Timeline
 from .modulation import ModulationMatrix
-from .trajectory import PathModel, path_model_from_dict
+from .trajectory import PathModel
 from .trajectory.transforms import ListenerTransform
 from .validation import ValidationIssue
 
@@ -150,7 +151,9 @@ class CompiledSourcePlan:
     generator: Mapping[str, Any]
     renderer_id: str
     renderer_config: Mapping[str, Any]
-    trajectory: PathModel | None = None
+    #: A ``PathModel``, or its automation-bound form when the scene drives the
+    #: path's own numbers; both answer ``positions(times_s)`` identically.
+    trajectory: Any | None = None
     listener: ListenerTransform = field(default_factory=ListenerTransform)
     assets: tuple[AssetReference, ...] = ()
     #: Automated non-gain parameters, by parameter path.
@@ -323,25 +326,37 @@ def _derive_seed(project_seed: int, source_id: str) -> int:
     return int.from_bytes(digest[:8], "big") & 0x7FFFFFFF
 
 
-def _trajectory_from(params: Mapping[str, Any], path: str, warnings: list[ValidationIssue]):
-    """Compile the stored path, which is the only path interpretation there is.
+def _trajectory_from(
+    params: Mapping[str, Any],
+    scene: Mapping[str, Any] | None,
+    source_id: str,
+    *,
+    sample_rate_hz: float,
+    origin_sample: int,
+    path: str,
+    warnings: list[ValidationIssue],
+):
+    """Compile the stored path plus its scene automation into one model.
 
     A voice's ``canonicalTrajectory`` is read through the same
     :func:`path_model_from_dict` the editor and the renderers use, so a saved
-    path means one thing everywhere. A malformed one is reported and dropped
-    rather than silently replaced by a default, which would move the source.
+    path means one thing everywhere.  Routes or stages targeting the path's own
+    numbers are attached here rather than interpreted a second time elsewhere;
+    a malformed path is reported and dropped rather than silently replaced by
+    a default, which would move the source.
     """
 
-    payload = params.get("canonicalTrajectory")
-    if not isinstance(payload, Mapping) or not payload.get("geometry"):
-        return None
-    try:
-        return path_model_from_dict(payload)
-    except (ValueError, TypeError, KeyError) as error:
-        warnings.append(
-            ValidationIssue(f"{path}.canonicalTrajectory", f"unreadable path: {error}")
-        )
-        return None
+    bound = compile_bound_trajectory(
+        params.get("canonicalTrajectory"),
+        scene,
+        source_id,
+        sample_rate_hz=sample_rate_hz,
+        origin_sample=origin_sample,
+        params=params,
+    )
+    for issue in bound.issues:
+        warnings.append(ValidationIssue(f"{path}.{issue.path}", issue.message, issue.severity))
+    return bound.model
 
 
 def _compile_controls(
@@ -364,6 +379,10 @@ def _compile_controls(
 
     controls: dict[str, CompiledControl] = {}
     for parameter_path in automated_paths(scene, source_id):
+        if is_reserved_path(parameter_path):
+            # Path parameters belong to the bound-trajectory compiler; one
+            # that failed to bind there was already reported there.
+            continue
         registered = field_for(parameter_path)
         automatable = True if registered is None else bool(registered.automatable)
         if not automatable:
@@ -468,7 +487,15 @@ def _compile_source(
         generator=generator,
         renderer_id=renderer_id,
         renderer_config=config,
-        trajectory=_trajectory_from(params, path, warnings),
+        trajectory=_trajectory_from(
+            params,
+            scene,
+            source_id,
+            sample_rate_hz=float(sample_rate_hz),
+            origin_sample=int(start_sample),
+            path=path,
+            warnings=warnings,
+        ),
         listener=listener,
         assets=tuple(
             AssetReference(**entry) for entry in definition.required_assets(params)

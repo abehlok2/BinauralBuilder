@@ -22,9 +22,12 @@ from .validation import ValidationIssue
 __all__ = ["FlowStage", "FlowSummary", "summarize_flow", "SIGNAL_CHAIN_LABELS"]
 
 #: The stages named in the specification's signal-flow line, in order.
+#: "Path motion" names the scene driving a path's own numbers; it sits beside
+#: the path itself because it acts on the same stage of the chain.
 SIGNAL_CHAIN_LABELS = (
     "Source",
     "Path",
+    "Path motion",
     "Renderer",
     "Cue transform",
     "Headphone correction",
@@ -55,6 +58,8 @@ class FlowSummary:
     asset_hash: str = ""
     interpolation: str = ""
     path_status: str = ""
+    #: Which of the path's own numbers the scene drives, and by what.
+    path_motion: str = ""
     scene_status: str = ""
     cost: str = ""
     warnings: tuple[ValidationIssue, ...] = ()
@@ -88,6 +93,7 @@ class FlowSummary:
             "assetSha256": self.asset_hash,
             "interpolation": self.interpolation,
             "path": self.path_status,
+            "pathMotion": self.path_motion,
             "scene": self.scene_status,
             "cost": self.cost,
             "inactive": list(self.inactive),
@@ -118,6 +124,38 @@ def _path_status(params: Mapping[str, Any]) -> tuple[str, bool]:
     return "none", False
 
 
+def _path_motion_text(scene: Mapping[str, Any] | None, source_id: str) -> str:
+    """``radius_m <- lfo1 +/-0.4, tilt_m <- lfo2 ...`` for the summary strip.
+
+    A route addressed to this voice's stable identifier counts; wildcard
+    targets count too, because that is what they mean. Names stay short here:
+    the matrix panel is where the full cell lives.
+    """
+
+    if not scene:
+        return ""
+    from .modulation import ModulationMatrix
+    from .path_automation import is_reserved_path
+    from .trajectory.parameter_catalog import split_parameter_path
+
+    routes = ModulationMatrix.from_mapping(scene.get("modulation")).routes
+    candidates = {source_id} | {"voice", "*"}
+    parts = []
+    for route in routes:
+        if route.target_id not in candidates or not is_reserved_path(route.parameter_path):
+            continue
+        try:
+            _section, field_name = split_parameter_path(route.parameter_path)
+        except ValueError:
+            continue
+        amount = route.depth * route.polarity
+        parts.append(
+            f"{field_name} <- {route.modulator_id} "
+            f"{'+/-' if amount else ''}{abs(amount):g}"
+        )
+    return ", ".join(parts)
+
+
 def _scene_status(scene: Mapping[str, Any] | None) -> str:
     if not scene:
         return "no scene"
@@ -142,6 +180,7 @@ def summarize_flow(
     sample_rate_hz: int = 44_100,
     issues: tuple[ValidationIssue, ...] = (),
     asset_hash: str = "",
+    source_id: str = "",
 ) -> FlowSummary:
     """Describe what this configuration will do when it is rendered.
 
@@ -167,6 +206,9 @@ def summarize_flow(
     path_text, has_path = _path_status(params)
     reads_path = bool(capabilities.consumes_trajectory) if capabilities else False
 
+    motion_text = _path_motion_text(scene, source_id)
+    motion_active = bool(motion_text)
+
     cue = options.get("cue")
     cue_set = isinstance(cue, Mapping) and not cue.get("neutral", True)
     supports_cue = bool(capabilities.supports_cue_modification) if capabilities else False
@@ -176,6 +218,7 @@ def summarize_flow(
     stages = (
         FlowStage("Source", True, str(params.get("synthFunction", "") or "SAM")),
         FlowStage("Path", has_path and reads_path, path_text),
+        FlowStage("Path motion", motion_active, motion_text),
         FlowStage("Renderer", True, label),
         FlowStage("Cue transform", cue_set and supports_cue, "" if supports_cue else "not available"),
         FlowStage("Headphone correction", bool(headphone) and uses_sofa, headphone),
@@ -219,6 +262,7 @@ def summarize_flow(
         asset_hash=asset_hash,
         interpolation=interpolation,
         path_status=path_text,
+        path_motion=motion_text,
         scene_status=_scene_status(scene),
         cost=cost,
         warnings=tuple(issues),

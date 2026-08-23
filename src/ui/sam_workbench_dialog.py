@@ -275,6 +275,7 @@ class SamWorkbenchDialog(QDialog):
 
         self.parameter_panel.paramsChanged.connect(self._on_params_changed)
         self.path_panel.paramsChanged.connect(self._on_params_changed)
+        self.path_panel.sceneChanged.connect(self._on_path_scene_changed)
         self.hrtf_panel.paramsChanged.connect(self._on_params_changed)
         for signal in (
             self.stage_panel.timelineChanged,
@@ -587,12 +588,30 @@ class SamWorkbenchDialog(QDialog):
         ]
         self.routing_panel.set_roster(roster)
         self.modulation_panel.set_roster(roster)
+        # The 3D designer's Motion group edits this voice's routes in the
+        # shared scene; it needs the identifier and a way to read/commit it.
+        self.path_panel.set_scene_context(self._fresh_scene_copy, self._source_id())
         self._revalidate()
+
+    def _source_id(self) -> str:
+        return str(self._voice.get("sam_source_id", "") or "")
+
+    def _fresh_scene_copy(self) -> dict[str, Any]:
+        return copy.deepcopy(self.scene_data())
+
+    def _on_path_scene_changed(self, scene: dict) -> None:
+        """Adopt a Motion edit from the 3D designer into the shared scene."""
+
+        self._scene = normalize_sam_scene(scene)
+        self.modulation_panel.set_matrix(self._scene.get("modulation"))
+        self.modulation_panel.set_modulators(self._scene.get("modulators"))
+        self._on_params_changed()
 
     def _on_mode_changed(self, mode: str) -> None:
         """Apply progressive disclosure within the shared parameter view."""
 
         self.parameter_panel.set_mode(mode)
+        self.path_panel.set_disclosure(mode)
         self._remember_disclosure(mode)
 
     # --- parameters ---------------------------------------------------------
@@ -816,6 +835,7 @@ class SamWorkbenchDialog(QDialog):
             scene=self._scene,
             sample_rate_hz=self._sample_rate,
             issues=issues,
+            source_id=self._source_id(),
         )
         self._flow_summary = summary
 
@@ -826,6 +846,8 @@ class SamWorkbenchDialog(QDialog):
         if summary.interpolation:
             facts.append(f"Interpolation: {summary.interpolation}")
         facts.append(f"Path: {summary.path_status}")
+        if summary.path_motion:
+            facts.append(f"Motion: {summary.path_motion}")
         facts.append(f"Scene: {summary.scene_status}")
         lines.append(" | ".join(facts))
         if summary.cost:

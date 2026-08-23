@@ -170,14 +170,93 @@ def _peak_issues(peak: float | None) -> list[ValidationIssue]:
     return []
 
 
+def _path_motion_issues(
+    params: Mapping[str, Any],
+    scene: Mapping[str, Any] | None,
+    sample_rate_hz: float,
+    source_id: str = "",
+) -> list[ValidationIssue]:
+    """What this scene's path automation will and will not do to this path."""
+
+    payload = params.get("canonicalTrajectory")
+    if not scene or not isinstance(payload, Mapping) or not payload.get("geometry"):
+        return []
+    from .path_automation import BoundTrajectory, compile_bound_trajectory
+    from .scene_state import SOURCE_ID_KEY, WILDCARD_TARGETS
+
+    candidates = [
+        str(source_id or ""),
+        str(params.get(SOURCE_ID_KEY, "") or ""),
+        *sorted(WILDCARD_TARGETS),
+    ]
+    merged: list[ValidationIssue] = []
+    matched_paths: set[str] = set()
+    clamped: list[str] = []
+    fallback = False
+    seen: set[tuple[str, str]] = set()
+    for source_id in candidates:
+        if not source_id:
+            continue
+        try:
+            bound: BoundTrajectory = compile_bound_trajectory(
+                payload,
+                scene,
+                source_id,
+                sample_rate_hz=float(sample_rate_hz),
+                origin_sample=0,
+                params=params,
+            )
+        except Exception:  # noqa: BLE001 - advice must not block a render
+            return []
+        for issue in bound.issues:
+            key = (issue.path, issue.message)
+            if key not in seen:
+                seen.add(key)
+                merged.append(issue)
+        matched_paths |= set(bound.matched)
+        clamped.extend(name for name in bound.clamped if name not in clamped)
+        fallback = fallback or bound.speed_law_fallback
+
+    issues = list(merged)
+    if not matched_paths:
+        return issues
+    if fallback:
+        issues.append(
+            ValidationIssue(
+                "canonicalTrajectory.traversal",
+                "shape parameters of this path are modulated, so "
+                "constant-speed traversal falls back to the curve's own "
+                "parameter speed; the source no longer covers ground evenly",
+                "warning",
+            )
+        )
+    if clamped:
+        issues.append(
+            ValidationIssue(
+                "canonicalTrajectory.motion",
+                f"modulated {', '.join(sorted(clamped))} reaches its documented "
+                "limit; the motion is held there rather than leaving the range "
+                "the geometry allows",
+                "warning",
+            )
+        )
+    return issues
+
+
 def assess_readiness(
     params: Mapping[str, Any],
     *,
     scene: Mapping[str, Any] | None = None,
     sample_rate_hz: int = 44_100,
     peak: float | None = None,
+    source_id: str = "",
 ) -> ReadinessReport:
-    """Everything actionable about this configuration, in one report."""
+    """Everything actionable about this configuration, in one report.
+
+    ``source_id`` is the stable identifier this voice carries in the track;
+    path-parameter routes addressed to that identifier cannot be evaluated
+    without it, so a caller that knows it should pass it.
+    """
 
     from .flow import summarize_flow
     from .render.registry import REGISTRY
@@ -221,6 +300,9 @@ def assess_readiness(
 
     issues.extend(_cost_issues(summary))
     issues.extend(_peak_issues(peak))
+    issues.extend(
+        _path_motion_issues(params, scene, float(sample_rate_hz), source_id)
+    )
 
     if scene:
         issues.extend(validate_scene(scene))
