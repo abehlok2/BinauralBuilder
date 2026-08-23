@@ -20,6 +20,10 @@ class Preferences:
     default_voice: dict = field(default_factory=dict)
     # User-selected visibility and default values for voice detail parameters
     voice_detail_display: dict = field(default_factory=dict)
+    # Write a reconstruction manifest beside each exported file. On by default:
+    # an exported WAV otherwise carries no record of which dataset, which
+    # interpolation, which path or which seeds produced it.
+    write_export_manifest: bool = True
 
 PREF_FILE = Path.home() / ".entrainment_prefs.json"
 

@@ -2988,7 +2988,11 @@ class TrackEditorApp(QMainWindow):
             else 1.0
         )
         snapshot = RenderSnapshot.of(
-            track_data, output_path, target_level=target_level, label=label
+            track_data,
+            output_path,
+            target_level=target_level,
+            label=label,
+            write_manifest=bool(getattr(self.prefs, "write_export_manifest", True)),
         )
         estimate = manager.estimate(snapshot)
 
@@ -3063,7 +3067,12 @@ class TrackEditorApp(QMainWindow):
                 "Generation Complete",
                 f"Audio file '{os.path.basename(outcome.output_path)}' generated "
                 f"successfully!\nFull path: {os.path.abspath(outcome.output_path)}\n\n"
-                f"{metrics.summary()}{cache}",
+                f"{metrics.summary()}{cache}"
+                + (
+                    f"\nManifest: {os.path.basename(outcome.manifest_path)}"
+                    if outcome.manifest_path
+                    else ""
+                ),
             )
             self.statusBar().showMessage(metrics.summary(), 12000)
             return

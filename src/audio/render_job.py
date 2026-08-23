@@ -64,6 +64,8 @@ class RenderSnapshot:
     target_level: float = 0.25
     #: Free-form label for the progress UI ("Full track", "Steps 3-5").
     label: str = "render"
+    #: Whether to write a reconstruction manifest beside the audio.
+    write_manifest: bool = False
 
     @staticmethod
     def of(
@@ -72,12 +74,14 @@ class RenderSnapshot:
         *,
         target_level: float = 0.25,
         label: str = "render",
+        write_manifest: bool = False,
     ) -> "RenderSnapshot":
         return RenderSnapshot(
             track_data=copy.deepcopy(dict(track_data)),
             output_path=str(output_path),
             target_level=float(target_level),
             label=str(label),
+            write_manifest=bool(write_manifest),
         )
 
     @property
@@ -155,6 +159,8 @@ class RenderOutcome:
     error: str = ""
     output_path: str = ""
     metrics: RenderMetrics = field(default_factory=RenderMetrics)
+    #: Where the reconstruction manifest went, when one was asked for.
+    manifest_path: str = ""
 
     @property
     def failed(self) -> bool:
@@ -276,8 +282,27 @@ def run_render(
             output_path=snapshot.output_path,
             metrics=metrics,
         )
+    manifest_path = ""
+    if snapshot.write_manifest:
+        # Written after the audio, so a manifest never describes a file that
+        # does not exist, and a manifest failure never loses a good render.
+        try:
+            from src.audio.track_manifest import build_track_manifest, write_track_manifest
+
+            manifest = build_track_manifest(
+                snapshot.track_data,
+                audio_path=snapshot.output_path,
+                target_level=snapshot.target_level,
+                metrics=metrics.describe(),
+            )
+            manifest_path = str(write_track_manifest(manifest, snapshot.output_path))
+        except Exception as error:  # noqa: BLE001 - reported, render still stands
+            print(f"Could not write the export manifest: {error}")
     return RenderOutcome(
-        succeeded=True, output_path=snapshot.output_path, metrics=metrics
+        succeeded=True,
+        output_path=snapshot.output_path,
+        metrics=metrics,
+        manifest_path=manifest_path,
     )
 
 
