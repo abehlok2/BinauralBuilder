@@ -89,7 +89,10 @@ def test_test_and_stop_buttons(qapp, monkeypatch):
     from src.ui import colored_noise_dialog as dialog_mod
 
     dialog = ColoredNoiseDialog()
-    dialog.duration_spin.setValue(0.1)
+    # The preview button generates a fixed 5 s of noise; there is no duration
+    # control on this dialog and there never has been. This line addressed one
+    # that was never implemented, so the test failed before reaching what it
+    # actually checks - that Test starts playback and Stop tears it down.
 
     monkeypatch.setattr(dialog_mod, "QT_MULTIMEDIA_AVAILABLE", True)
     monkeypatch.setattr(dialog_mod, "QAudioOutput", DummyAudioOutput)

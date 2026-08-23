@@ -25,16 +25,42 @@ def _catalog_entry(identifier: str, label: str, kind: str = "binaural") -> Sessi
 
 
 class DummyStream:
+    """Stands in for the stream player, so it must answer what the window calls.
+
+    A double that implements only part of the interface it replaces fails on
+    the first call it did not anticipate, and the failure looks like a bug in
+    the window rather than a gap in the double. These are the members
+    ``session_builder_window`` actually reaches on the playback path.
+    """
+
     def __init__(self, track_data):
         self.track_data = track_data
         self.started = False
         self.stopped = False
+        self.volume = 1.0
+        self.position = 0.0
+        self.duration = 0.0
 
     def start(self, *args, **kwargs):
         self.started = True
 
     def stop(self):
         self.stopped = True
+
+    def set_volume(self, volume):
+        self.volume = float(volume)
+
+    def update_track(self, track_data):
+        self.track_data = track_data
+
+    def pause(self):
+        pass
+
+    def resume(self):
+        pass
+
+    def seek(self, position):
+        self.position = float(position)
 
 
 class DummyAssembler:
