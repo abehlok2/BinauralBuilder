@@ -21,6 +21,13 @@ class SofaDependencyError(ImportError):
     pass
 
 
+#: Spellings that are still read but are not the canonical name any more.
+#: Kept as data rather than as extra enum members so that iterating the enum
+#: yields each policy once - a second member sharing a meaning would make the
+#: registry offer the same choice twice and a cache key store it twice.
+DELAY_POLICY_ALIASES = {"preserve_external_delay": "keep_external_delay"}
+
+
 class DelayPolicy(str, Enum):
     BAKE = "bake_delay_into_ir"
     #: ``keep_external_delay`` is the canonical name the renderer registry
