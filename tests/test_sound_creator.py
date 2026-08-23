@@ -43,7 +43,9 @@ def test_generate_audio_preserves_voice_state_across_long_step_chunks(monkeypatc
         )
         n = int(target_duration_seconds * sample_rate)
         audio = np.zeros((n, 2), dtype=np.float32)
-        next_state = [{"chunk_index": len(calls)}]
+        # The phase key is what tells the harness this voice can be resumed;
+        # without one the step is rendered whole instead of chunked.
+        next_state = [{"chunk_index": len(calls), "oscillator_phases": (0.0, 0.0)}]
         if return_state:
             return audio, next_state
         return audio
@@ -55,8 +57,8 @@ def test_generate_audio_preserves_voice_state_across_long_step_chunks(monkeypatc
     assert len(calls) == 3
 
     assert calls[0]["voice_states"] == [None]
-    assert calls[1]["voice_states"] == [{"chunk_index": 1}]
-    assert calls[2]["voice_states"] == [{"chunk_index": 2}]
+    assert calls[1]["voice_states"] == [{"chunk_index": 1, "oscillator_phases": (0.0, 0.0)}]
+    assert calls[2]["voice_states"] == [{"chunk_index": 2, "oscillator_phases": (0.0, 0.0)}]
     assert all(call["return_state"] for call in calls)
 
 
