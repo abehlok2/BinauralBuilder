@@ -21,9 +21,35 @@ class SofaDependencyError(ImportError):
     pass
 
 
+#: Spellings that are still read but are not the canonical name any more.
+#: Kept as data rather than as extra enum members so that iterating the enum
+#: yields each policy once - a second member sharing a meaning would make the
+#: registry offer the same choice twice and a cache key store it twice.
+DELAY_POLICY_ALIASES = {"preserve_external_delay": "keep_external_delay"}
+
+
 class DelayPolicy(str, Enum):
     BAKE = "bake_delay_into_ir"
-    PRESERVE = "preserve_external_delay"
+    KEEP = "keep_external_delay"
+
+    @classmethod
+    def _missing_(cls, value):
+        """Accept an older document's spelling of a policy that was renamed.
+
+        Saved projects carry ``preserve_external_delay``; the registry offers
+        ``keep_external_delay``. Both must reach the same policy, or one side
+        of the rename refuses what the other produced.
+        """
+
+        if isinstance(value, str):
+            canonical = DELAY_POLICY_ALIASES.get(value.strip().lower())
+            if canonical is not None:
+                return cls(canonical)
+        return None
+
+
+#: The former member name, so code written against it keeps working.
+DelayPolicy.PRESERVE = DelayPolicy.KEEP
 
 
 @dataclass(frozen=True)
