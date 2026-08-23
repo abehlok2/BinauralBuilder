@@ -333,11 +333,40 @@ def test_gain_is_always_present_even_without_a_scene():
     assert source.gain.value_at(0) == pytest.approx(1.0)
 
 
-def test_gain_carries_the_stage_and_the_routing_together():
+def test_gain_carries_the_stage_but_not_the_routing():
+    """Routing is applied exactly once, and the mixer is where.
+
+    This used to carry both, which was right while nothing downstream summed
+    buses. The plan executor mixes through SceneMixer, which applies the
+    routing itself, so carrying it here as well attenuated every routed source
+    twice - a -6 dB bus arriving as -12 dB.
+    """
+
     source = plan_from_track(_track(_automated_scene())).sources[0]
-    # 0.4 from the stage, -6 dB source and -3 dB bus from the routing.
-    expected = 0.4 * 10.0 ** (-6.0 / 20.0) * 10.0 ** (-3.0 / 20.0)
-    assert source.gain.value_at(RATE) == pytest.approx(expected, rel=1e-6)
+    assert source.gain.value_at(RATE) == pytest.approx(0.4, rel=1e-6)
+
+
+def test_the_routing_the_gain_no_longer_carries_is_still_in_the_plan():
+    """Split, not dropped: both halves must still be reachable."""
+
+    plan = plan_from_track(_track(_automated_scene()))
+    source = plan.sources[0]
+    route = plan.routing[source.source_id]
+    assert float(route["gainDb"]) == pytest.approx(-6.0)
+
+    bus = next(entry for entry in plan.buses if entry["id"] == route["busId"])
+    assert float(bus["gainDb"]) == pytest.approx(-3.0)
+
+    # Applied once each, the two halves still come to what the single combined
+    # envelope used to produce.
+    combined = (
+        source.gain.value_at(RATE)
+        * 10.0 ** (float(route["gainDb"]) / 20.0)
+        * 10.0 ** (float(bus["gainDb"]) / 20.0)
+    )
+    assert combined == pytest.approx(
+        0.4 * 10.0 ** (-6.0 / 20.0) * 10.0 ** (-3.0 / 20.0), rel=1e-6
+    )
 
 
 @pytest.mark.parametrize(

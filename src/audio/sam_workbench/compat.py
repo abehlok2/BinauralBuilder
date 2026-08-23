@@ -66,6 +66,7 @@ __all__ = [
     "compiled_source_from_sam2",
     "render_sam2",
     "render_sam2_voice",
+    "render_voice_channels",
     "sam2_spec_from_params",
 ]
 
@@ -558,6 +559,71 @@ def render_sam2(
     )
 
 
+def render_voice_channels(
+    voice_params: Mapping[str, Any],
+    frames: int,
+    sample_rate: float,
+    *,
+    is_transition: bool = False,
+    initial_offset: float = 0.0,
+    transition_duration: float | None = None,
+    duration: float | None = None,
+    block_size: int | None = None,
+    automation: Mapping[str, Any] | None = None,
+    dataset_override: object | None = None,
+) -> NDArray[np.float64]:
+    """Render one voice's parameters to channel-major ``(2, frames)``.
+
+    The renderer dispatch, on its own. Both the per-voice compatibility entry
+    point and the compiled-plan executor call this, so the two cannot disagree
+    about what a given set of parameters sounds like - which is the only way to
+    migrate production onto the plan without an audible step.
+
+    Scene gain and the frame-major conversion stay with the callers, because
+    they belong to how a voice is placed rather than to how it is rendered.
+    """
+
+    spec = sam2_spec_from_params(
+        voice_params,
+        is_transition=is_transition,
+        initial_offset=float(initial_offset),
+        transition_duration=transition_duration,
+        duration=float(duration if duration is not None else frames / float(sample_rate)),
+    )
+    start_sample = 0 if is_transition else seconds_to_samples(initial_offset, sample_rate)
+    renderer_mode = str(voice_params.get("rendererMode", "abstract_pm")).lower()
+    # The registry decides which modes exist and which the per-voice adapter can
+    # drive; this dispatch only says how. A mode it does not carry is refused
+    # with the registry's own message rather than a list repeated here.
+    definition = REGISTRY.get(renderer_mode) if renderer_mode in REGISTRY else None
+    if definition is None or not definition.voice_renderable:
+        raise ValueError(
+            f"rendererMode {renderer_mode!r} is not available in this build; "
+            f"expected one of "
+            f"{', '.join(entry.identifier for entry in REGISTRY.voice_renderable)}"
+        )
+    if automation and renderer_mode == "abstract_pm":
+        spec = _with_automation(spec, automation, sample_rate)
+    if renderer_mode == "hybrid":
+        return _render_hybrid_voice(
+            voice_params, frames, sample_rate, start_sample=start_sample,
+            block_size=block_size,
+        )
+    if renderer_mode == "hrtf":
+        return _render_hrtf_voice(
+            voice_params, frames, sample_rate, start_sample=start_sample,
+            block_size=block_size, dataset_override=dataset_override,
+        )
+    if renderer_mode == "geometric":
+        return _render_geometric_voice(
+            spec, voice_params, frames, sample_rate, start_sample=start_sample,
+            block_size=block_size,
+        )
+    return render_sam2(
+        spec, frames, sample_rate, start_sample=start_sample, block_size=block_size
+    )
+
+
 def render_sam2_voice(
     duration: float,
     sample_rate: float = 44_100,
@@ -615,44 +681,17 @@ def render_sam2_voice(
             if path not in automation
         }
         voice_params.update(remaining)
-    spec = sam2_spec_from_params(
+    audio = render_voice_channels(
         voice_params,
+        frames,
+        sample_rate,
         is_transition=is_transition,
         initial_offset=float(initial_offset),
         transition_duration=transition_duration,
         duration=float(duration),
+        block_size=block_size,
+        automation=automation,
     )
-    start_sample = 0 if is_transition else seconds_to_samples(initial_offset, sample_rate)
-    renderer_mode = str(voice_params.get("rendererMode", "abstract_pm")).lower()
-    # The registry decides which modes exist and which the per-voice adapter can
-    # drive; this dispatch only says how. A mode it does not carry is refused
-    # with the registry's own message rather than a list repeated here.
-    definition = REGISTRY.get(renderer_mode) if renderer_mode in REGISTRY else None
-    if definition is None or not definition.voice_renderable:
-        raise ValueError(
-            f"rendererMode {renderer_mode!r} is not available in this build; "
-            f"expected one of "
-            f"{', '.join(entry.identifier for entry in REGISTRY.voice_renderable)}"
-        )
-    if automation and renderer_mode == "abstract_pm":
-        spec = _with_automation(spec, automation, sample_rate)
-    if renderer_mode == "hybrid":
-        audio = _render_hybrid_voice(
-            voice_params, frames, sample_rate, start_sample=start_sample,
-            block_size=block_size,
-        )
-    elif renderer_mode == "hrtf":
-        audio = _render_hrtf_voice(
-            voice_params, frames, sample_rate, start_sample=start_sample,
-            block_size=block_size,
-        )
-    elif renderer_mode == "geometric":
-        audio = _render_geometric_voice(
-            spec, voice_params, frames, sample_rate, start_sample=start_sample,
-            block_size=block_size,
-        )
-    else:
-        audio = render_sam2(spec, frames, sample_rate, start_sample=start_sample, block_size=block_size)
     if sam_scene:
         from .scene_state import scene_gain_envelope
 
