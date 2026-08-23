@@ -34,22 +34,20 @@ MIN_BATCH_SIZE = 1
 # Maximum batch size even if memory allows more.
 MAX_BATCH_SIZE = 8
 
-# Sequential offline chunking can introduce non-step boundary phase resets
-# depending on synth internals. Keep it disabled by default so each step is
-# rendered as one uninterrupted segment.
-# Off, and not merely unfinished: measured against the unchunked path, chunked
-# generation diverges at every chunk boundary. Each chunk fades in from zero
-# rather than continuing the previous one, because the synth functions do not
-# carry their oscillator phase across a chunk - `binaural_beat`, for one, has no
-# state to return. Turning this on would put an audible fade into every long
-# render at each boundary while appearing to save memory.
+# Long steps are rendered in sequential chunks so peak memory stays bounded,
+# but only for steps whose voices can actually be continued across a boundary.
+# See `_states_carry_continuity`: a synth that reports no oscillator phase
+# cannot resume where the previous chunk stopped, and such a step is rendered
+# whole rather than rendered wrongly.
 #
-# Making it correct means giving each synth function state that survives a
-# chunk, which is a per-function change rather than a flag. Until then the flag
-# stays off, and test_sequential_chunking_is_not_silently_enabled pins the
-# reason so it cannot be flipped on by someone reading only its name.
-ENABLE_SEQUENTIAL_CHUNKING = False
-# Kept for compatibility if chunking is re-enabled in the future.
+# This was off before because chunked generation diverged from whole
+# generation. The cause was not the synth functions - `binaural_beat`,
+# `isochronic_tone` and the SAM implementations all thread their phase
+# correctly - but a 10 ms declick fade applied to every generated buffer, which
+# is right at the edges of a voice and wrong at every internal chunk boundary.
+# With that fixed, the synths that carry phase reproduce a whole render
+# sample-for-sample.
+ENABLE_SEQUENTIAL_CHUNKING = True
 SEQUENTIAL_CHUNK_DURATION_SECONDS = 30.0
 SEQUENTIAL_CHUNK_THRESHOLD_SECONDS = 60.0
 from src.synth_functions.noise_flanger import (
@@ -924,16 +922,28 @@ def generate_voice_audio(voice_data, duration, sample_rate, global_start_time, c
             params_to_use = start_conf
             audio = flanger_stereo(audio.astype(np.float32), float(sample_rate), **params_to_use).astype(np.float32)
 
-    # Add a small default fade if no specific envelope was requested and audio exists
-    # This helps prevent clicks when steps are concatenated without crossfade
+    # Add a small default fade if no specific envelope was requested and audio
+    # exists. This prevents clicks where steps are concatenated without a
+    # crossfade - at the edges of the *voice*, which are not the edges of every
+    # buffer the voice is generated in.
+    #
+    # A step rendered in chunks calls this once per chunk. Fading each one put a
+    # 10 ms dip at every internal boundary: the audio either side was correct
+    # and bit-identical, and the seam between them was not. That is what made
+    # chunked generation diverge from whole generation, and why the flag that
+    # enables it had to stay off.
     if not envelope_data and N_audio > 0:
+        at_voice_start = float(chunk_start_time) <= 0.0
+        at_voice_end = (
+            full_step_duration is None
+            or float(chunk_start_time) + float(duration) >= float(full_step_duration) - 1e-9
+        )
         fade_len = min(N_audio, int(0.01 * sample_rate)) # 10ms fade or audio length
         if fade_len > 1:
-             fade_in = np.linspace(0, 1, fade_len)
-             fade_out = np.linspace(1, 0, fade_len)
-             # Apply fade using broadcasting
-             audio[:fade_len] *= fade_in[:, np.newaxis]
-             audio[-fade_len:] *= fade_out[:, np.newaxis]
+             if at_voice_start:
+                 audio[:fade_len] *= np.linspace(0, 1, fade_len)[:, np.newaxis]
+             if at_voice_end:
+                 audio[-fade_len:] *= np.linspace(1, 0, fade_len)[:, np.newaxis]
 
     if return_state:
         return audio.astype(np.float32), voice_state
@@ -1066,6 +1076,7 @@ def assemble_track_from_data(track_data, sample_rate, crossfade_duration, crossf
         # --- Memory-efficient chunked generation for long steps ---
         # For steps longer than the threshold, process in chunks to reduce peak RAM.
         # This prevents multi-GB allocations when generating hour-long steps.
+        chunked_generation_possible = True
         if ENABLE_SEQUENTIAL_CHUNKING and step_duration > SEQUENTIAL_CHUNK_THRESHOLD_SECONDS:
             chunk_duration = SEQUENTIAL_CHUNK_DURATION_SECONDS
             chunk_samples = int(chunk_duration * sample_rate)
@@ -1083,6 +1094,7 @@ def assemble_track_from_data(track_data, sample_rate, crossfade_duration, crossf
             chunk_offset_samples = 0
             chunk_voice_states = incoming_voice_states
             step_voice_states = incoming_voice_states
+            chunked_generation_possible = True
             for chunk_idx in range(num_chunks):
                 # Calculate this chunk's parameters
                 remaining_samples = N_step - chunk_offset_samples
@@ -1107,6 +1119,19 @@ def assemble_track_from_data(track_data, sample_rate, crossfade_duration, crossf
                 )
                 if preserve_relative_step_loudness:
                     prev_step_reference = continuity_context.get("prev_step_reference")
+
+                if chunk_idx == 0 and not _states_carry_continuity(chunk_voice_states):
+                    # This step's voices cannot continue across a boundary, so
+                    # chunking it would put a discontinuity partway through.
+                    # Render it whole instead: the memory saving is not worth
+                    # audio that is quietly wrong.
+                    print(
+                        "        A voice in this step reports no phase state; "
+                        "rendering the step whole rather than chunked."
+                    )
+                    chunked_generation_possible = False
+                    break
+
                 step_voice_states = chunk_voice_states
 
                 # Handle potential size mismatches
@@ -1125,8 +1150,13 @@ def assemble_track_from_data(track_data, sample_rate, crossfade_duration, crossf
                         progress_callback(overall_progress)
                     except Exception as e:
                         print(f"Progress callback error: {e}")
-        else:
-            # Short step - generate all at once (original behavior)
+        if not (
+            ENABLE_SEQUENTIAL_CHUNKING
+            and step_duration > SEQUENTIAL_CHUNK_THRESHOLD_SECONDS
+            and chunked_generation_possible
+        ):
+            # Short step, chunking disabled, or a step whose voices cannot
+            # continue across a boundary: generate it all at once.
             continuity_context = {
                 "enabled": preserve_relative_step_loudness,
                 "prev_step_reference": prev_step_reference,
@@ -1840,6 +1870,29 @@ def _synthesize_voice_task(args):
         traceback.print_exc()
 
     return (i, voice_type, func_name_short, voice_audio, new_state)
+
+#: Phase keys that mean a voice can continue where its previous chunk stopped.
+_CONTINUITY_KEYS = ("oscillator_phases", "startPhaseL", "startPhaseR", "synth_state")
+
+
+def _states_carry_continuity(voice_states) -> bool:
+    """Whether every voice reported enough state to continue from.
+
+    A synth that returns no phase restarts its oscillators at each chunk, which
+    is audible as a discontinuity partway through a step. Rather than keep a
+    list of which functions are safe - one that would quietly rot as functions
+    are added - this asks the states that actually came back.
+    """
+
+    if not voice_states:
+        return False
+    for state in voice_states:
+        if not isinstance(state, dict):
+            return False
+        if not any(key in state and state[key] for key in _CONTINUITY_KEYS):
+            return False
+    return True
+
 
 def _sam_source_ids_for(step_data) -> dict:
     """Voice index to scene source identifier, for the voices that have one."""

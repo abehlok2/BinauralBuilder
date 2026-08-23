@@ -96,21 +96,47 @@ handing it over; `iter_track_blocks` bridges from an array that already exists,
 and the memory tests measure the encoder against a generator precisely so that
 distinction is not blurred.
 
-### Why `ENABLE_SEQUENTIAL_CHUNKING` is still off
+### `ENABLE_SEQUENTIAL_CHUNKING`, and a wrong reason corrected
 
-There is a flag that looks like it would bound the render, and it would not.
+This flag is now **on**, and the reason recorded for it previously being off was
+wrong. That entry said chunked generation diverged from whole generation because
+"the synth functions do not carry their oscillator phase across a boundary —
+`binaural_beat`, for one, has no state to return at all". `binaural_beat`
+returns `oscillator_phases`, `startPhaseL` and `startPhaseR`, and when those are
+threaded it reproduces a whole render with zero differing samples. So does
+`isochronic_tone`, and so do the SAM implementations.
 
-Measured against the unchunked path, chunked generation **diverges at every
-chunk boundary**. Each chunk fades in from zero rather than continuing the
-previous one, because the synth functions do not carry their oscillator phase
-across a boundary — `binaural_beat`, for one, has no state to return at all.
-Turning it on would put an audible fade into every long render at every 30 s
-boundary while appearing to save memory.
+The actual cause was in the harness, not the synths. A 10 ms declick fade was
+applied to **every generated buffer**. That is right at the edges of a voice,
+where steps are concatenated without a crossfade — and wrong at every internal
+chunk boundary, because a step rendered in chunks calls the generator once per
+chunk. The audio either side of each boundary was correct and bit-identical; only
+the 440-sample seam between them was not. The fade now applies only when the
+buffer really is at the voice's start or end.
 
-Making it correct means giving each synth function state that survives a chunk.
-That is a per-function change, not a flag. `test_long_render_memory.py` pins the
-measurement so the reason cannot be lost; when the state work lands, that test
-should be inverted rather than deleted.
+Which functions are safe is decided at runtime rather than by a list. After the
+first chunk, `_states_carry_continuity` asks the states that came back whether
+they contain anything to resume from; a step whose voices report nothing is
+rendered whole instead. An allowlist would quietly rot as functions are added,
+and the failure mode of a stale one is audio that is silently wrong. Dormant
+functions such as `qam_beat` fall back automatically under this gate.
+
+Measured peak allocation for a single-step `binaural_beat` render, 30 s chunks:
+
+| Render length | Whole | Chunked | Saving |
+| --- | --- | --- | --- |
+| 2 min | 437 MB | 182 MB | 2.40× |
+| 10 min | 2019 MB | 505 MB | 4.00× |
+
+The step buffer itself is still allocated once — `assemble_track_from_data`
+returns an array, so its caller holds the whole render either way. What chunking
+bounds is the transient on top of it: the synth's working arrays are one chunk
+wide rather than one step wide, which is where the multi-GB peaks came from.
+
+`test_long_render_memory.py` pins all of this: that the flag is on, that chunked
+and whole renders are equal sample-for-sample for each live synth, that the fade
+survives at the voice edges and not at the seams, and that the gate falls back
+for a synth reporting no state.
 
 ## Scene mixing
 
