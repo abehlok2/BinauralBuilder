@@ -2,9 +2,18 @@
 
 The preview must use the same renderer as the export - a preview that sounds
 different from the file it is previewing is worse than no preview - so this
-module goes through the same compatibility adapter that `sound_creator` calls,
-and only adds what playback needs: a duration cap, a safety limiter, and the
-conversion to the interleaved 16-bit PCM the existing QtMultimedia path plays.
+module goes through the same renderer dispatch that `sound_creator` and the
+compiled-plan executor call, and only adds what playback needs: a duration cap,
+a safety limiter, and the conversion to the interleaved 16-bit PCM the existing
+QtMultimedia path plays.
+
+There are two previews because there are two questions. `render_voice_preview`
+answers "what does this voice sound like", which is what the voice editor asks
+and which carries transition semantics the scene plan does not model.
+`render_scene_preview` answers "what does the project sound like here" - every
+source that is sounding at that moment, through its routing - by executing the
+compiled plan. Auditioning one voice and exporting a mix are different things,
+and previously only the first was possible.
 """
 
 from __future__ import annotations
@@ -30,6 +39,7 @@ __all__ = [
     "PREVIEW_FADE_MS",
     "PreviewResult",
     "preview_frames",
+    "render_scene_preview",
     "render_voice_preview",
     "to_pcm16_bytes",
 ]
@@ -54,6 +64,59 @@ class PreviewResult:
     @property
     def frames(self) -> int:
         return int(self.audio.shape[0])
+
+
+def render_scene_preview(
+    track_data: Mapping[str, Any],
+    *,
+    sample_rate_hz: int | None = None,
+    duration_s: float = 5.0,
+    start_time_s: float = 0.0,
+    ceiling_dbfs: float = DEFAULT_LIMITER_CEILING_DBFS,
+    fade_ms: float = PREVIEW_FADE_MS,
+    block_size: int | None = None,
+) -> PreviewResult:
+    """Audition a window of the whole project, through the compiled plan.
+
+    Every source sounding at that moment, mixed through its routing, rather
+    than one voice in isolation. The plan is compiled from the track and
+    executed, so what is heard here is what an export of the same window
+    produces - the point of executing the plan rather than reading the document
+    a second way.
+    """
+
+    from .plan import plan_from_track
+    from .render.executor import execute_plan
+
+    settings = dict(track_data.get("global_settings") or {})
+    rate = int(sample_rate_hz or settings.get("sample_rate", DEFAULT_SAMPLE_RATE_HZ))
+
+    requested = max(0.0, float(duration_s))
+    truncated = requested > MAX_PREVIEW_SECONDS
+    span = min(requested, MAX_PREVIEW_SECONDS)
+    frames = seconds_to_samples(span, rate)
+    start_sample = seconds_to_samples(max(0.0, float(start_time_s)), rate)
+
+    plan = plan_from_track(track_data, start_sample=start_sample, frames=frames)
+    executed = execute_plan(plan, start_sample=start_sample, frames=frames,
+                            block_size=block_size)
+
+    channel_major = np.ascontiguousarray(executed.audio, dtype=np.float64)
+    fade_frames = milliseconds_to_frames(fade_ms, rate)
+    if fade_frames and channel_major.shape[1] > 2 * fade_frames:
+        apply_fade_in(channel_major, fade_frames)
+        apply_fade_out(channel_major, fade_frames)
+
+    clamped, report = safety_clamp(channel_major, ceiling_dbfs)
+    rendered = channel_major.shape[1]
+    return PreviewResult(
+        audio=np.ascontiguousarray(clamped.T, dtype=AUDIO_DTYPE),
+        sample_rate_hz=rate,
+        duration_s=rendered / float(rate) if rate else 0.0,
+        peak=float(np.max(np.abs(clamped))) if rendered else 0.0,
+        limited=report.max_gain_reduction_db > 0.0,
+        truncated=truncated,
+    )
 
 
 def render_voice_preview(

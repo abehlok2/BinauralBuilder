@@ -267,3 +267,84 @@ def test_rendering_one_source_directly_places_it_in_the_window():
     )
     assert stem.shape == (2, frames)
     assert np.max(np.abs(stem)) > 0.0
+
+
+# --- preview goes through the plan ------------------------------------------
+
+
+def test_a_scene_preview_is_what_an_export_of_that_window_produces():
+    """Auditioning the project and exporting it must not be two readings."""
+
+    from src.audio.sam_workbench.preview import render_scene_preview
+
+    track = _track("abstract_pm", duration=0.4, sources=2)
+    frames = int(0.4 * RATE)
+
+    preview = render_scene_preview(
+        track, duration_s=0.4, fade_ms=0.0, ceiling_dbfs=0.0
+    )
+    plan = plan_from_track(track, start_sample=0, frames=frames)
+    executed = execute_plan(plan, start_sample=0, frames=frames)
+
+    span = min(preview.frames, executed.frames)
+    assert span > 0
+    assert np.allclose(
+        preview.audio[:span].astype(np.float64), executed.audio[:, :span].T, atol=1e-6
+    )
+
+
+def test_a_scene_preview_hears_every_source_not_just_the_first():
+    """The old preview auditioned one voice and called it the project."""
+
+    from src.audio.sam_workbench.preview import render_scene_preview
+
+    one = render_scene_preview(
+        _track("abstract_pm", duration=0.4, sources=1), duration_s=0.4, fade_ms=0.0
+    )
+    two = render_scene_preview(
+        _track("abstract_pm", duration=0.4, sources=2), duration_s=0.4, fade_ms=0.0
+    )
+    assert two.peak > one.peak
+
+
+def test_a_scene_preview_respects_mute():
+    from src.audio.sam_workbench.preview import render_scene_preview
+
+    track = _track("abstract_pm", duration=0.3)
+    track["sam_scene"] = {
+        "sources": [{"id": "sam.1"}],
+        "routing": {
+            "buses": [{"id": "master"}],
+            "sources": [{"sourceId": "sam.1", "busId": "master", "muted": True}],
+        },
+    }
+    preview = render_scene_preview(track, duration_s=0.3, fade_ms=0.0)
+    assert preview.peak == pytest.approx(0.0, abs=1e-9)
+
+
+def test_a_scene_preview_of_a_later_window_is_that_window():
+    from src.audio.sam_workbench.preview import render_scene_preview
+
+    track = _track("abstract_pm", duration=0.6)
+    whole = render_scene_preview(track, duration_s=0.6, fade_ms=0.0, ceiling_dbfs=0.0)
+    later = render_scene_preview(
+        track, duration_s=0.2, start_time_s=0.3, fade_ms=0.0, ceiling_dbfs=0.0
+    )
+
+    offset = int(0.3 * RATE)
+    span = later.frames
+    assert np.allclose(
+        later.audio.astype(np.float64),
+        whole.audio[offset : offset + span].astype(np.float64),
+        atol=2e-6,
+    )
+
+
+def test_a_scene_preview_is_capped_like_any_other():
+    from src.audio.sam_workbench.preview import MAX_PREVIEW_SECONDS, render_scene_preview
+
+    preview = render_scene_preview(
+        _track("abstract_pm", duration=0.2), duration_s=MAX_PREVIEW_SECONDS + 30.0
+    )
+    assert preview.truncated is True
+    assert preview.duration_s <= MAX_PREVIEW_SECONDS
