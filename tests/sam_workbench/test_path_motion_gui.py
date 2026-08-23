@@ -274,6 +274,100 @@ def test_preview_tick_shows_live_parameter_values(qtbot):
     assert "radius_m=" not in widget.motion_status.text()
 
 
+# --- modulator definitions ---------------------------------------------------
+
+
+def test_the_modulator_editor_loads_and_disables_without_context(dialog):
+    keys = {dialog.motion_modulator_combo.itemData(i) for i in range(dialog.motion_modulator_combo.count())}
+    assert keys == set() or keys == {None}
+    assert not dialog.modulator_box.isEnabled()
+    assert not dialog.motion_rate_spin.isEnabled()
+
+
+def test_definitions_populate_the_editor_fields(qtbot):
+    scene = _scene_with_lfo()
+    scene["modulators"][0].update(
+        {"waveform": "triangle", "rateHz": 0.75, "phaseDeg": -30.0, "seed": 7}
+    )
+    holder = {"scene": scene}
+    widget = SamPath3DDialog(_orbit_spec(), modulation=_context(holder))
+    qtbot.addWidget(widget)
+
+    assert widget.motion_modulator_combo.currentData() == "lfo1"
+    assert widget.motion_waveform_combo.currentText() == "triangle"
+    assert widget.motion_rate_spin.value() == pytest.approx(0.75)
+    assert widget.motion_phase_spin.value() == pytest.approx(-30.0)
+    # The seed only does anything for the random waveform.
+    assert not widget.motion_seed_spin.isEnabled()
+
+
+def test_editing_a_definition_commits_it_to_the_scene(qtbot):
+    holder = {"scene": _scene_with_lfo()}
+    widget = SamPath3DDialog(_orbit_spec(), modulation=_context(holder))
+    qtbot.addWidget(widget)
+
+    widget.motion_rate_spin.setValue(1.5)
+    widget.motion_waveform_combo.setCurrentText("random")
+
+    committed = holder["committed"]["modulators"][0]
+    assert committed["rateHz"] == pytest.approx(1.5)
+    assert committed["waveform"] == "random"
+    # Seed becomes relevant the moment the waveform is random.
+    assert widget.motion_seed_spin.isEnabled()
+
+
+def test_seed_edits_are_committed_for_random_waveforms(qtbot):
+    holder = {"scene": _scene_with_lfo()}
+    widget = SamPath3DDialog(_orbit_spec(), modulation=_context(holder))
+    qtbot.addWidget(widget)
+
+    widget.motion_waveform_combo.setCurrentText("random")
+    widget.motion_seed_spin.setValue(42)
+
+    committed = holder["committed"]["modulators"][0]
+    assert committed["seed"] == 42
+
+
+def test_a_newly_created_modulator_is_selected_in_the_editor(qtbot):
+    widget, holder = _feedback_dialog(qtbot)
+
+    row = widget._motion_rows["path.radius_m"]
+    row["enable"].setChecked(True)
+    index = row["mod"].findData("@new")
+    row["mod"].setCurrentIndex(index)
+    row["depth"].setValue(0.2)
+
+    # The editor adopts the definition the row just created. The host scene
+    # already had lfo1, so the quick-add becomes lfo2.
+    created = widget.motion_modulator_combo.currentData()
+    assert created == "lfo2"
+    ids = {str(item.get("id")) for item in holder["scene"]["modulators"]}
+    assert ids == {"lfo1", "lfo2"}
+    assert widget.modulator_box.isEnabled()
+    assert widget.motion_rate_spin.value() == pytest.approx(0.25)
+
+
+def test_definition_edits_change_the_previewed_motion(qtbot):
+    widget, holder = _feedback_dialog(qtbot)
+
+    row = widget._motion_rows["path.radius_m"]
+    row["enable"].setChecked(True)
+    index = row["mod"].findData("lfo1")
+    row["mod"].setCurrentIndex(max(index, 0))
+    row["depth"].setValue(0.9)
+    slow = np.linalg.norm(widget.views["top"]._curve, axis=1)
+
+    widget.motion_rate_spin.setValue(2.0)
+    fast = np.linalg.norm(widget.views["top"]._curve, axis=1)
+
+    # A faster LFO crosses its swing more often within one traversal.
+    def crossings(values):
+        middle = values - float(np.mean(values))
+        return int(np.sum(np.diff(np.signbit(middle)).astype(bool)))
+
+    assert crossings(fast) > crossings(slow)
+
+
 # --- flow summary ------------------------------------------------------------
 
 

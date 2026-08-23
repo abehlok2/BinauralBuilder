@@ -53,6 +53,7 @@ from PyQt5.QtWidgets import (
 )
 
 from src.audio.sam_workbench.render.hybrid import SIGNAL_CHAIN_TEXT
+from src.audio.sam_workbench.scene_state import MODULATOR_WAVEFORMS
 from src.audio.sam_workbench.stages import CURVES
 from src.audio.sam_workbench.trajectory import (
     PRIMITIVE_TYPES,
@@ -716,12 +717,69 @@ class SamPath3DDialog(QDialog):
         box_layout.addWidget(self.motion_status)
         self.motion_form = QFormLayout()
         box_layout.addLayout(self.motion_form)
+        box_layout.addWidget(self._build_modulator_editor())
         self.motion_box.setToolTip(
             "Drive this path's own numbers from the scene's modulators. The "
             "value here swings around the number above by the depth shown, "
             "and the routes live in the scene's modulation matrix."
         )
         return self.motion_box
+
+    def _build_modulator_editor(self):
+        """Edit a modulator definition itself: shape, speed, phase, seed."""
+
+        self.modulator_box = QGroupBox("Modulator")
+        form = QFormLayout(self.modulator_box)
+
+        self.motion_modulator_combo = QComboBox()
+        self.motion_modulator_combo.setToolTip(
+            "Which scene modulator to edit. Rows above reference these by name."
+        )
+        self.motion_modulator_combo.currentIndexChanged.connect(
+            self._motion_modulator_selected
+        )
+        form.addRow("Name", self.motion_modulator_combo)
+
+        self.motion_waveform_combo = QComboBox()
+        self.motion_waveform_combo.addItems(list(MODULATOR_WAVEFORMS))
+        self.motion_waveform_combo.setToolTip(
+            "Sine, triangle and square sweep smoothly back and forth; random "
+            "wanders between seeded values, smoothed at each step."
+        )
+        self.motion_waveform_combo.currentTextChanged.connect(
+            lambda _text: self._modulator_definition_edited()
+        )
+        form.addRow("Waveform", self.motion_waveform_combo)
+
+        self.motion_rate_spin = QDoubleSpinBox()
+        self.motion_rate_spin.setRange(0.0, 1000.0)
+        self.motion_rate_spin.setDecimals(3)
+        self.motion_rate_spin.setSingleStep(0.05)
+        self.motion_rate_spin.setSuffix(" Hz")
+        self.motion_rate_spin.setToolTip("Cycles per second of this modulator.")
+        self.motion_rate_spin.valueChanged.connect(lambda _v: self._modulator_definition_edited())
+        form.addRow("Rate", self.motion_rate_spin)
+
+        self.motion_phase_spin = QDoubleSpinBox()
+        self.motion_phase_spin.setRange(-360.0, 360.0)
+        self.motion_phase_spin.setDecimals(1)
+        self.motion_phase_spin.setSuffix(" °")
+        self.motion_phase_spin.setToolTip(
+            "Where in its cycle the modulator starts. Offset two modulators "
+            "to drive related parameters out of step."
+        )
+        self.motion_phase_spin.valueChanged.connect(lambda _v: self._modulator_definition_edited())
+        form.addRow("Phase", self.motion_phase_spin)
+
+        self.motion_seed_spin = QSpinBox()
+        self.motion_seed_spin.setRange(0, 2_147_483_647)
+        self.motion_seed_spin.setToolTip(
+            "Only used by the random waveform: the same seed always produces "
+            "the same wander."
+        )
+        self.motion_seed_spin.valueChanged.connect(lambda _v: self._modulator_definition_edited())
+        form.addRow("Seed", self.motion_seed_spin)
+        return self.modulator_box
 
     def _motion_fields(self):
         """Catalogue rows for the selected primitive, then the transform."""
@@ -798,6 +856,7 @@ class SamPath3DDialog(QDialog):
         finally:
             self._updating = previous
         self._refresh_motion_status()
+        self._refresh_modulator_editor()
 
     def _motion_row_widget(self, label: str, unit: str, modulator_ids: list[str]) -> dict[str, Any]:
         container = QWidget()
@@ -885,6 +944,102 @@ class SamPath3DDialog(QDialog):
         )
         return identifier
 
+    def _refresh_modulator_editor(self, select_id: str | None = None) -> None:
+        """Rebuild the definition editor's names and fields from the scene."""
+
+        previous = self._updating
+        self._updating = True
+        try:
+            combo = self.motion_modulator_combo
+            combo.blockSignals(True)
+            wanted = select_id or combo.currentData()
+            combo.clear()
+            definitions = self._motion_definitions()
+            for identifier in sorted(
+                str(item.get("id")) for item in definitions if str(item.get("id") or "").strip()
+            ):
+                combo.addItem(identifier, identifier)
+            if wanted is not None:
+                index = combo.findData(wanted)
+                if index >= 0:
+                    combo.setCurrentIndex(index)
+            combo.blockSignals(False)
+
+            has_context = self._has_motion_context() and bool(definitions)
+            self.modulator_box.setEnabled(self._has_motion_context())
+            definition = next(
+                (
+                    item
+                    for item in definitions
+                    if str(item.get("id")) == str(combo.currentData())
+                ),
+                None,
+            )
+            waveform = str((definition or {}).get("waveform", "sine"))
+            index = self.motion_waveform_combo.findText(waveform)
+            self.motion_waveform_combo.setCurrentIndex(index if index >= 0 else 0)
+            self.motion_rate_spin.setValue(float((definition or {}).get("rateHz", 1.0)))
+            self.motion_phase_spin.setValue(float((definition or {}).get("phaseDeg", 0.0)))
+            self.motion_seed_spin.setValue(int((definition or {}).get("seed", 0) or 0))
+            editable = has_context and definition is not None
+            for widget in (
+                self.motion_waveform_combo,
+                self.motion_rate_spin,
+                self.motion_phase_spin,
+            ):
+                widget.setEnabled(editable)
+            self.motion_seed_spin.setEnabled(editable and waveform == "random")
+        finally:
+            self._updating = previous
+
+    def _motion_definitions(self) -> list[dict[str, Any]]:
+        scene = self._motion_scene()
+        if scene is None:
+            return []
+        return [
+            dict(item)
+            for item in scene.get("modulators", ())
+            if str(item.get("id") or "").strip()
+        ]
+
+    def _motion_modulator_selected(self, _index: int) -> None:
+        if self._updating:
+            return
+        self._refresh_modulator_editor()
+
+    def _modulator_definition_edited(self, *_args) -> None:
+        if self._updating or not self._has_motion_context():
+            return
+        scene = self._motion_scene()
+        if scene is None:
+            return
+        identifier = str(self.motion_modulator_combo.currentData() or "")
+        if not identifier:
+            return
+
+        definitions = list(scene.get("modulators") or ())
+        for item in definitions:
+            if str(item.get("id")) != identifier:
+                continue
+            item["waveform"] = self.motion_waveform_combo.currentText()
+            item["rateHz"] = float(self.motion_rate_spin.value())
+            item["phaseDeg"] = float(self.motion_phase_spin.value())
+            item["seed"] = int(self.motion_seed_spin.value())
+            break
+        else:
+            return
+        scene["modulators"] = definitions
+        # Keep the seed control honest about whether it does anything.
+        self.motion_seed_spin.setEnabled(
+            self.motion_waveform_combo.currentText() == "random"
+        )
+        try:
+            self._motion["commit"](scene)
+        except Exception as error:  # noqa: BLE001 - reported rather than lost
+            QMessageBox.warning(self, "Could not save modulator", str(error))
+            return
+        self._refresh()
+
     def _motion_edited(self, *_args) -> None:
         if self._updating or not self._has_motion_context():
             return
@@ -903,6 +1058,7 @@ class SamPath3DDialog(QDialog):
 
         previous = self._updating
         self._updating = True
+        created: str | None = None
         try:
             for key, row in sorted(self._motion_rows.items()):
                 if not row["enable"].isChecked():
@@ -917,6 +1073,7 @@ class SamPath3DDialog(QDialog):
                     modulator_id = self._create_modulator(modulators)
                     if modulator_id is None:
                         continue
+                    created = modulator_id
                     index = row["mod"].findData(modulator_id)
                     if index >= 0:
                         row["mod"].setCurrentIndex(index)
@@ -949,6 +1106,7 @@ class SamPath3DDialog(QDialog):
             QMessageBox.warning(self, "Could not save motion", str(error))
             return
         self._refresh_motion_status()
+        self._refresh_modulator_editor(select_id=created)
         self._refresh()
 
     # -------------------------------------------------------------- selection
