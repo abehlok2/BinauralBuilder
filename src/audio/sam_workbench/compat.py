@@ -47,6 +47,7 @@ from src.audio.sam_workbench.dsp.source import (
     CompiledSource,
     render_source,
 )
+from src.audio.sam_workbench.path_automation import RUNTIME_BOUND_POSITIONS
 from src.audio.sam_workbench.render.geometric import GeometricBinauralRenderer, GeometricSpec
 from src.audio.sam_workbench.render.registry import REGISTRY
 from src.audio.sam_workbench.trajectory.transforms import ListenerTransform
@@ -651,6 +652,7 @@ def render_sam2_voice(
     voice_params = dict(params or {})
     automation: dict[str, Any] = {}
     if sam_scene:
+        from .path_automation import RUNTIME_BOUND_POSITIONS, compile_bound_trajectory
         from .scene_state import automated_paths, scene_parameter_overrides
 
         # Where the scene's automation lands is what decides whether the render
@@ -664,14 +666,16 @@ def render_sam2_voice(
         # The renderer's own clock and the scene's timeline are both absolute
         # but need not share an origin: a transition renders from sample zero
         # while sitting somewhere later on the project timeline. The difference
-        # is applied once, here, rather than being rediscovered per parameter.
+        # is applied once, here, rather than being rediscovered per parameter -
+        # and the path's modulated numbers ride the very same mapping.
         voice_origin = 0 if is_transition else seconds_to_samples(initial_offset, sample_rate)
+        origin_offset = seconds_to_samples(scene_origin, sample_rate) - voice_origin
         automation = _scene_automation(
             sam_scene,
             str(source_id),
             voice_params,
             sample_rate,
-            seconds_to_samples(scene_origin, sample_rate) - voice_origin,
+            origin_offset,
         )
         remaining = {
             path: value
@@ -681,6 +685,19 @@ def render_sam2_voice(
             if path not in automation
         }
         voice_params.update(remaining)
+
+        payload = voice_params.get("canonicalTrajectory")
+        if isinstance(payload, Mapping) and payload.get("geometry"):
+            bound = compile_bound_trajectory(
+                payload,
+                sam_scene,
+                str(source_id),
+                sample_rate_hz=float(sample_rate),
+                origin_sample=int(origin_offset),
+                params=voice_params,
+            )
+            if bound.model is not None and getattr(bound.model, "bindings", None):
+                voice_params[RUNTIME_BOUND_POSITIONS] = bound.model.positions
     audio = render_voice_channels(
         voice_params,
         frames,
@@ -735,7 +752,15 @@ def _hrtf_trajectory(params: Mapping[str, Any], options: Mapping[str, Any]):
     the editor was flattened to a horizontal sweep the moment it was previewed
     or exported.  A path is now only synthesized from those two options when
     there is no trajectory to use, which is the genuinely legacy case.
+
+    When the scene automates the path's own numbers, the pre-bound positions
+    compiled by :mod:`.path_automation` arrive on the voice parameters and are
+    returned as-is - the same interpretation the plan door uses.
     """
+
+    prebound = params.get(RUNTIME_BOUND_POSITIONS)
+    if callable(prebound):
+        return prebound
 
     payload = params.get("canonicalTrajectory")
     if isinstance(payload, Mapping) and payload.get("geometry"):
@@ -1008,7 +1033,8 @@ def _render_geometric_voice(
     payload = params.get("canonicalTrajectory")
     if not isinstance(payload, Mapping):
         raise ValueError("geometric rendererMode requires canonicalTrajectory")
-    trajectory = trajectory_from_dict(payload)
+    prebound = params.get(RUNTIME_BOUND_POSITIONS)
+    trajectory = prebound if callable(prebound) else trajectory_from_dict(payload)
     maximum_distance = _as_float(params.get("maximumDistanceM", 100.0), 100.0)
     geometric_spec = GeometricSpec(
         trajectory=trajectory,

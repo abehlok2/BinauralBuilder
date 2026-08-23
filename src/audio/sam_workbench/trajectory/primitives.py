@@ -12,6 +12,13 @@ deliberate - a primitive plus any traversal compiles to the same timestamped
 trajectory, so a rising spiral traversed at constant speed and the same spiral
 driven from an envelope are one geometry with two time laws rather than two
 separate path types.
+
+Each primitive's mathematics lives in a module-level function taking explicit
+parameter values rather than in the dataclass body.  The frozen dataclasses are
+the stored, validated form; the functions are the evaluated form, and they also
+serve :mod:`.dynamic`, which drives the same numbers with time-varying values.
+One formula per shape means a modulated orbit and a static one can never drift
+apart.
 """
 
 from __future__ import annotations
@@ -24,6 +31,7 @@ import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
 from .spherical import spherical_to_cartesian
+from .transforms import apply_stacked, rotation_matrices_ypr
 
 __all__ = [
     "HorizontalOrbit",
@@ -80,6 +88,22 @@ def _elevation(value: float, name: str) -> float:
 # --- orbits ----------------------------------------------------------------
 
 
+def horizontal_orbit_points(
+    u: ArrayLike,
+    *,
+    radius_m: ArrayLike,
+    elevation_deg: ArrayLike,
+    start_azimuth_deg: ArrayLike,
+    turns: ArrayLike,
+    centre_m: ArrayLike,
+) -> NDArray[np.float64]:
+    azimuth = start_azimuth_deg + 360.0 * turns * _parameter(u)
+    return (
+        spherical_to_cartesian(azimuth, elevation_deg, radius_m)
+        + np.asarray(centre_m, dtype=np.float64)
+    )
+
+
 @dataclass(frozen=True)
 class HorizontalOrbit:
     """A ring around the listener at one height.
@@ -102,13 +126,39 @@ class HorizontalOrbit:
         _centre(self.centre_m)
 
     def evaluate(self, u: ArrayLike) -> NDArray[np.float64]:
-        azimuth = self.start_azimuth_deg + 360.0 * self.turns * _parameter(u)
-        return (
-            spherical_to_cartesian(
-                azimuth, self.elevation_deg, self.radius_m
-            )
-            + _centre(self.centre_m)
+        return horizontal_orbit_points(
+            u,
+            radius_m=self.radius_m,
+            elevation_deg=self.elevation_deg,
+            start_azimuth_deg=self.start_azimuth_deg,
+            turns=self.turns,
+            centre_m=self.centre_m,
         )
+
+
+def vertical_orbit_points(
+    u: ArrayLike,
+    *,
+    radius_m: ArrayLike,
+    plane_azimuth_deg: ArrayLike,
+    start_angle_deg: ArrayLike,
+    turns: ArrayLike,
+    centre_m: ArrayLike,
+) -> NDArray[np.float64]:
+    angle = np.radians(start_angle_deg + 360.0 * turns * _parameter(u))
+    plane = np.radians(plane_azimuth_deg)
+    horizontal = radius_m * np.cos(angle)
+    return (
+        np.stack(
+            (
+                horizontal * np.cos(plane),
+                horizontal * np.sin(plane),
+                radius_m * np.sin(angle),
+            ),
+            axis=-1,
+        )
+        + np.asarray(centre_m, dtype=np.float64)
+    )
 
 
 @dataclass(frozen=True)
@@ -134,20 +184,45 @@ class VerticalOrbit:
         _centre(self.centre_m)
 
     def evaluate(self, u: ArrayLike) -> NDArray[np.float64]:
-        angle = np.radians(self.start_angle_deg + 360.0 * self.turns * _parameter(u))
-        plane = math.radians(self.plane_azimuth_deg)
-        horizontal = self.radius_m * np.cos(angle)
-        return (
-            np.stack(
-                (
-                    horizontal * math.cos(plane),
-                    horizontal * math.sin(plane),
-                    self.radius_m * np.sin(angle),
-                ),
-                axis=-1,
-            )
-            + _centre(self.centre_m)
+        return vertical_orbit_points(
+            u,
+            radius_m=self.radius_m,
+            plane_azimuth_deg=self.plane_azimuth_deg,
+            start_angle_deg=self.start_angle_deg,
+            turns=self.turns,
+            centre_m=self.centre_m,
         )
+
+
+def tilted_orbit_points(
+    u: ArrayLike,
+    *,
+    radius_m: ArrayLike,
+    tilt_deg: ArrayLike,
+    tilt_axis_azimuth_deg: ArrayLike,
+    start_azimuth_deg: ArrayLike,
+    turns: ArrayLike,
+    centre_m: ArrayLike,
+) -> NDArray[np.float64]:
+    angle = np.radians(start_azimuth_deg + 360.0 * turns * _parameter(u))
+    flat = np.stack(
+        (
+            radius_m * np.cos(angle),
+            radius_m * np.sin(angle),
+            np.zeros_like(angle),
+        ),
+        axis=-1,
+    )
+    # Tip the ring about a horizontal axis pointing along the tilt azimuth:
+    # rotate that axis onto +y, pitch, then rotate back.
+    matrix = rotation_matrices_ypr(
+        yaw_deg=-tilt_axis_azimuth_deg, pitch_deg=tilt_deg
+    )
+    if matrix.ndim == 2:
+        tilted = flat @ matrix.T
+    else:
+        tilted = apply_stacked(flat, matrix)
+    return tilted + np.asarray(centre_m, dtype=np.float64)
 
 
 @dataclass(frozen=True)
@@ -174,23 +249,34 @@ class TiltedOrbit:
         _centre(self.centre_m)
 
     def evaluate(self, u: ArrayLike) -> NDArray[np.float64]:
-        angle = np.radians(self.start_azimuth_deg + 360.0 * self.turns * _parameter(u))
-        flat = np.stack(
-            (
-                self.radius_m * np.cos(angle),
-                self.radius_m * np.sin(angle),
-                np.zeros_like(angle),
-            ),
-            axis=-1,
+        return tilted_orbit_points(
+            u,
+            radius_m=self.radius_m,
+            tilt_deg=self.tilt_deg,
+            tilt_axis_azimuth_deg=self.tilt_axis_azimuth_deg,
+            start_azimuth_deg=self.start_azimuth_deg,
+            turns=self.turns,
+            centre_m=self.centre_m,
         )
-        # Tip the ring about a horizontal axis pointing along the tilt azimuth:
-        # rotate that axis onto +y, pitch, then rotate back.
-        from .transforms import rotation_matrix_ypr
 
-        to_axis = rotation_matrix_ypr(yaw_deg=-self.tilt_axis_azimuth_deg)
-        pitch = rotation_matrix_ypr(pitch_deg=self.tilt_deg)
-        matrix = to_axis.T @ pitch @ to_axis
-        return flat @ matrix.T + _centre(self.centre_m)
+
+def spherical_orbit_points(
+    u: ArrayLike,
+    *,
+    start_distance_m: ArrayLike,
+    end_distance_m: ArrayLike,
+    elevation_deg: ArrayLike,
+    turns: ArrayLike,
+    start_azimuth_deg: ArrayLike,
+    cycles: ArrayLike,
+) -> NDArray[np.float64]:
+    progress = _parameter(u)
+    azimuth = start_azimuth_deg + 360.0 * turns * progress
+    # A raised cosine breathes out and back in over each cycle, so a looped
+    # traversal returns to its starting radius without a jump.
+    breath = 0.5 - 0.5 * np.cos(2.0 * np.pi * cycles * progress)
+    distance = start_distance_m + (end_distance_m - start_distance_m) * breath
+    return spherical_to_cartesian(azimuth, elevation_deg, distance)
 
 
 @dataclass(frozen=True)
@@ -218,19 +304,40 @@ class SphericalOrbit:
         _positive(self.cycles, "cycles")
 
     def evaluate(self, u: ArrayLike) -> NDArray[np.float64]:
-        progress = _parameter(u)
-        azimuth = self.start_azimuth_deg + 360.0 * self.turns * progress
-        # A raised cosine breathes out and back in over each cycle, so a looped
-        # traversal returns to its starting radius without a jump.
-        breath = 0.5 - 0.5 * np.cos(2.0 * np.pi * self.cycles * progress)
-        distance = (
-            self.start_distance_m
-            + (self.end_distance_m - self.start_distance_m) * breath
+        return spherical_orbit_points(
+            u,
+            start_distance_m=self.start_distance_m,
+            end_distance_m=self.end_distance_m,
+            elevation_deg=self.elevation_deg,
+            turns=self.turns,
+            start_azimuth_deg=self.start_azimuth_deg,
+            cycles=self.cycles,
         )
-        return spherical_to_cartesian(azimuth, self.elevation_deg, distance)
 
 
 # --- sweeps ----------------------------------------------------------------
+
+
+def rising_arc_points(
+    u: ArrayLike,
+    *,
+    start_azimuth_deg: ArrayLike,
+    end_azimuth_deg: ArrayLike,
+    start_elevation_deg: ArrayLike,
+    end_elevation_deg: ArrayLike,
+    start_distance_m: ArrayLike,
+    end_distance_m: ArrayLike,
+) -> NDArray[np.float64]:
+    progress = np.clip(_parameter(u), 0.0, 1.0)
+
+    def between(start: ArrayLike, end: ArrayLike) -> NDArray[np.float64]:
+        return start + (end - start) * progress
+
+    return spherical_to_cartesian(
+        between(start_azimuth_deg, end_azimuth_deg),
+        between(start_elevation_deg, end_elevation_deg),
+        between(start_distance_m, end_distance_m),
+    )
 
 
 @dataclass(frozen=True)
@@ -258,16 +365,41 @@ class RisingArc:
         _positive(self.end_distance_m, "end_distance_m")
 
     def evaluate(self, u: ArrayLike) -> NDArray[np.float64]:
-        progress = np.clip(_parameter(u), 0.0, 1.0)
-
-        def between(start: float, end: float) -> NDArray[np.float64]:
-            return start + (end - start) * progress
-
-        return spherical_to_cartesian(
-            between(self.start_azimuth_deg, self.end_azimuth_deg),
-            between(self.start_elevation_deg, self.end_elevation_deg),
-            between(self.start_distance_m, self.end_distance_m),
+        return rising_arc_points(
+            u,
+            start_azimuth_deg=self.start_azimuth_deg,
+            end_azimuth_deg=self.end_azimuth_deg,
+            start_elevation_deg=self.start_elevation_deg,
+            end_elevation_deg=self.end_elevation_deg,
+            start_distance_m=self.start_distance_m,
+            end_distance_m=self.end_distance_m,
         )
+
+
+def overhead_sweep_points(
+    u: ArrayLike,
+    *,
+    azimuth_deg: ArrayLike,
+    start_elevation_deg: ArrayLike,
+    distance_m: ArrayLike,
+    pass_over: bool,
+    end_elevation_deg: ArrayLike,
+) -> NDArray[np.float64]:
+    progress = np.clip(_parameter(u), 0.0, 1.0)
+    if not pass_over:
+        elevation = start_elevation_deg + (90.0 - start_elevation_deg) * progress
+        return spherical_to_cartesian(azimuth_deg, elevation, distance_m)
+    # Rise to the zenith over the first half, descend behind over the
+    # second. Azimuth flips at the top, where it is undefined anyway, so
+    # the position stays continuous through the crossing.
+    rising = progress <= 0.5
+    elevation = np.where(
+        rising,
+        start_elevation_deg + (90.0 - start_elevation_deg) * (2.0 * progress),
+        90.0 - (90.0 - end_elevation_deg) * (2.0 * progress - 1.0),
+    )
+    azimuth = np.where(rising, azimuth_deg, azimuth_deg + 180.0)
+    return spherical_to_cartesian(azimuth, elevation, distance_m)
 
 
 @dataclass(frozen=True)
@@ -292,23 +424,32 @@ class OverheadSweep:
         _positive(self.distance_m, "distance_m")
 
     def evaluate(self, u: ArrayLike) -> NDArray[np.float64]:
-        progress = np.clip(_parameter(u), 0.0, 1.0)
-        if not self.pass_over:
-            elevation = self.start_elevation_deg + (
-                90.0 - self.start_elevation_deg
-            ) * progress
-            return spherical_to_cartesian(self.azimuth_deg, elevation, self.distance_m)
-        # Rise to the zenith over the first half, descend behind over the
-        # second. Azimuth flips at the top, where it is undefined anyway, so
-        # the position stays continuous through the crossing.
-        rising = progress <= 0.5
-        elevation = np.where(
-            rising,
-            self.start_elevation_deg + (90.0 - self.start_elevation_deg) * (2.0 * progress),
-            90.0 - (90.0 - self.end_elevation_deg) * (2.0 * progress - 1.0),
+        return overhead_sweep_points(
+            u,
+            azimuth_deg=self.azimuth_deg,
+            start_elevation_deg=self.start_elevation_deg,
+            distance_m=self.distance_m,
+            pass_over=self.pass_over,
+            end_elevation_deg=self.end_elevation_deg,
         )
-        azimuth = np.where(rising, self.azimuth_deg, self.azimuth_deg + 180.0)
-        return spherical_to_cartesian(azimuth, elevation, self.distance_m)
+
+
+def elevation_sweep_points(
+    u: ArrayLike,
+    *,
+    start_azimuth_deg: ArrayLike,
+    end_azimuth_deg: ArrayLike,
+    elevation_deg: ArrayLike,
+    distance_m: ArrayLike,
+    end_elevation_deg: ArrayLike | None,
+) -> NDArray[np.float64]:
+    progress = np.clip(_parameter(u), 0.0, 1.0)
+    resolved_end = elevation_deg if end_elevation_deg is None else end_elevation_deg
+    return spherical_to_cartesian(
+        start_azimuth_deg + (end_azimuth_deg - start_azimuth_deg) * progress,
+        elevation_deg + (resolved_end - elevation_deg) * progress,
+        distance_m,
+    )
 
 
 @dataclass(frozen=True)
@@ -335,18 +476,31 @@ class ElevationSweep:
         _positive(self.distance_m, "distance_m")
 
     def evaluate(self, u: ArrayLike) -> NDArray[np.float64]:
-        progress = np.clip(_parameter(u), 0.0, 1.0)
-        end_elevation = (
-            self.elevation_deg
-            if self.end_elevation_deg is None
-            else self.end_elevation_deg
+        return elevation_sweep_points(
+            u,
+            start_azimuth_deg=self.start_azimuth_deg,
+            end_azimuth_deg=self.end_azimuth_deg,
+            elevation_deg=self.elevation_deg,
+            distance_m=self.distance_m,
+            end_elevation_deg=self.end_elevation_deg,
         )
-        return spherical_to_cartesian(
-            self.start_azimuth_deg
-            + (self.end_azimuth_deg - self.start_azimuth_deg) * progress,
-            self.elevation_deg + (end_elevation - self.elevation_deg) * progress,
-            self.distance_m,
-        )
+
+
+def dome_traversal_points(
+    u: ArrayLike,
+    *,
+    distance_m: ArrayLike,
+    start_elevation_deg: ArrayLike,
+    end_elevation_deg: ArrayLike,
+    turns: ArrayLike,
+    start_azimuth_deg: ArrayLike,
+) -> NDArray[np.float64]:
+    progress = np.clip(_parameter(u), 0.0, 1.0)
+    return spherical_to_cartesian(
+        start_azimuth_deg + 360.0 * turns * progress,
+        start_elevation_deg + (end_elevation_deg - start_elevation_deg) * progress,
+        distance_m,
+    )
 
 
 @dataclass(frozen=True)
@@ -372,16 +526,42 @@ class DomeTraversal:
         _finite(self.turns, "turns")
 
     def evaluate(self, u: ArrayLike) -> NDArray[np.float64]:
-        progress = np.clip(_parameter(u), 0.0, 1.0)
-        return spherical_to_cartesian(
-            self.start_azimuth_deg + 360.0 * self.turns * progress,
-            self.start_elevation_deg
-            + (self.end_elevation_deg - self.start_elevation_deg) * progress,
-            self.distance_m,
+        return dome_traversal_points(
+            u,
+            distance_m=self.distance_m,
+            start_elevation_deg=self.start_elevation_deg,
+            end_elevation_deg=self.end_elevation_deg,
+            turns=self.turns,
+            start_azimuth_deg=self.start_azimuth_deg,
         )
 
 
 # --- figures ---------------------------------------------------------------
+
+
+def figure_eight_3d_points(
+    u: ArrayLike,
+    *,
+    azimuth_extent_deg: ArrayLike,
+    elevation_extent_deg: ArrayLike,
+    distance_m: ArrayLike,
+    tilt_deg: ArrayLike,
+    centre_azimuth_deg: ArrayLike,
+    centre_elevation_deg: ArrayLike,
+) -> NDArray[np.float64]:
+    angle = 2.0 * np.pi * _parameter(u)
+    # Gerono lemniscate: the doubled frequency on one axis is what closes
+    # the curve into two lobes rather than one loop.
+    across = azimuth_extent_deg * np.sin(angle)
+    along = elevation_extent_deg * np.sin(2.0 * angle)
+    tilt = np.radians(tilt_deg)
+    azimuth = centre_azimuth_deg + across * np.cos(tilt) - along * np.sin(tilt)
+    elevation = centre_elevation_deg + across * np.sin(tilt) + along * np.cos(tilt)
+    # Elevation is a polar angle, not a free axis: a tilted figure with a
+    # large extent would otherwise ask for directions past the zenith.
+    return spherical_to_cartesian(
+        azimuth, np.clip(elevation, -90.0, 90.0), distance_m
+    )
 
 
 @dataclass(frozen=True)
@@ -417,19 +597,41 @@ class FigureEight3D:
         _elevation(self.centre_elevation_deg, "centre_elevation_deg")
 
     def evaluate(self, u: ArrayLike) -> NDArray[np.float64]:
-        angle = 2.0 * np.pi * _parameter(u)
-        # Gerono lemniscate: the doubled frequency on one axis is what closes
-        # the curve into two lobes rather than one loop.
-        across = self.azimuth_extent_deg * np.sin(angle)
-        along = self.elevation_extent_deg * np.sin(2.0 * angle)
-        tilt = math.radians(self.tilt_deg)
-        azimuth = self.centre_azimuth_deg + across * math.cos(tilt) - along * math.sin(tilt)
-        elevation = self.centre_elevation_deg + across * math.sin(tilt) + along * math.cos(tilt)
-        # Elevation is a polar angle, not a free axis: a tilted figure with a
-        # large extent would otherwise ask for directions past the zenith.
-        return spherical_to_cartesian(
-            azimuth, np.clip(elevation, -90.0, 90.0), self.distance_m
+        return figure_eight_3d_points(
+            u,
+            azimuth_extent_deg=self.azimuth_extent_deg,
+            elevation_extent_deg=self.elevation_extent_deg,
+            distance_m=self.distance_m,
+            tilt_deg=self.tilt_deg,
+            centre_azimuth_deg=self.centre_azimuth_deg,
+            centre_elevation_deg=self.centre_elevation_deg,
         )
+
+
+def pendulum_points(
+    u: ArrayLike,
+    *,
+    length_m: ArrayLike,
+    swing_deg: ArrayLike,
+    plane_azimuth_deg: ArrayLike,
+    pivot_m: ArrayLike,
+    swings: ArrayLike,
+) -> NDArray[np.float64]:
+    progress = _parameter(u)
+    angle = np.radians(swing_deg) * np.sin(2.0 * np.pi * swings * progress)
+    plane = np.radians(plane_azimuth_deg)
+    along = length_m * np.sin(angle)
+    return (
+        np.stack(
+            (
+                along * np.cos(plane),
+                along * np.sin(plane),
+                -length_m * np.cos(angle),
+            ),
+            axis=-1,
+        )
+        + np.asarray(pivot_m, dtype=np.float64)
+    )
 
 
 @dataclass(frozen=True)
@@ -457,23 +659,40 @@ class Pendulum:
         _centre(self.pivot_m)
 
     def evaluate(self, u: ArrayLike) -> NDArray[np.float64]:
-        progress = _parameter(u)
-        angle = np.radians(self.swing_deg) * np.sin(
-            2.0 * np.pi * self.swings * progress
+        return pendulum_points(
+            u,
+            length_m=self.length_m,
+            swing_deg=self.swing_deg,
+            plane_azimuth_deg=self.plane_azimuth_deg,
+            pivot_m=self.pivot_m,
+            swings=self.swings,
         )
-        plane = math.radians(self.plane_azimuth_deg)
-        along = self.length_m * np.sin(angle)
-        return (
-            np.stack(
-                (
-                    along * math.cos(plane),
-                    along * math.sin(plane),
-                    -self.length_m * np.cos(angle),
-                ),
-                axis=-1,
-            )
-            + _centre(self.pivot_m)
+
+
+def torus_points(
+    u: ArrayLike,
+    *,
+    major_radius_m: ArrayLike,
+    minor_radius_m: ArrayLike,
+    major_turns: ArrayLike,
+    minor_turns: ArrayLike,
+    centre_m: ArrayLike,
+) -> NDArray[np.float64]:
+    progress = _parameter(u)
+    major = 2.0 * np.pi * major_turns * progress
+    minor = 2.0 * np.pi * minor_turns * progress
+    radius = major_radius_m + minor_radius_m * np.cos(minor)
+    return (
+        np.stack(
+            (
+                radius * np.cos(major),
+                radius * np.sin(major),
+                minor_radius_m * np.sin(minor),
+            ),
+            axis=-1,
         )
+        + np.asarray(centre_m, dtype=np.float64)
+    )
 
 
 @dataclass(frozen=True)
@@ -515,21 +734,138 @@ class Torus:
             )
 
     def evaluate(self, u: ArrayLike) -> NDArray[np.float64]:
-        progress = _parameter(u)
-        major = 2.0 * np.pi * self.major_turns * progress
-        minor = 2.0 * np.pi * self.minor_turns * progress
-        radius = self.major_radius_m + self.minor_radius_m * np.cos(minor)
-        return (
-            np.stack(
-                (
-                    radius * np.cos(major),
-                    radius * np.sin(major),
-                    self.minor_radius_m * np.sin(minor),
-                ),
-                axis=-1,
-            )
-            + _centre(self.centre_m)
+        return torus_points(
+            u,
+            major_radius_m=self.major_radius_m,
+            minor_radius_m=self.minor_radius_m,
+            major_turns=self.major_turns,
+            minor_turns=self.minor_turns,
+            centre_m=self.centre_m,
         )
+
+
+def random_walk_points(
+    u: ArrayLike,
+    *,
+    extent_m: ArrayLike,
+    centre_m: ArrayLike,
+    steps: int,
+    seed: int,
+    minimum_distance_m: ArrayLike,
+    smooth: bool,
+) -> NDArray[np.float64]:
+    progress = np.clip(_parameter(u), 0.0, 1.0)
+
+    extent_array = np.asarray(extent_m, dtype=np.float64)
+    centre_array = np.asarray(centre_m, dtype=np.float64)
+    minimum_array = np.asarray(minimum_distance_m, dtype=np.float64)
+    if extent_array.ndim == 1 and centre_array.ndim == 1 and minimum_array.ndim == 0:
+        return _random_walk_row(
+            progress,
+            extent=extent_array,
+            centre=centre_array,
+            steps=int(steps),
+            seed=int(seed),
+            minimum=minimum_array,
+            smooth=bool(smooth),
+        )
+    # Time-varying volume parameters rebuild the seeded waypoint set per query,
+    # so each time keeps its own box. Called once per control-grid window, the
+    # row-wise cost is bounded by the window's grid resolution.
+    flat = np.asarray(progress).reshape(-1)
+    rows = [
+        _random_walk_row(
+            flat[index : index + 1],
+            extent=extent_array.reshape(-1)[index * 3 : index * 3 + 3]
+            if extent_array.ndim == 2
+            else extent_array,
+            centre=centre_array.reshape(-1)[index * 3 : index * 3 + 3]
+            if centre_array.ndim == 2
+            else centre_array,
+            steps=int(steps),
+            seed=int(seed),
+            minimum=minimum_array.reshape(-1)[index]
+            if minimum_array.ndim
+            else minimum_array,
+            smooth=bool(smooth),
+        )
+        for index in range(len(flat))
+    ]
+    return np.concatenate(rows, axis=0).reshape(*np.shape(progress), 3)
+
+
+def _random_walk_row(
+    progress: NDArray[np.float64],
+    *,
+    extent: NDArray[np.float64],
+    centre: NDArray[np.float64],
+    steps: int,
+    seed: int,
+    minimum: NDArray[np.float64],
+    smooth: bool,
+) -> NDArray[np.float64]:
+    points = _random_walk_waypoints(
+        extent=extent, centre=centre, steps=steps, seed=seed, minimum=minimum
+    )
+    knots = np.linspace(0.0, 1.0, len(points))
+    if not smooth:
+        result = np.stack(
+            [np.interp(progress, knots, points[:, axis]) for axis in range(3)],
+            axis=-1,
+        )
+    else:
+        from scipy.interpolate import CubicSpline
+
+        spline = CubicSpline(knots, points, axis=0, bc_type="periodic")
+        result = np.asarray(spline(progress), dtype=np.float64)
+    # Enforced on the curve, not just on the waypoints it passes through:
+    # a spline between two points that each clear the minimum can still bow
+    # inside it, and a path that dips into the listener's head is exactly
+    # what the minimum exists to prevent.
+    return _enforce_random_walk_minimum(result, centre=centre, minimum=minimum)
+
+
+def _random_walk_waypoints(
+    *,
+    extent: NDArray[np.float64],
+    centre: NDArray[np.float64],
+    steps: int,
+    seed: int,
+    minimum: NDArray[np.float64],
+) -> NDArray[np.float64]:
+    generator = np.random.default_rng(int(seed))
+    count = int(steps)
+    # A random walk rather than independent draws: successive points are
+    # near each other, which is what makes it read as motion.
+    increments = generator.normal(size=(count, 3)) * (extent / 4.0)
+    points = np.cumsum(increments, axis=0)
+    # Reflect back into the box instead of clipping, so the walk turns at
+    # the wall rather than sliding along it.
+    half = extent / 2.0
+    folded = np.abs((points + half) % (4.0 * half) - 2.0 * half) - half
+    points = folded + centre
+    radius = np.linalg.norm(points - centre, axis=-1, keepdims=True)
+    limit = float(np.max(minimum))
+    if limit > 0.0:
+        scale = np.where(radius < limit, limit / np.maximum(radius, 1e-9), 1.0)
+        points = centre + (points - centre) * scale
+    # Close the loop so a looping traversal does not jump on wrap.
+    return np.vstack((points, points[:1]))
+
+
+def _enforce_random_walk_minimum(
+    points: NDArray[np.float64],
+    *,
+    centre: NDArray[np.float64],
+    minimum: NDArray[np.float64],
+) -> NDArray[np.float64]:
+    minimum_value = float(np.max(minimum))
+    if minimum_value <= 0.0:
+        return points
+    offset = points - centre
+    radius = np.linalg.norm(offset, axis=-1, keepdims=True)
+    scale = np.where(radius < minimum_value, minimum_value / np.maximum(radius, 1e-9), 1.0)
+    return centre + offset * scale
 
 
 @dataclass(frozen=True)
@@ -564,55 +900,30 @@ class RandomWalkVolume:
             raise ValueError("minimum_distance_m must not be negative")
 
     def _waypoints(self) -> NDArray[np.float64]:
-        generator = np.random.default_rng(int(self.seed))
-        count = int(self.steps)
-        extent = _centre(self.extent_m)
-        # A random walk rather than independent draws: successive points are
-        # near each other, which is what makes it read as motion.
-        increments = generator.normal(size=(count, 3)) * (extent / 4.0)
-        points = np.cumsum(increments, axis=0)
-        # Reflect back into the box instead of clipping, so the walk turns at
-        # the wall rather than sliding along it.
-        half = extent / 2.0
-        folded = np.abs((points + half) % (4.0 * half) - 2.0 * half) - half
-        points = folded + _centre(self.centre_m)
-        radius = np.linalg.norm(points - _centre(self.centre_m), axis=-1, keepdims=True)
-        minimum = float(self.minimum_distance_m)
-        if minimum > 0.0:
-            scale = np.where(radius < minimum, minimum / np.maximum(radius, 1e-9), 1.0)
-            points = _centre(self.centre_m) + (points - _centre(self.centre_m)) * scale
-        # Close the loop so a looping traversal does not jump on wrap.
-        return np.vstack((points, points[:1]))
+        return _random_walk_waypoints(
+            extent=_centre(self.extent_m),
+            centre=_centre(self.centre_m),
+            steps=int(self.steps),
+            seed=int(self.seed),
+        )
 
     def evaluate(self, u: ArrayLike) -> NDArray[np.float64]:
-        progress = np.clip(_parameter(u), 0.0, 1.0)
-        points = self._waypoints()
-        knots = np.linspace(0.0, 1.0, len(points))
-        if not self.smooth:
-            result = np.stack(
-                [np.interp(progress, knots, points[:, axis]) for axis in range(3)],
-                axis=-1,
-            )
-        else:
-            from scipy.interpolate import CubicSpline
-
-            spline = CubicSpline(knots, points, axis=0, bc_type="periodic")
-            result = np.asarray(spline(progress), dtype=np.float64)
-        # Enforced on the curve, not just on the waypoints it passes through:
-        # a spline between two points that each clear the minimum can still bow
-        # inside it, and a path that dips into the listener's head is exactly
-        # what the minimum exists to prevent.
-        return self._enforce_minimum(result)
+        return random_walk_points(
+            u,
+            extent_m=self.extent_m,
+            centre_m=self.centre_m,
+            steps=int(self.steps),
+            seed=int(self.seed),
+            minimum_distance_m=float(self.minimum_distance_m),
+            smooth=bool(self.smooth),
+        )
 
     def _enforce_minimum(self, points: NDArray[np.float64]) -> NDArray[np.float64]:
-        minimum = float(self.minimum_distance_m)
-        if minimum <= 0.0:
-            return points
-        centre = _centre(self.centre_m)
-        offset = points - centre
-        radius = np.linalg.norm(offset, axis=-1, keepdims=True)
-        scale = np.where(radius < minimum, minimum / np.maximum(radius, 1e-9), 1.0)
-        return centre + offset * scale
+        return _enforce_random_walk_minimum(
+            points,
+            centre=_centre(self.centre_m),
+            minimum=np.asarray(float(self.minimum_distance_m)),
+        )
 
 
 #: Serialized names for the 3-D primitives, in the order the editor lists them.

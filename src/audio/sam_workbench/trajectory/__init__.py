@@ -112,6 +112,17 @@ from .primitives import (
     Torus,
     VerticalOrbit,
 )
+from .dynamic import (
+    ModulatedPath,
+    PathBinding,
+    bind_path_parameters,
+    path_parameter_bases,
+)
+from .parameter_catalog import (
+    GEOMETRY_PARAMETER_SPECS,
+    TRANSFORM_PARAMETER_SPECS,
+    PathParameterSpec,
+)
 from .spherical import (
     SphericalPosition,
     cartesian_array_to_spherical,
@@ -193,4 +204,12 @@ __all__ = [
     "Pendulum",
     "Torus",
     "RandomWalkVolume",
+    # --- modulatable path parameters ----------------------------------------
+    "PathBinding",
+    "ModulatedPath",
+    "bind_path_parameters",
+    "path_parameter_bases",
+    "PathParameterSpec",
+    "GEOMETRY_PARAMETER_SPECS",
+    "TRANSFORM_PARAMETER_SPECS",
 ]

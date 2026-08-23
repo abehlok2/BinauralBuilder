@@ -19,6 +19,51 @@ def _vector3(value: Sequence[float], name: str) -> NDArray[np.float64]:
     return result
 
 
+def rotation_matrices_ypr(
+    yaw_deg: ArrayLike = 0.0, pitch_deg: ArrayLike = 0.0, roll_deg: ArrayLike = 0.0
+) -> NDArray[np.float64]:
+    """Stacked active intrinsic yaw/pitch/roll matrices, broadcast over inputs.
+
+    Scalars give ``(3, 3)``; array angles give ``(..., 3, 3)``, one rotation
+    per entry - which is what a path whose transform itself moves needs. The
+    composition order matches :func:`rotation_matrix_ypr` exactly.
+    """
+
+    yaw, pitch, roll = np.radians(
+        np.broadcast_arrays(
+            np.asarray(yaw_deg, dtype=np.float64),
+            np.asarray(pitch_deg, dtype=np.float64),
+            np.asarray(roll_deg, dtype=np.float64),
+        )
+    )
+    cz, sz = np.cos(yaw), np.sin(yaw)
+    cy, sy = np.cos(pitch), np.sin(pitch)
+    cx, sx = np.cos(roll), np.sin(roll)
+    zeros, ones = np.zeros_like(cz), np.ones_like(cz)
+    rotate_z = np.stack((cz, -sz, zeros, sz, cz, zeros, zeros, zeros, ones), axis=-1)
+    rotate_y = np.stack((cy, zeros, sy, zeros, ones, zeros, -sy, zeros, cy), axis=-1)
+    rotate_x = np.stack((ones, zeros, zeros, zeros, cx, -sx, zeros, sx, cx), axis=-1)
+    matrices = np.einsum(
+        "...ab,...bc,...cd->...ad",
+        rotate_z.reshape(*cz.shape, 3, 3),
+        rotate_y.reshape(*cy.shape, 3, 3),
+        rotate_x.reshape(*cx.shape, 3, 3),
+    )
+    return matrices
+
+
+def apply_stacked(
+    points: ArrayLike, matrices: NDArray[np.float64]
+) -> NDArray[np.float64]:
+    """Apply one matrix per point: ``(n, 3)`` against ``(n, 3, 3)``.
+
+    Row-vector convention, matching :meth:`Transform.apply`.
+    """
+
+    values = np.asarray(points, dtype=np.float64)
+    return np.einsum("...i,...ji->...j", values, np.asarray(matrices, dtype=np.float64))
+
+
 def rotation_matrix_ypr(
     yaw_deg: float = 0.0, pitch_deg: float = 0.0, roll_deg: float = 0.0
 ) -> NDArray[np.float64]:
@@ -28,14 +73,7 @@ def rotation_matrix_ypr(
     ``+y`` and roll rotates about ``+x``. The inverse is the transpose.
     """
 
-    yaw, pitch, roll = np.radians([yaw_deg, pitch_deg, roll_deg])
-    cz, sz = math.cos(yaw), math.sin(yaw)
-    cy, sy = math.cos(pitch), math.sin(pitch)
-    cx, sx = math.cos(roll), math.sin(roll)
-    rotate_z = np.array(((cz, -sz, 0.0), (sz, cz, 0.0), (0.0, 0.0, 1.0)))
-    rotate_y = np.array(((cy, 0.0, sy), (0.0, 1.0, 0.0), (-sy, 0.0, cy)))
-    rotate_x = np.array(((1.0, 0.0, 0.0), (0.0, cx, -sx), (0.0, sx, cx)))
-    return rotate_z @ rotate_y @ rotate_x
+    return rotation_matrices_ypr(yaw_deg, pitch_deg, roll_deg)
 
 
 @dataclass(frozen=True)
