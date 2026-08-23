@@ -47,6 +47,20 @@ MAX_BATCH_SIZE = 8
 # is right at the edges of a voice and wrong at every internal chunk boundary.
 # With that fixed, the synths that carry phase reproduce a whole render
 # sample-for-sample.
+class RenderCancelled(Exception):
+    """Raised through the progress callback to stop a render in progress.
+
+    Every progress callback site tolerates a callback that raises, because a
+    buggy one should not lose a render that is otherwise fine. Cancellation
+    needs the opposite, so it gets its own type and is re-raised where the
+    others are swallowed. A caller cancels by raising this from the callback it
+    passed in.
+
+    Cancellation is checked where progress is reported, so it takes effect
+    within a chunk of a long step rather than instantly.
+    """
+
+
 ENABLE_SEQUENTIAL_CHUNKING = True
 SEQUENTIAL_CHUNK_DURATION_SECONDS = 30.0
 SEQUENTIAL_CHUNK_THRESHOLD_SECONDS = 60.0
@@ -1038,6 +1052,8 @@ def assemble_track_from_data(track_data, sample_rate, crossfade_duration, crossf
     if progress_callback:
         try:
             progress_callback(0.0)
+        except RenderCancelled:
+            raise
         except Exception as e:
             print(f"Progress callback error: {e}")
 
@@ -1148,6 +1164,8 @@ def assemble_track_from_data(track_data, sample_rate, crossfade_duration, crossf
                         step_progress = (chunk_idx + 1) / num_chunks
                         overall_progress = (i + step_progress) / total_steps
                         progress_callback(overall_progress)
+                    except RenderCancelled:
+                        raise
                     except Exception as e:
                         print(f"Progress callback error: {e}")
         if not (
@@ -1293,6 +1311,8 @@ def assemble_track_from_data(track_data, sample_rate, crossfade_duration, crossf
         if progress_callback:
             try:
                 progress_callback((i + 1) / total_steps)
+            except RenderCancelled:
+                raise
             except Exception as e:
                 print(f"Progress callback error: {e}")
 
@@ -1451,6 +1471,8 @@ def assemble_track_from_data(track_data, sample_rate, crossfade_duration, crossf
     if progress_callback:
         try:
             progress_callback(1.0)
+        except RenderCancelled:
+            raise
         except Exception as e:
             print(f"Progress callback error: {e}")
     return track

@@ -2946,6 +2946,134 @@ class TrackEditorApp(QMainWindow):
         if state in (QAudio.IdleState, QAudio.StoppedState):
             self._stop_clip_playback()
 
+
+    # --- background rendering -----------------------------------------------
+
+    def _render_manager(self):
+        """The one manager that owns this window's render threads."""
+
+        manager = getattr(self, "_render_jobs", None)
+        if manager is None:
+            from src.ui.render_job import RenderJobManager
+
+            manager = RenderJobManager(self)
+            manager.progressed.connect(self._on_render_progress)
+            manager.finished.connect(self._on_render_finished)
+            self._render_jobs = manager
+        return manager
+
+    def _start_render_job(self, track_data, output_path, *, label):
+        """Render in the background from an immutable snapshot of the project.
+
+        The snapshot is the point: the user may keep editing while this runs,
+        and the file that appears is the project as it was when they pressed
+        the button rather than whatever it became part-way through.
+        """
+
+        from src.audio.render_job import RenderSnapshot
+
+        manager = self._render_manager()
+        if manager.busy:
+            QMessageBox.information(
+                self,
+                "Render in progress",
+                "A render is already running. Wait for it to finish, or cancel "
+                "it, before starting another.",
+            )
+            return None
+
+        target_level = (
+            self.prefs.target_output_amplitude
+            if getattr(self.prefs, "apply_target_amplitude", True)
+            else 1.0
+        )
+        snapshot = RenderSnapshot.of(
+            track_data, output_path, target_level=target_level, label=label
+        )
+        estimate = manager.estimate(snapshot)
+
+        self.generate_button.setEnabled(False)
+        if hasattr(self, "generate_selected_button"):
+            self.generate_selected_button.setEnabled(False)
+        self._show_render_cancel(True)
+        self.generate_progress_bar.setValue(0)
+        self.generate_progress_bar.setVisible(True)
+        self.statusBar().showMessage(self._render_estimate_text(snapshot, estimate))
+        return manager.start(snapshot)
+
+    @staticmethod
+    def _render_estimate_text(snapshot, estimate):
+        minutes = estimate["seconds"] / 60.0
+        how = "measured" if estimate["measured"] else "estimated"
+        return (
+            f"Rendering {snapshot.label}: about {minutes:.1f} min "
+            f"({how}), peak memory about "
+            f"{estimate['peakBytes'] / (1024 * 1024):.0f} MB."
+        )
+
+    def _show_render_cancel(self, visible):
+        button = getattr(self, "cancel_render_button", None)
+        if button is None:
+            from PyQt5.QtWidgets import QPushButton
+
+            button = QPushButton("Cancel render")
+            button.setToolTip(
+                "Stop the running render. It stops at the next chunk boundary "
+                "and no partial file is left behind."
+            )
+            button.clicked.connect(self._cancel_render)
+            self.statusBar().addPermanentWidget(button)
+            self.cancel_render_button = button
+        button.setVisible(bool(visible))
+        button.setEnabled(bool(visible))
+
+    @pyqtSlot()
+    def _cancel_render(self):
+        manager = getattr(self, "_render_jobs", None)
+        if manager is not None and manager.busy:
+            manager.cancel_all()
+            self.statusBar().showMessage("Cancelling render...")
+            if getattr(self, "cancel_render_button", None) is not None:
+                self.cancel_render_button.setEnabled(False)
+
+    def _on_render_progress(self, _worker, fraction):
+        self.generate_progress_bar.setValue(int(fraction * 100))
+
+    def _on_render_finished(self, worker, outcome):
+        self.generate_button.setEnabled(True)
+        if hasattr(self, "generate_selected_button"):
+            self.generate_selected_button.setEnabled(True)
+        self.generate_progress_bar.setVisible(False)
+        self._show_render_cancel(False)
+        self.statusBar().clearMessage()
+
+        if outcome.cancelled:
+            self.statusBar().showMessage("Render cancelled; no file was written.", 8000)
+            return
+        if outcome.succeeded:
+            metrics = outcome.metrics
+            cache = ""
+            if metrics.cache_hits or metrics.cache_misses:
+                cache = (
+                    f"\nHRTF filter cache: {metrics.cache_hits} hits, "
+                    f"{metrics.cache_misses} misses."
+                )
+            QMessageBox.information(
+                self,
+                "Generation Complete",
+                f"Audio file '{os.path.basename(outcome.output_path)}' generated "
+                f"successfully!\nFull path: {os.path.abspath(outcome.output_path)}\n\n"
+                f"{metrics.summary()}{cache}",
+            )
+            self.statusBar().showMessage(metrics.summary(), 12000)
+            return
+        QMessageBox.critical(
+            self,
+            "Generation Failed",
+            f"The render did not finish: {outcome.error}\n\n"
+            "No partial file was left behind. Check the console for details.",
+        )
+
     # --- generate_audio_action ---
     @pyqtSlot()
     def generate_audio_action(self):
@@ -2972,38 +3100,8 @@ class TrackEditorApp(QMainWindow):
             return
         reply = QMessageBox.question(self, 'Confirm Generation', f"This will generate the audio file: {os.path.basename(output_filepath)}\nBased on the current track configuration.\n\nProceed?", QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
         if reply == QMessageBox.No: return
-        try:
-            self.generate_button.setEnabled(False)
-            self.generate_progress_bar.setValue(0)
-            self.generate_progress_bar.setVisible(True)
-            self.statusBar().showMessage("Generating audio file, please wait...")
-            QApplication.processEvents()
-
-            def progress_cb(progress):
-                self.generate_progress_bar.setValue(int(progress * 100))
-                QApplication.processEvents()
-
-            print(f"Initiating audio generation for: {final_output_path}")
-            target_level = self.prefs.target_output_amplitude if getattr(self.prefs, "apply_target_amplitude", True) else 1.0
-            success = sound_creator.generate_audio(
-                current_track_data,
-                output_filename=final_output_path,
-                target_level=target_level,
-                progress_callback=progress_cb,
-            )
-            if success:
-                abs_path = os.path.abspath(final_output_path)
-                QMessageBox.information(self, "Generation Complete", f"Audio file '{os.path.basename(final_output_path)}' generated successfully!\nFull path: {abs_path}")
-            else:
-                QMessageBox.critical(self, "Generation Failed", "Failed to generate audio file. Please check the console output for more details and error messages from the sound engine.")
-        except Exception as e:
-            QMessageBox.critical(self, "Audio Generation Error", f"An unexpected error occurred during the audio generation process:\n{str(e)}\n\nPlease check the console for a detailed traceback.")
-            traceback.print_exc()
-        finally:
-            self.generate_button.setEnabled(True)
-            self.generate_progress_bar.setVisible(False)
-            self.statusBar().clearMessage()
-            QApplication.processEvents()
+        print(f"Initiating audio generation for: {final_output_path}")
+        self._start_render_job(current_track_data, final_output_path, label="Full track")
 
     @pyqtSlot()
     def generate_selected_audio_action(self):
@@ -3061,52 +3159,10 @@ class TrackEditorApp(QMainWindow):
         if reply == QMessageBox.No:
             return
 
-        try:
-            self.generate_button.setEnabled(False)
-            self.generate_selected_button.setEnabled(False)
-            self.generate_progress_bar.setValue(0)
-            self.generate_progress_bar.setVisible(True)
-            self.statusBar().showMessage("Generating audio file, please wait...")
-            QApplication.processEvents()
-
-            def progress_cb(progress):
-                self.generate_progress_bar.setValue(int(progress * 100))
-                QApplication.processEvents()
-
-            print(f"Initiating audio generation for selected steps: {final_output_path}")
-            target_level = self.prefs.target_output_amplitude if getattr(self.prefs, "apply_target_amplitude", True) else 1.0
-            success = sound_creator.generate_audio(
-                selected_track,
-                output_filename=final_output_path,
-                target_level=target_level,
-                progress_callback=progress_cb,
-            )
-            if success:
-                abs_path = os.path.abspath(final_output_path)
-                QMessageBox.information(
-                    self,
-                    "Generation Complete",
-                    f"Audio file '{os.path.basename(final_output_path)}' generated successfully!\nFull path: {abs_path}",
-                )
-            else:
-                QMessageBox.critical(
-                    self,
-                    "Generation Failed",
-                    "Failed to generate audio file. Please check the console output for more details and error messages from the sound engine.",
-                )
-        except Exception as e:
-            QMessageBox.critical(
-                self,
-                "Audio Generation Error",
-                f"An unexpected error occurred during the audio generation process:\n{str(e)}\n\nPlease check the console for a detailed traceback.",
-            )
-            traceback.print_exc()
-        finally:
-            self.generate_button.setEnabled(True)
-            self.generate_selected_button.setEnabled(True)
-            self.generate_progress_bar.setVisible(False)
-            self.statusBar().clearMessage()
-            QApplication.processEvents()
+        print(f"Initiating audio generation for selected steps: {final_output_path}")
+        self._start_render_job(
+            selected_track, final_output_path, label="Selected steps"
+        )
 
     # --- Test Step Preview Logic ---
     def _prepare_step_test_continuity_context(self, step_index, global_settings):
@@ -3624,6 +3680,25 @@ class TrackEditorApp(QMainWindow):
         return True
 
     def closeEvent(self, event):
+        # A render thread outliving the window it reports to is how a close
+        # turns into a crash, so ask before closing and then actually wait.
+        manager = getattr(self, "_render_jobs", None)
+        if manager is not None and manager.busy:
+            reply = QMessageBox.question(
+                self,
+                "Render in progress",
+                f"{manager.active_count} render(s) still running. Closing will "
+                "cancel them and no partial file will be kept.\n\nClose anyway?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if reply == QMessageBox.No:
+                event.ignore()
+                return
+            manager.cancel_all()
+            if not manager.wait_for_idle(30_000):
+                print("Render threads did not stop within 30 s; closing regardless.")
+
         if self.test_audio_output:
             self.test_audio_output.stop()
         if self.is_clip_playing:
