@@ -481,10 +481,19 @@ class Torus:
     """A small circle carried around a large one - a path around the head.
 
     The source winds ``minor_turns`` times through a tube of radius
-    ``minor_radius_m`` while that tube is carried once around the listener at
-    ``major_radius_m``.  With a few minor turns per major one it weaves above
-    and below ear height as it orbits, which is the toroidal path this
-    application wants.
+    ``minor_radius_m`` while that tube is carried ``major_turns`` times around
+    the listener at ``major_radius_m``.  With a few minor turns per major one it
+    weaves above and below ear height as it orbits, which is the toroidal path
+    this application wants.
+
+    ``major_turns`` is how many complete orbits of the listener the traversal
+    makes, not a drawing resolution: raising it multiplies the angular speed for
+    the same traversal duration.  Twenty-one turns in one second sweeps about
+    22 degrees per control interval, far past what an HRTF grid resolves, and
+    the render is heard as smeared rather than as motion.  For a single orbit
+    that winds twenty-one times vertically, put the twenty-one on
+    ``minor_turns`` instead; to keep twenty-one orbits, lengthen the traversal
+    in proportion.
     """
 
     major_radius_m: float = 1.5

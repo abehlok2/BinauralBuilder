@@ -53,7 +53,9 @@ _SPARSE_PATH_FRACTION: float = 0.15
 #: Warn above this much direction change between two filter updates. A filter
 #: switch is a crossfade between two HRIRs; past roughly this angle the two are
 #: different enough that the crossfade is audible as a smear rather than as
-#: motion.
+#: motion. This is advisory: a path faster than the grid can track is a
+#: creative choice and the renderer stays continuous either way, so the user is
+#: told rather than overruled.
 _MAX_STEP_DEG: float = 10.0
 
 
@@ -291,7 +293,11 @@ def assess_path_coverage(
         interval_s = max(int(control_interval_samples), 1) / max(
             float(sample_rate_hz), 1.0
         )
-        crossfade_s = max(float(crossfade_ms), 0.0) / 1000.0
+        # The renderer caps a transition at the control interval so it always
+        # finishes before the next one is due, so that - not ``crossfade_ms``
+        # alone - is the span a blend actually covers. Reporting the uncapped
+        # figure would describe smear the renderer no longer produces.
+        crossfade_s = min(max(float(crossfade_ms), 0.0) / 1000.0, interval_s)
         max_crossfade_step = max_step * (
             crossfade_s / interval_s if interval_s > 0.0 else 0.0
         )
@@ -306,9 +312,9 @@ def assess_path_coverage(
         if crossfade_s > 0.0 and max_crossfade_step > _MAX_STEP_DEG:
             warn(
                 f"the path turns up to {max_crossfade_step:.1f} deg during a "
-                f"{crossfade_ms:.1f} ms crossfade; the two directions being "
-                "blended are far enough apart that the crossfade will smear "
-                "rather than track the motion",
+                f"{crossfade_s * 1000.0:.1f} ms transition; the two directions "
+                "being blended are far enough apart that the transition will "
+                "smear rather than track the motion",
                 ".traversal",
             )
 

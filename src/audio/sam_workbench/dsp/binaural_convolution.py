@@ -33,10 +33,25 @@ from .convolution import (
 )
 from .envelopes import milliseconds_to_frames
 
-__all__ = ["BinauralConvolver", "BinauralFilterPair"]
+__all__ = [
+    "FADE_EQUAL_POWER",
+    "FADE_LINEAR",
+    "BinauralConvolver",
+    "BinauralFilterPair",
+]
 
 #: Channel order, matching the workbench's channel-major convention.
 LEFT, RIGHT = 0, 1
+
+#: Crossfade shapes. Equal power is right for two signals that are unrelated,
+#: where the sum of squares is what stays constant. Two HRTF-filtered copies of
+#: one carrier are nearly the same signal, so their amplitudes add directly and
+#: an equal-power fade puts a ~3 dB bulge in the middle of every transition.
+#: A moving source crossfades hundreds of times a second, so that bulge becomes
+#: amplitude modulation at the control rate.
+FADE_LINEAR = "linear"
+FADE_EQUAL_POWER = "equal_power"
+_FADE_CURVES = (FADE_LINEAR, FADE_EQUAL_POWER)
 
 
 class BinauralFilterPair:
@@ -93,9 +108,18 @@ class BinauralConvolver:
     """Convolve one mono stream into two channels, with crossfaded filters.
 
     ``process`` returns channel-major ``(2, frames)``. Filters are installed
-    with :meth:`set_filters`; a change begins an equal-power crossfade over
-    ``crossfade_ms`` during which both the outgoing and incoming filters are
-    evaluated against the shared input transform.
+    with :meth:`set_filters`; a change begins a crossfade over ``crossfade_ms``
+    (or an explicit ``fade_frames``) during which both the outgoing and
+    incoming filters are evaluated against the shared input transform.
+
+    A fade that is running is never abandoned. A request arriving mid-fade
+    waits until the fade it would have displaced has finished, and then starts
+    from the filter that fade actually reached. Replacing the fade instead - as
+    this did - makes the audible signal jump from a partly-completed mixture to
+    the incoming filter alone in one sample. That is inaudible once and a
+    periodic discontinuity when it happens on every control interval, which for
+    a fast path is hundreds of times a second: it is heard as a buzz at the
+    control rate, with a harmonic ladder above it.
     """
 
     def __init__(
@@ -104,19 +128,42 @@ class BinauralConvolver:
         sample_rate_hz: float = 44100.0,
         crossfade_ms: float = 12.0,
         partition: int | None = None,
+        fade_curve: str = FADE_EQUAL_POWER,
     ) -> None:
         if sample_rate_hz <= 0.0:
             raise ValueError("sample_rate_hz must be positive")
         if crossfade_ms < 0.0:
             raise ValueError("crossfade_ms must not be negative")
+        if fade_curve not in _FADE_CURVES:
+            raise ValueError(
+                f"fade_curve must be one of {', '.join(_FADE_CURVES)}, got {fade_curve!r}"
+            )
         self.sample_rate_hz = float(sample_rate_hz)
         self.crossfade_ms = float(crossfade_ms)
+        self.fade_curve = fade_curve
         self._partition_override = partition
         self._current: BinauralFilterPair | None = None
         self._previous: BinauralFilterPair | None = None
         self._history = np.zeros(0, dtype=np.float64)
         self._fade_position = 0
         self._fade_frames = 0
+        self._fade_shape = fade_curve
+        # A request arriving mid-fade waits here rather than displacing the
+        # fade that is running. Newest wins: an older waiting request is
+        # already out of date, so it is dropped rather than queued behind.
+        self._queued: BinauralFilterPair | None = None
+        self._queued_fade = 0
+        self._queued_shape = fade_curve
+        self._age = 0
+        self._counters = {
+            "filter_requests": 0,
+            "filter_changes": 0,
+            "mid_fade_requests": 0,
+            "queued_filter_updates": 0,
+            "dropped_filter_updates": 0,
+            "fade_restarts": 0,
+            "maximum_filter_age_samples": 0,
+        }
         # Partitioned state: one frequency-domain input delay line, shared by
         # both ears and by both filters during a crossfade.
         self._delay_line: NDArray[np.complex128] | None = None
@@ -128,6 +175,23 @@ class BinauralConvolver:
     @property
     def is_fading(self) -> bool:
         return self._previous is not None and self._fade_position < self._fade_frames
+
+    @property
+    def has_queued_filters(self) -> bool:
+        """Whether a request is waiting for the running fade to finish."""
+
+        return self._queued is not None
+
+    @property
+    def counters(self) -> dict[str, int]:
+        """Transition bookkeeping, for diagnostics and for the tests.
+
+        ``fade_restarts`` is the one that matters: it counts fades abandoned
+        part-way, which is what produced a discontinuity on every control
+        interval. It is expected to stay zero.
+        """
+
+        return dict(self._counters)
 
     @property
     def taps(self) -> int:
@@ -144,6 +208,9 @@ class BinauralConvolver:
 
         self._previous = None
         self._fade_position = self._fade_frames = 0
+        self._queued = None
+        self._queued_fade = 0
+        self._age = 0
         self._delay_line = None
         self._delay_partition = 0
         self._previous_block = np.zeros(0, dtype=np.float64)
@@ -151,37 +218,102 @@ class BinauralConvolver:
             self._current = BinauralFilterPair(filters)
         self._history = np.zeros(max(0, self.taps - 1), dtype=np.float64)
 
-    def set_filters(self, filters: ArrayLike) -> bool:
+    def set_filters(
+        self,
+        filters: ArrayLike,
+        *,
+        fade_frames: int | None = None,
+        curve: str | None = None,
+    ) -> bool:
         """Install a filter pair. Returns True when a crossfade began.
 
         The first pair is installed outright: fading into it would fade up from
         silence, so a render would open with a ramp nobody asked for.
+
+        ``fade_frames`` overrides ``crossfade_ms`` for this one transition. A
+        caller that knows when its next request is due - a renderer selecting on
+        a fixed control grid - passes the interval, so the fade ends exactly
+        where the next one begins and the filter trajectory is continuous.
+
+        A request arriving while a fade is running is queued rather than
+        applied. Only the newest waiting request survives; an older one has
+        been superseded before it was ever heard.
         """
 
         pair = BinauralFilterPair(filters)
+        self._counters["filter_requests"] += 1
         if self._current is None:
             self._current = pair
             self._history = np.zeros(max(0, pair.length - 1), dtype=np.float64)
-            return False
-        if pair.length == self._current.length and np.array_equal(pair.taps, self._current.taps):
+            self._age = 0
             return False
 
-        fade = milliseconds_to_frames(self.crossfade_ms, self.sample_rate_hz)
+        fade = (
+            milliseconds_to_frames(self.crossfade_ms, self.sample_rate_hz)
+            if fade_frames is None
+            else max(0, int(fade_frames))
+        )
+        shape = self.fade_curve if curve is None else curve
+        if shape not in _FADE_CURVES:
+            raise ValueError(
+                f"curve must be one of {', '.join(_FADE_CURVES)}, got {shape!r}"
+            )
+
+        if self.is_fading:
+            self._counters["mid_fade_requests"] += 1
+            if self._same_as(pair, self._current) and self._queued is None:
+                # The fade already running ends on this filter, so there is
+                # nothing to queue.
+                return False
+            if self._queued is not None:
+                self._counters["dropped_filter_updates"] += 1
+            self._queued = pair
+            self._queued_fade = fade
+            self._queued_shape = shape
+            self._counters["queued_filter_updates"] += 1
+            return False
+
+        if self._same_as(pair, self._current):
+            return False
+        return self._begin(pair, fade, shape)
+
+    @staticmethod
+    def _same_as(pair: BinauralFilterPair, other: BinauralFilterPair | None) -> bool:
+        return (
+            other is not None
+            and pair.length == other.length
+            and np.array_equal(pair.taps, other.taps)
+        )
+
+    def _begin(self, pair: BinauralFilterPair, fade: int, shape: str) -> bool:
+        """Start a transition to ``pair``, or install it when there is no fade."""
+
+        self._counters["filter_changes"] += 1
+        self._age = 0
         if fade <= 0:
             self._current = pair
             self._grow_history(pair.length)
             return False
-
-        # A change arriving mid-fade collapses the fade that was running: the
-        # value being faded from is what is currently audible, which is the
-        # mixture, and approximating that by the outgoing filter alone is
-        # closer than restarting from a filter two changes old.
         self._previous = self._current
         self._current = pair
         self._fade_frames = fade
         self._fade_position = 0
+        self._fade_shape = shape
         self._grow_history(max(pair.length, self._previous.length))
         return True
+
+    def _promote(self) -> None:
+        """Retire a finished fade and start the one waiting behind it, if any."""
+
+        if self._previous is not None and self._fade_position >= self._fade_frames:
+            self._previous = None
+        if self._previous is not None or self._queued is None:
+            return
+        pair, fade, shape = self._queued, self._queued_fade, self._queued_shape
+        self._queued = None
+        if self._same_as(pair, self._current):
+            return
+        self._begin(pair, fade, shape)
 
     def _grow_history(self, taps: int) -> None:
         needed = max(0, taps - 1)
@@ -221,20 +353,40 @@ class BinauralConvolver:
         if samples.size == 0:
             return np.zeros((2, 0), dtype=np.float64)
 
+        # A queued filter takes effect at the exact sample the running fade
+        # ends, not at the next block boundary. Waiting for the boundary would
+        # make where a transition starts depend on how the caller cut the
+        # stream, which is the block-dependence the fixed control grid exists
+        # to avoid.
+        pieces = []
+        position = 0
+        while position < samples.size:
+            span = samples.size - position
+            if self._queued is not None and self.is_fading:
+                span = min(span, self._fade_frames - self._fade_position)
+            pieces.append(self._process_span(samples[position : position + span]))
+            position += span
+            self._promote()
+        return pieces[0] if len(pieces) == 1 else np.concatenate(pieces, axis=1)
+
+    def _process_span(self, samples: NDArray[np.float64]) -> NDArray[np.float64]:
+        """One stretch under the filters currently installed."""
+
         if self._wants_partitioning(samples.size):
             output = self._process_partitioned(samples)
         else:
             self._delay_line = None
             output = self._process_plain(samples)
 
+        self._age += int(samples.size)
+        if self._age > self._counters["maximum_filter_age_samples"]:
+            self._counters["maximum_filter_age_samples"] = self._age
         if self._previous is not None:
             self._fade_position = min(self._fade_position + samples.size, self._fade_frames)
-            if self._fade_position >= self._fade_frames:
-                self._previous = None
         return output
 
     def _fade_weights(self, frames: int):
-        """Equal-power weights for this block, or ``None`` when not fading."""
+        """Transition weights for this span, or ``None`` when not fading."""
 
         if self._previous is None or self._fade_frames <= 0:
             return None
@@ -245,12 +397,20 @@ class BinauralConvolver:
         incoming = np.ones(frames, dtype=np.float64)
         if span > 0:
             progress = (np.arange(span, dtype=np.float64) + position) / float(self._fade_frames)
-            # The same equal-power curve :func:`equal_power_crossfade` defines,
-            # evaluated at arbitrary progress rather than over a whole fade, so
-            # a fade that spans several blocks continues where it left off.
-            angle = progress * (np.pi / 2.0)
-            outgoing[:span] = np.cos(angle)
-            incoming[:span] = np.sin(angle)
+            if self._fade_shape == FADE_LINEAR:
+                # Amplitude-preserving, which is what two filtered copies of one
+                # correlated signal need. Equal power would sum to 1.414 at the
+                # midpoint of every transition.
+                outgoing[:span] = 1.0 - progress
+                incoming[:span] = progress
+            else:
+                # The same equal-power curve :func:`equal_power_crossfade`
+                # defines, evaluated at arbitrary progress rather than over a
+                # whole fade, so a fade spanning several blocks continues where
+                # it left off.
+                angle = progress * (np.pi / 2.0)
+                outgoing[:span] = np.cos(angle)
+                incoming[:span] = np.sin(angle)
         return outgoing, incoming
 
     def _process_plain(self, samples: NDArray[np.float64]) -> NDArray[np.float64]:

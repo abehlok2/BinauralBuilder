@@ -231,7 +231,11 @@ def test_a_path_that_outruns_the_control_interval_is_reported():
     )
     text = report.summary()
     assert "between filter updates" in text
-    assert "crossfade" in text
+    # The blend span reported is the transition the renderer actually performs,
+    # which is capped at the control interval, rather than the raw crossfade
+    # setting it would otherwise have used.
+    assert "will smear rather than track the motion" in text
+    assert f"{128 / 44100 * 1000.0:.1f} ms transition" in text
 
 
 def test_a_below_head_path_reports_the_missing_lower_hemisphere():
