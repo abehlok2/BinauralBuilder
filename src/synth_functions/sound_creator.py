@@ -964,6 +964,143 @@ def generate_voice_audio(voice_data, duration, sample_rate, global_start_time, c
     return audio.astype(np.float32) # Ensure float32 output
 
 
+def _generate_step_for_assembly(
+    step_data,
+    global_settings,
+    step_duration,
+    N_step,
+    *,
+    sample_rate,
+    prev_step_voice_phase_map,
+    preserve_relative_step_loudness,
+    prev_step_reference,
+    progress_callback=None,
+    step_index=0,
+    total_steps=1,
+):
+    """Generate one step's audio, chunked when its voices allow it.
+
+    Extracted from :func:`assemble_track_from_data` so the streaming assembler
+    generates steps the same way rather than a second way. Placement and
+    crossfading stay with the callers, because that is where the two genuinely
+    differ: one writes into a whole-track array, the other into a sliding
+    window it can emit from.
+
+    Returns ``(step_audio_mix, step_voice_states, prev_step_reference)``.
+    """
+
+    i = int(step_index)
+
+    incoming_voice_states = []
+    for voice_idx, voice_data in enumerate(step_data.get("voices", [])):
+        key = _voice_logical_key(voice_data, voice_idx)
+        incoming_voice_states.append(copy.deepcopy(prev_step_voice_phase_map.get(key)))
+
+    # --- Memory-efficient chunked generation for long steps ---
+    # For steps longer than the threshold, process in chunks to reduce peak RAM.
+    # This prevents multi-GB allocations when generating hour-long steps.
+    chunked_generation_possible = True
+    if ENABLE_SEQUENTIAL_CHUNKING and step_duration > SEQUENTIAL_CHUNK_THRESHOLD_SECONDS:
+        chunk_duration = SEQUENTIAL_CHUNK_DURATION_SECONDS
+        chunk_samples = int(chunk_duration * sample_rate)
+        num_chunks = int(np.ceil(step_duration / chunk_duration))
+
+        print(f"        Using chunked generation: {num_chunks} chunks of {chunk_duration:.1f}s each")
+
+        # Allocate the output buffer for this step
+        step_audio_mix = np.zeros((N_step, 2), dtype=np.float32)
+
+        # Generate each chunk and write directly to the output buffer
+        # while preserving per-voice state across chunk boundaries.
+        # Without carrying voice state, each chunk reinitializes synth
+        # internals and can audibly re-synchronize phase every chunk.
+        chunk_offset_samples = 0
+        chunk_voice_states = incoming_voice_states
+        step_voice_states = incoming_voice_states
+        chunked_generation_possible = True
+        for chunk_idx in range(num_chunks):
+            # Calculate this chunk's parameters
+            remaining_samples = N_step - chunk_offset_samples
+            this_chunk_samples = min(chunk_samples, remaining_samples)
+            this_chunk_duration = this_chunk_samples / sample_rate
+            chunk_start_time_local = chunk_offset_samples / sample_rate
+
+            # Generate this chunk with proper timing offset for voice continuity
+            continuity_context = {
+                "enabled": preserve_relative_step_loudness,
+                "prev_step_reference": prev_step_reference,
+            }
+            chunk_audio, chunk_voice_states = generate_single_step_audio_segment(
+                step_data,
+                global_settings,
+                this_chunk_duration,
+                duration_override=this_chunk_duration,
+                chunk_start_time=chunk_start_time_local,
+                continuity_context=continuity_context,
+                voice_states=chunk_voice_states,
+                return_state=True,
+            )
+            if preserve_relative_step_loudness:
+                prev_step_reference = continuity_context.get("prev_step_reference")
+
+            if chunk_idx == 0 and not _states_carry_continuity(chunk_voice_states):
+                # This step's voices cannot continue across a boundary, so
+                # chunking it would put a discontinuity partway through.
+                # Render it whole instead: the memory saving is not worth
+                # audio that is quietly wrong.
+                print(
+                    "        A voice in this step reports no phase state; "
+                    "rendering the step whole rather than chunked."
+                )
+                chunked_generation_possible = False
+                break
+
+            step_voice_states = chunk_voice_states
+
+            # Handle potential size mismatches
+            actual_chunk_len = min(chunk_audio.shape[0], this_chunk_samples)
+            if actual_chunk_len > 0:
+                step_audio_mix[chunk_offset_samples:chunk_offset_samples + actual_chunk_len] = chunk_audio[:actual_chunk_len]
+
+            chunk_offset_samples += this_chunk_samples
+
+            # Report progress for long steps
+            if progress_callback and num_chunks > 1:
+                try:
+                    # Sub-step progress within overall track progress
+                    step_progress = (chunk_idx + 1) / num_chunks
+                    overall_progress = (i + step_progress) / total_steps
+                    progress_callback(overall_progress)
+                except RenderCancelled:
+                    raise
+                except Exception as e:
+                    print(f"Progress callback error: {e}")
+    if not (
+        ENABLE_SEQUENTIAL_CHUNKING
+        and step_duration > SEQUENTIAL_CHUNK_THRESHOLD_SECONDS
+        and chunked_generation_possible
+    ):
+        # Short step, chunking disabled, or a step whose voices cannot
+        # continue across a boundary: generate it all at once.
+        continuity_context = {
+            "enabled": preserve_relative_step_loudness,
+            "prev_step_reference": prev_step_reference,
+        }
+        step_audio_mix, step_voice_states = generate_single_step_audio_segment(
+            step_data,
+            global_settings,
+            step_duration,
+            continuity_context=continuity_context,
+            voice_states=incoming_voice_states,
+            return_state=True,
+        )
+        if preserve_relative_step_loudness:
+            prev_step_reference = continuity_context.get("prev_step_reference")
+
+
+    return step_audio_mix, step_voice_states, prev_step_reference
+
+
 def assemble_track_from_data(track_data, sample_rate, crossfade_duration, crossfade_curve="linear", crossfade_overlap=1.0, progress_callback=None):
     """
     Assembles a track from a track_data dictionary.
@@ -1084,111 +1221,23 @@ def assemble_track_from_data(track_data, sample_rate, crossfade_duration, crossf
             f"Duration: {step_duration:.2f}s, Samples: {N_step}"
         )
 
-        incoming_voice_states = []
-        for voice_idx, voice_data in enumerate(step_data.get("voices", [])):
-            key = _voice_logical_key(voice_data, voice_idx)
-            incoming_voice_states.append(copy.deepcopy(prev_step_voice_phase_map.get(key)))
-
-        # --- Memory-efficient chunked generation for long steps ---
-        # For steps longer than the threshold, process in chunks to reduce peak RAM.
-        # This prevents multi-GB allocations when generating hour-long steps.
-        chunked_generation_possible = True
-        if ENABLE_SEQUENTIAL_CHUNKING and step_duration > SEQUENTIAL_CHUNK_THRESHOLD_SECONDS:
-            chunk_duration = SEQUENTIAL_CHUNK_DURATION_SECONDS
-            chunk_samples = int(chunk_duration * sample_rate)
-            num_chunks = int(np.ceil(step_duration / chunk_duration))
-
-            print(f"        Using chunked generation: {num_chunks} chunks of {chunk_duration:.1f}s each")
-
-            # Allocate the output buffer for this step
-            step_audio_mix = np.zeros((N_step, 2), dtype=np.float32)
-
-            # Generate each chunk and write directly to the output buffer
-            # while preserving per-voice state across chunk boundaries.
-            # Without carrying voice state, each chunk reinitializes synth
-            # internals and can audibly re-synchronize phase every chunk.
-            chunk_offset_samples = 0
-            chunk_voice_states = incoming_voice_states
-            step_voice_states = incoming_voice_states
-            chunked_generation_possible = True
-            for chunk_idx in range(num_chunks):
-                # Calculate this chunk's parameters
-                remaining_samples = N_step - chunk_offset_samples
-                this_chunk_samples = min(chunk_samples, remaining_samples)
-                this_chunk_duration = this_chunk_samples / sample_rate
-                chunk_start_time_local = chunk_offset_samples / sample_rate
-
-                # Generate this chunk with proper timing offset for voice continuity
-                continuity_context = {
-                    "enabled": preserve_relative_step_loudness,
-                    "prev_step_reference": prev_step_reference,
-                }
-                chunk_audio, chunk_voice_states = generate_single_step_audio_segment(
-                    step_data,
-                    global_settings,
-                    this_chunk_duration,
-                    duration_override=this_chunk_duration,
-                    chunk_start_time=chunk_start_time_local,
-                    continuity_context=continuity_context,
-                    voice_states=chunk_voice_states,
-                    return_state=True,
-                )
-                if preserve_relative_step_loudness:
-                    prev_step_reference = continuity_context.get("prev_step_reference")
-
-                if chunk_idx == 0 and not _states_carry_continuity(chunk_voice_states):
-                    # This step's voices cannot continue across a boundary, so
-                    # chunking it would put a discontinuity partway through.
-                    # Render it whole instead: the memory saving is not worth
-                    # audio that is quietly wrong.
-                    print(
-                        "        A voice in this step reports no phase state; "
-                        "rendering the step whole rather than chunked."
-                    )
-                    chunked_generation_possible = False
-                    break
-
-                step_voice_states = chunk_voice_states
-
-                # Handle potential size mismatches
-                actual_chunk_len = min(chunk_audio.shape[0], this_chunk_samples)
-                if actual_chunk_len > 0:
-                    step_audio_mix[chunk_offset_samples:chunk_offset_samples + actual_chunk_len] = chunk_audio[:actual_chunk_len]
-
-                chunk_offset_samples += this_chunk_samples
-
-                # Report progress for long steps
-                if progress_callback and num_chunks > 1:
-                    try:
-                        # Sub-step progress within overall track progress
-                        step_progress = (chunk_idx + 1) / num_chunks
-                        overall_progress = (i + step_progress) / total_steps
-                        progress_callback(overall_progress)
-                    except RenderCancelled:
-                        raise
-                    except Exception as e:
-                        print(f"Progress callback error: {e}")
-        if not (
-            ENABLE_SEQUENTIAL_CHUNKING
-            and step_duration > SEQUENTIAL_CHUNK_THRESHOLD_SECONDS
-            and chunked_generation_possible
-        ):
-            # Short step, chunking disabled, or a step whose voices cannot
-            # continue across a boundary: generate it all at once.
-            continuity_context = {
-                "enabled": preserve_relative_step_loudness,
-                "prev_step_reference": prev_step_reference,
-            }
-            step_audio_mix, step_voice_states = generate_single_step_audio_segment(
-                step_data,
-                global_settings,
-                step_duration,
-                continuity_context=continuity_context,
-                voice_states=incoming_voice_states,
-                return_state=True,
-            )
-            if preserve_relative_step_loudness:
-                prev_step_reference = continuity_context.get("prev_step_reference")
+        (
+            step_audio_mix,
+            step_voice_states,
+            prev_step_reference,
+        ) = _generate_step_for_assembly(
+            step_data,
+            global_settings,
+            step_duration,
+            N_step,
+            sample_rate=sample_rate,
+            prev_step_voice_phase_map=prev_step_voice_phase_map,
+            preserve_relative_step_loudness=preserve_relative_step_loudness,
+            prev_step_reference=prev_step_reference,
+            progress_callback=progress_callback,
+            step_index=i,
+            total_steps=total_steps,
+        )
 
         prev_step_voice_phase_map = {}
         for voice_idx, voice_data in enumerate(step_data.get("voices", [])):
