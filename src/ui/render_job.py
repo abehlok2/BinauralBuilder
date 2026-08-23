@@ -19,12 +19,14 @@ from PyQt5.QtCore import QObject, QThread, pyqtSignal, pyqtSlot
 from src.audio.render_job import (
     RenderOutcome,
     RenderSnapshot,
+    StepPreviewSnapshot,
     estimate_peak_bytes,
     estimate_render_seconds,
     run_render,
+    run_step_preview,
 )
 
-__all__ = ["RenderJobManager", "RenderWorker"]
+__all__ = ["RenderJobManager", "RenderWorker", "StepPreviewJob", "StepPreviewWorker"]
 
 
 class RenderWorker(QObject):
@@ -158,3 +160,119 @@ class RenderJobManager(QObject):
                 break
         worker.deleteLater()
         self.finished.emit(worker, outcome)
+
+
+class StepPreviewWorker(QObject):
+    """Generates one step's audition audio off the GUI thread.
+
+    Separate from :class:`RenderWorker` because the two produce different
+    things: a render writes a file and reports progress, an audition returns
+    audio in memory and has no progress to report - the step generator takes no
+    callback to hang one on. Sharing a worker would mean one of the two
+    pretending to do something it cannot.
+    """
+
+    finished = pyqtSignal(object)
+
+    def __init__(self, snapshot: StepPreviewSnapshot) -> None:
+        super().__init__()
+        self._snapshot = snapshot
+        self._cancelled = False
+
+    @property
+    def snapshot(self) -> StepPreviewSnapshot:
+        return self._snapshot
+
+    def cancel(self) -> None:
+        """Discard this preview when it finishes.
+
+        Not an interruption: there is nowhere inside the step generator to stop
+        it. What this prevents is a preview the user has already moved away
+        from arriving and starting to play.
+        """
+
+        self._cancelled = True
+
+    @property
+    def cancelled(self) -> bool:
+        return self._cancelled
+
+    @pyqtSlot()
+    def run(self) -> None:
+        outcome = run_step_preview(
+            self._snapshot, should_cancel=lambda: self._cancelled
+        )
+        self.finished.emit(outcome)
+
+
+class StepPreviewJob(QObject):
+    """Owns the thread one step preview runs on, and only the newest one.
+
+    A user clicking through steps starts a preview per step. Only the last one
+    is wanted, so an earlier one still running is cancelled - it finishes, and
+    its result is dropped rather than played over the top of the one that was
+    actually asked for.
+    """
+
+    finished = pyqtSignal(object)
+
+    def __init__(self, parent: QObject | None = None) -> None:
+        super().__init__(parent)
+        self._current: StepPreviewWorker | None = None
+        # Every thread still running, superseded or not. A superseded thread
+        # must stay referenced until it finishes: dropping the last reference
+        # to a running QThread destroys it mid-run, and Qt aborts the process.
+        # That is what replacing the pair outright used to do.
+        self._running: list[tuple[QThread, StepPreviewWorker]] = []
+
+    @property
+    def busy(self) -> bool:
+        return bool(self._running)
+
+    @property
+    def active_count(self) -> int:
+        return len(self._running)
+
+    def start(self, snapshot: StepPreviewSnapshot) -> StepPreviewWorker:
+        """Begin a preview, superseding any already running."""
+
+        self.cancel()
+
+        thread = QThread()
+        worker = StepPreviewWorker(snapshot)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(lambda outcome, w=worker: self._on_finished(w, outcome))
+
+        self._running.append((thread, worker))
+        self._current = worker
+        thread.start()
+        return worker
+
+    def cancel(self) -> None:
+        """Ask everything in flight to discard its result."""
+
+        for _thread, worker in list(self._running):
+            worker.cancel()
+        self._current = None
+
+    def wait_for_idle(self, timeout_ms: int = 30_000) -> bool:
+        for thread, _worker in list(self._running):
+            if not thread.wait(max(0, timeout_ms)):
+                return False
+        return not self._running
+
+    def _on_finished(self, worker: StepPreviewWorker, outcome) -> None:
+        for index, (thread, candidate) in enumerate(list(self._running)):
+            if candidate is worker:
+                thread.quit()
+                thread.wait(5_000)
+                self._running.pop(index)
+                thread.deleteLater()
+                break
+        if worker is self._current:
+            self._current = None
+        worker.deleteLater()
+        # A cancelled preview is still reported, so a caller can re-enable its
+        # controls; it simply carries no audio to play.
+        self.finished.emit(outcome)

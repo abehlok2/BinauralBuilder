@@ -299,3 +299,154 @@ def test_the_worker_never_needs_a_widget():
     source = Path("src/ui/render_job.py").read_text()
     assert "QWidget" not in source
     assert "QMessageBox" not in source
+
+
+# --- step audition ----------------------------------------------------------
+
+
+def _step(duration=0.3):
+    return {
+        "duration": duration,
+        "description": "test step",
+        "voices": [
+            {
+                "synth_function_name": "binaural_beat",
+                "params": {
+                    "amp_left": 0.2, "amp_right": 0.2,
+                    "baseFreq": 200.0, "beatFreq": 4.0,
+                },
+            }
+        ],
+    }
+
+
+def test_a_step_preview_snapshot_does_not_follow_later_edits():
+    """The same discipline as a render, for the same reason."""
+
+    from src.audio.render_job import StepPreviewSnapshot
+
+    step = _step()
+    settings = {"sample_rate": RATE}
+    snapshot = StepPreviewSnapshot.of(step, settings, 0.3, step_index=2)
+
+    step["duration"] = 99.0
+    step["voices"].clear()
+    settings["sample_rate"] = 96_000
+
+    assert snapshot.sample_rate_hz == RATE
+    assert snapshot.step_data["duration"] == pytest.approx(0.3)
+    assert snapshot.step_data["voices"]
+    assert snapshot.step_index == 2
+
+
+def test_a_step_preview_produces_stereo_audio():
+    from src.audio.render_job import StepPreviewSnapshot, run_step_preview
+
+    outcome = run_step_preview(
+        StepPreviewSnapshot.of(_step(), {"sample_rate": RATE}, 0.3)
+    )
+    assert outcome.succeeded
+    assert outcome.audio.shape[1] == 2
+    assert outcome.audio.shape[0] > 0
+    assert outcome.metrics.wall_s > 0.0
+
+
+def test_a_step_preview_cancelled_before_it_starts_does_no_work():
+    from src.audio.render_job import StepPreviewSnapshot, run_step_preview
+
+    outcome = run_step_preview(
+        StepPreviewSnapshot.of(_step(), {"sample_rate": RATE}, 0.3),
+        should_cancel=lambda: True,
+    )
+    assert outcome.cancelled is True
+    assert outcome.audio is None
+
+
+def test_a_step_preview_cancelled_while_running_discards_its_result():
+    """It cannot be interrupted; what it must not do is arrive and play."""
+
+    from src.audio.render_job import StepPreviewSnapshot, run_step_preview
+
+    calls = {"n": 0}
+
+    def cancel_after_the_check_before_work() -> bool:
+        calls["n"] += 1
+        return calls["n"] > 1
+
+    outcome = run_step_preview(
+        StepPreviewSnapshot.of(_step(), {"sample_rate": RATE}, 0.3),
+        should_cancel=cancel_after_the_check_before_work,
+    )
+    assert outcome.cancelled is True
+    assert outcome.audio is None
+
+
+def test_a_failing_step_preview_reports_rather_than_raises(monkeypatch):
+    from src.audio.render_job import StepPreviewSnapshot, run_step_preview
+
+    monkeypatch.setattr(
+        "src.synth_functions.sound_creator.generate_single_step_audio_segment",
+        lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("no engine")),
+    )
+    outcome = run_step_preview(
+        StepPreviewSnapshot.of(_step(), {"sample_rate": RATE}, 0.3)
+    )
+    assert outcome.failed is True
+    assert "no engine" in outcome.error
+
+
+def test_an_empty_step_preview_is_a_failure_not_a_success(monkeypatch):
+    from src.audio.render_job import StepPreviewSnapshot, run_step_preview
+
+    monkeypatch.setattr(
+        "src.synth_functions.sound_creator.generate_single_step_audio_segment",
+        lambda *_a, **_k: np.zeros((0, 2), dtype=np.float32),
+    )
+    outcome = run_step_preview(
+        StepPreviewSnapshot.of(_step(), {"sample_rate": RATE}, 0.3)
+    )
+    assert outcome.failed is True
+
+
+def test_the_step_preview_job_runs_off_the_calling_thread(qtbot):
+    from PyQt5.QtCore import QThread
+
+    from src.audio.render_job import StepPreviewSnapshot
+    from src.ui.render_job import StepPreviewJob
+
+    job = StepPreviewJob()
+    outcomes = []
+    job.finished.connect(outcomes.append)
+
+    worker = job.start(
+        StepPreviewSnapshot.of(_step(), {"sample_rate": RATE}, 0.3)
+    )
+    assert job.busy is True
+    assert worker.thread() is not QThread.currentThread()
+
+    qtbot.waitUntil(lambda: bool(outcomes), timeout=30_000)
+    assert outcomes[0].succeeded
+    assert job.busy is False
+
+
+def test_starting_a_second_step_preview_cancels_the_first(qtbot):
+    """Clicking through steps must not play the one you moved away from."""
+
+    from src.audio.render_job import StepPreviewSnapshot
+    from src.ui.render_job import StepPreviewJob
+
+    job = StepPreviewJob()
+    outcomes = []
+    job.finished.connect(outcomes.append)
+
+    first = job.start(
+        StepPreviewSnapshot.of(_step(1.0), {"sample_rate": RATE}, 1.0, step_index=0)
+    )
+    job.start(
+        StepPreviewSnapshot.of(_step(0.2), {"sample_rate": RATE}, 0.2, step_index=1)
+    )
+    assert first.cancelled is True
+
+    qtbot.waitUntil(lambda: len(outcomes) >= 2, timeout=60_000)
+    playable = [entry for entry in outcomes if entry.succeeded]
+    assert playable and all(entry.step_index == 1 for entry in playable)
