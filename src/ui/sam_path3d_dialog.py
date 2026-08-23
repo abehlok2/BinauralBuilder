@@ -75,6 +75,57 @@ _POINT_KINDS = ("polyline", "polygon", "spline", "bezier", "line")
 #: reads as a curve rather than as a polygon, cheap enough to redraw on drag.
 _CURVE_SAMPLES = 400
 
+#: Help for the fields shared by the parametric geometry dataclasses.  The
+#: form itself is generated from those dataclasses, so this stays keyed by the
+#: serialized field name rather than by primitive.  A newly introduced field
+#: still receives a useful fallback in :func:`_parameter_tooltip`.
+_PARAMETER_TOOLTIPS = {
+    "radius_m": "Radius of the orbit in metres, measured from its centre.",
+    "major_radius_m": "Distance in metres from the torus centre to the centre of its tube.",
+    "minor_radius_m": "Radius in metres of the smaller circle that winds around the torus.",
+    "length_m": "Distance in metres from the pendulum pivot to the moving source.",
+    "distance_m": "Constant distance in metres from the listener to the source path.",
+    "start_distance_m": "Source distance from the listener at the start of the path, in metres.",
+    "end_distance_m": "Source distance from the listener at the end or widest part of the path, in metres.",
+    "minimum_distance_m": "Minimum allowed distance in metres from the walk's centre; prevents the path crossing the listener.",
+    "azimuth_deg": "Fixed azimuth in degrees: 0° is front and positive angles move toward the left.",
+    "start_azimuth_deg": "Starting azimuth in degrees: 0° is front and positive angles move toward the left.",
+    "end_azimuth_deg": "Ending azimuth in degrees: 0° is front and positive angles move toward the left.",
+    "centre_azimuth_deg": "Azimuth of the figure's centre in degrees: 0° is front and positive is left.",
+    "plane_azimuth_deg": "Horizontal direction of the orbit or swing plane: 0° is front and 90° is left.",
+    "tilt_axis_azimuth_deg": "Horizontal direction toward which the orbit is tilted: 0° is front and 90° is left.",
+    "elevation_deg": "Elevation in degrees: 0° is ear height and positive angles move upward.",
+    "start_elevation_deg": "Elevation at the start of the path: 0° is ear height and positive is upward.",
+    "end_elevation_deg": "Elevation at the end of the path: 0° is ear height and positive is upward.",
+    "centre_elevation_deg": "Elevation of the figure's centre: 0° is ear height and positive is upward.",
+    "azimuth_extent_deg": "Maximum horizontal angular extent of the figure-eight from its centre.",
+    "elevation_extent_deg": "Maximum vertical angular extent of the figure-eight from its centre.",
+    "start_angle_deg": "Angle around the orbit at which the path begins, in degrees.",
+    "tilt_deg": "Rotation in degrees that tilts the path out of its unrotated plane.",
+    "swing_deg": "Maximum pendulum angle in degrees on either side of its resting position.",
+    "turns": "Number of complete revolutions made while traversing the path once.",
+    "major_turns": "Number of complete orbits around the torus centre during one traversal.",
+    "minor_turns": "Number of windings through the torus tube during one traversal.",
+    "cycles": "Number of distance expansion-and-contraction cycles during one traversal.",
+    "swings": "Number of complete back-and-forth pendulum swings during one traversal.",
+    "centre_m": "Path centre as X / Y / Z metres: +x forward, +y left, +z up.",
+    "pivot_m": "Pendulum pivot as X / Y / Z metres: +x forward, +y left, +z up.",
+    "extent_m": "Full X / Y / Z dimensions of the random-walk volume in metres.",
+    "steps": "Number of deterministic waypoints used to construct the random walk.",
+    "seed": "Non-negative random seed; the same seed produces the same path.",
+    "smooth": "Use a smooth periodic spline between random-walk waypoints instead of straight segments.",
+    "pass_over": "Continue over the zenith and descend behind the listener instead of stopping overhead.",
+}
+
+
+def _parameter_tooltip(field_name):
+    """Return user-facing help for a generated primitive parameter."""
+
+    return _PARAMETER_TOOLTIPS.get(
+        field_name,
+        f"Controls the {field_name.replace('_', ' ')} value for this path primitive.",
+    )
+
 
 class _AxisRow(QWidget):
     """Three linked spin boxes, for a vector-valued parameter."""
@@ -549,8 +600,11 @@ class SamPath3DDialog(QDialog):
             widget = self._parameter_widget(field)
             if widget is None:
                 continue
+            widget.setToolTip(_parameter_tooltip(field.name))
             label = field.name.replace("_", " ").replace(" deg", " (°)").replace(" m", " (m)")
-            self.parameter_form.addRow(label.capitalize(), widget)
+            label_widget = QLabel(label.capitalize())
+            label_widget.setToolTip(widget.toolTip())
+            self.parameter_form.addRow(label_widget, widget)
             self._parameter_widgets[field.name] = widget
 
     def _parameter_widget(self, field):

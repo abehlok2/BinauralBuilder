@@ -141,6 +141,20 @@ def test_the_parameter_form_is_generated_from_the_geometry_itself(dialog):
     assert set(dialog._parameter_widgets) >= {"distance_m", "turns", "end_elevation_deg"}
 
 
+@pytest.mark.parametrize("kind", PRIMITIVE_TYPES)
+def test_every_generated_primitive_parameter_has_a_tooltip(dialog, kind):
+    dialog.primitive_combo.setCurrentText(kind)
+    assert dialog._parameter_widgets
+    assert all(widget.toolTip().strip() for widget in dialog._parameter_widgets.values())
+
+
+def test_parameter_tooltips_explain_units_and_coordinate_signs(dialog):
+    dialog.primitive_combo.setCurrentText("horizontal_orbit")
+    assert "metres" in dialog._parameter_widgets["radius_m"].toolTip()
+    assert "+x forward" in dialog._parameter_widgets["centre_m"].toolTip()
+    assert "positive" in dialog._parameter_widgets["start_azimuth_deg"].toolTip()
+
+
 def test_changing_traversal_does_not_change_the_geometry(dialog):
     dialog.primitive_combo.setCurrentText("horizontal_orbit")
     before = dialog.trajectory_spec()["geometry"]
