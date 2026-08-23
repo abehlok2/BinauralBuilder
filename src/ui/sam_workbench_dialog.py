@@ -79,6 +79,11 @@ SAM_FUNCTION_NAMES = (
 
 DEFAULT_PREVIEW_SECONDS = 5.0
 
+#: Used only when a voice is edited with no track and no scene to name it -
+#: opening the dialog on a bare voice dictionary, which the tests do. Inside a
+#: track the identifier always comes from the track.
+DEFAULT_SOURCE_ID = "source.1"
+
 
 class PreviewWorker(QObject):
     """Renders a preview off the GUI thread."""
@@ -143,13 +148,29 @@ class SamWorkbenchDialog(QDialog):
         self._voice.setdefault("params", {})
         legacy_scene = migrate_voice_scene(self._voice["params"])
         self._scene = normalize_sam_scene(scene_data or legacy_scene)
+        # The identifier on the voice is the one the track assigned. Where a
+        # voice arrives without one - an older project, or a voice opened
+        # outside a track - the scene's own roster is asked before anything is
+        # invented, and whatever is settled on is recorded on the voice so the
+        # next render and this dialog agree about which source this is.
         source_id = str(self._voice.get("sam_source_id", "")).strip()
         if not source_id:
+            declared = [
+                str(item.get("id"))
+                for item in self._scene.get("sources", ())
+                if item.get("id")
+            ]
             routed = self._scene.get("routing", {}).get("sources", ())
-            source_id = str(routed[0].get("sourceId", "source.1")) if routed else "source.1"
+            if declared:
+                source_id = declared[0]
+            elif routed:
+                source_id = str(routed[0].get("sourceId", ""))
+            source_id = source_id or DEFAULT_SOURCE_ID
             self._voice["sam_source_id"] = source_id
         if not any(str(item.get("id")) == source_id for item in self._scene["sources"]):
-            self._scene["sources"].append({"id": source_id, "name": source_id})
+            self._scene["sources"].append(
+                {"id": source_id, "name": self._voice_display_name()}
+            )
         self._original = copy.deepcopy(self._voice)
         self._sample_rate = int(sample_rate)
         self._on_apply = on_apply
@@ -202,15 +223,27 @@ class SamWorkbenchDialog(QDialog):
         header.addWidget(QLabel("Disclosure:"))
         self.mode_combo = QComboBox()
         self.mode_combo.addItems([BASIC, ADVANCED, EXPERT])
-        self.mode_combo.setCurrentText(EXPERT)
-        self.mode_combo.setToolTip("How much of the parameter space to show.")
+        self.mode_combo.setCurrentText(self._stored_disclosure())
+        self.mode_combo.setToolTip(
+            "How much of the parameter space to show. Your choice is "
+            "remembered for next time."
+        )
         self.mode_combo.currentTextChanged.connect(self._on_mode_changed)
         header.addWidget(self.mode_combo)
         layout.addLayout(header)
 
+        # A persistent answer to "what happens when I press render?". The
+        # configuration is spread across tabs and each part is legible alone
+        # while the whole is not, so this stays visible whichever tab is open.
+        self.flow_label = QLabel("")
+        self.flow_label.setWordWrap(True)
+        self.flow_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.flow_label.setObjectName("samFlowSummary")
+        layout.addWidget(self.flow_label)
+
         self.tabs = QTabWidget()
         self.parameter_panel = SamBasicPanel(
-            mode=EXPERT, is_transition=self._is_transition
+            mode=self.mode_combo.currentText(), is_transition=self._is_transition
         )
         # Compatibility aliases for integrations that previously addressed the
         # two duplicated panels directly. Both now refer to the same editor.
@@ -226,8 +259,8 @@ class SamWorkbenchDialog(QDialog):
         self.compatibility_view.setReadOnly(True)
 
         self.tabs.addTab(self._scrolled(self.parameter_panel), "Parameters")
-        self.tabs.addTab(self._scrolled(self.path_panel), "Path && Geometry")
-        self.tabs.addTab(self._scrolled(self.hrtf_panel), "HRTF Lab")
+        self._path_tab = self.tabs.addTab(self._scrolled(self.path_panel), "Path && Geometry")
+        self._hrtf_tab = self.tabs.addTab(self._scrolled(self.hrtf_panel), "HRTF Lab")
         # Stages, modulation and routing describe the shape of the scene rather
         # than one voice's parameters, so they share a tab of their own instead
         # of lengthening the parameter list.
@@ -355,10 +388,35 @@ class SamWorkbenchDialog(QDialog):
         return self.onboarding
 
     @staticmethod
-    def _onboarding_settings():
+    def _settings():
         from PyQt5.QtCore import QSettings
 
         return QSettings("BinauralBuilder", "SamWorkbench")
+
+    #: Kept under the old name because callers and tests already use it.
+    _onboarding_settings = _settings
+
+    def _stored_disclosure(self) -> str:
+        """The disclosure mode to open in.
+
+        Basic on first use. Expert is the whole parameter space at once, which
+        is the right place to *return* to and the wrong place to arrive: it
+        offers everything before the user knows what any of it does. Once
+        somebody has chosen a mode that choice is what they get back, so an
+        expert never has to reselect Expert.
+        """
+
+        try:
+            stored = self._settings().value("disclosureMode", "", type=str)
+        except Exception:  # pragma: no cover - restricted or read-only settings
+            return BASIC
+        return stored if stored in (BASIC, ADVANCED, EXPERT) else BASIC
+
+    def _remember_disclosure(self, mode: str) -> None:
+        try:
+            self._settings().setValue("disclosureMode", mode)
+        except Exception:  # pragma: no cover - restricted or read-only settings
+            pass
 
     def _onboarding_dismissed(self) -> bool:
         try:
@@ -482,19 +540,60 @@ class SamWorkbenchDialog(QDialog):
         area.setWidget(widget)
         return area
 
+    def _voice_display_name(self) -> str:
+        """What to call this voice in a roster, preferring what the user typed."""
+
+        for key in ("description", "name"):
+            value = str(self._voice.get(key, "") or "").strip()
+            if value:
+                return value
+        return str(self._voice.get("synth_function_name", "") or "SAM voice")
+
     def set_steps(self, steps) -> None:
-        """Give the stage view the session's steps.
+        """Give the stage view the session's steps, and the panels their roster.
 
         Stages are built from steps rather than invented alongside them, so
         without this the Stages tab has nothing to group and says so.
+
+        The steps are also where the source roster comes from. Routing and
+        modulation used to start from a placeholder that looked like a real
+        route and referred to nothing, so a project could be routed, muted and
+        soloed against a source the track does not have.
         """
 
-        self.stage_panel.set_steps(steps or ())
+        steps = list(steps or ())
+        self.stage_panel.set_steps(steps)
+        self._refresh_roster(steps)
+
+    def _refresh_roster(self, steps=None) -> None:
+        """Rebuild the source roster from the track and hand it to the panels."""
+
+        from src.audio.sam_workbench.scene_state import assign_source_ids
+
+        if steps is not None:
+            self._steps = list(steps)
+        steps = getattr(self, "_steps", [])
+        if steps:
+            # The identifiers are assigned to the real steps, not a copy: an
+            # identifier assigned to a throwaway is thrown away with it, and
+            # every route that named it dangles on the next open.
+            self._scene = assign_source_ids(
+                {"steps": steps, "sam_scene": self._scene}, self._scene
+            )
+        roster = [
+            {"id": str(item.get("id")), "name": str(item.get("name") or item.get("id"))}
+            for item in self._scene.get("sources", ())
+            if item.get("id")
+        ]
+        self.routing_panel.set_roster(roster)
+        self.modulation_panel.set_roster(roster)
+        self._revalidate()
 
     def _on_mode_changed(self, mode: str) -> None:
         """Apply progressive disclosure within the shared parameter view."""
 
         self.parameter_panel.set_mode(mode)
+        self._remember_disclosure(mode)
 
     # --- parameters ---------------------------------------------------------
 
@@ -513,6 +612,7 @@ class SamWorkbenchDialog(QDialog):
         self.hrtf_panel.set_params(params)
         self.stage_panel.set_timeline(self._scene.get("stages"))
         self.modulation_panel.set_matrix(self._scene.get("modulation"))
+        self.modulation_panel.set_modulators(self._scene.get("modulators"))
         self.routing_panel.set_params({"samRouting": self._scene.get("routing")})
         self._on_mode_changed(self.mode_combo.currentText())
 
@@ -551,6 +651,10 @@ class SamWorkbenchDialog(QDialog):
         scene = copy.deepcopy(self._scene)
         scene["stages"] = self.stage_panel.timeline.describe()
         scene["modulation"] = self.modulation_panel.matrix.describe()
+        # The definitions, not just the names the matrix refers to. Without
+        # these every modulator rendered as the same fallback sine whatever the
+        # row was called.
+        scene["modulators"] = [dict(entry) for entry in self.modulation_panel.modulators()]
         scene["routing"] = self.routing_panel.describe()
         scene["buses"] = copy.deepcopy(scene["routing"].get("buses", []))
         return normalize_sam_scene(scene)
@@ -619,17 +723,128 @@ class SamWorkbenchDialog(QDialog):
         self.status_label.setText(f"Parameter state loaded from {path}; press Apply or OK to commit it.")
         return True
 
+    # --- renderer relevance -------------------------------------------------
+
+    def _apply_renderer_relevance(self) -> None:
+        """Leave enabled only what the selected renderer actually reads.
+
+        Which tabs matter is read from the registry rather than from a list
+        kept here: a renderer that declares a SOFA asset needs the HRTF Lab,
+        one that consumes a trajectory needs the path editor. A fifth copy of
+        that mapping is a fifth chance for it to disagree with the renderer.
+
+        Irrelevant tabs are disabled rather than removed. Removing them would
+        renumber the rest and make the HRTF Lab unreachable as a tool for
+        auditioning a dataset, and a control that has silently vanished teaches
+        the user less than one that says why it is unavailable. What matters
+        for correctness is the rule that nothing *enabled* is ignored by
+        preview and export, and disabling satisfies that.
+        """
+
+        from src.audio.sam_workbench.render.registry import REGISTRY
+
+        identifier = self.renderer_combo.currentData() or "abstract_pm"
+        definition = REGISTRY.get(identifier) if identifier in REGISTRY else None
+        if definition is None:
+            return
+
+        wants_hrtf = any(asset.kind == "sofa" for asset in definition.assets)
+        wants_path = bool(definition.capabilities.consumes_trajectory)
+
+        label = definition.capabilities.label
+        self.tabs.setTabEnabled(self._hrtf_tab, wants_hrtf)
+        self.tabs.setTabToolTip(
+            self._hrtf_tab,
+            "Convolution settings and the dataset this render uses."
+            if wants_hrtf
+            else f"{label} does not convolve with a SOFA dataset, so nothing "
+            "here would reach preview or export.",
+        )
+        self.tabs.setTabEnabled(self._path_tab, wants_path)
+        self.tabs.setTabToolTip(
+            self._path_tab,
+            "The trajectory this renderer follows."
+            if wants_path
+            else f"{label} does not read a trajectory.",
+        )
+        if not self.tabs.isTabEnabled(self.tabs.currentIndex()):
+            self.tabs.setCurrentIndex(0)
+
     # --- validation ---------------------------------------------------------
 
     def issues(self) -> tuple[Any, ...]:
-        return validate_sam2_params(
-            self.collect_params(),
-            is_transition=self._is_transition,
-            sample_rate_hz=self._sample_rate,
+        """Everything wrong with this voice *and* the scene around it.
+
+        The scene validator already detected duplicate identifiers, routes
+        naming a source that is gone and buses that do not exist; nothing
+        showed them. A dangling route is exactly the kind of fault that is
+        invisible in the panel that holds it - the row looks like any other -
+        so it has to be reported where the user is looking.
+        """
+
+        from src.audio.sam_workbench.scene_state import validate_scene
+
+        issues = list(
+            validate_sam2_params(
+                self.collect_params(),
+                is_transition=self._is_transition,
+                sample_rate_hz=self._sample_rate,
+            )
         )
+        try:
+            issues.extend(validate_scene(self.scene_data()))
+        except Exception:  # pragma: no cover - a half-built scene must not block editing
+            pass
+        return tuple(issues)
+
+    def _refresh_flow(self, issues: tuple[Any, ...]) -> None:
+        """Restate the whole chain from the parameters production reads."""
+
+        from src.audio.sam_workbench.flow import summarize_flow
+
+        summary = summarize_flow(
+            self.collect_params(),
+            scene=self._scene,
+            sample_rate_hz=self._sample_rate,
+            issues=issues,
+        )
+        self._flow_summary = summary
+
+        lines = [summary.chain_text()]
+        facts = [f"Renderer: {summary.renderer_label}"]
+        if summary.asset:
+            facts.append(f"Asset: {summary.asset}")
+        if summary.interpolation:
+            facts.append(f"Interpolation: {summary.interpolation}")
+        facts.append(f"Path: {summary.path_status}")
+        facts.append(f"Scene: {summary.scene_status}")
+        lines.append(" | ".join(facts))
+        if summary.cost:
+            lines.append(summary.cost)
+        if summary.inactive:
+            # Named rather than counted: "3 settings ignored" sends the user
+            # hunting, and the point of saying it at all is to stop that.
+            lines.append(
+                "Set but not used by this renderer: " + ", ".join(summary.inactive)
+            )
+        warnings = [issue for issue in summary.warnings if issue.severity == "warning"]
+        if warnings:
+            lines.append(
+                "Warnings: "
+                + "; ".join(f"{issue.path}: {issue.message}" for issue in warnings)
+            )
+        self.flow_label.setText("\n".join(lines))
+
+    @property
+    def flow_summary(self):
+        """The last computed :class:`FlowSummary`, for tests and the manifest."""
+
+        return getattr(self, "_flow_summary", None)
 
     def _revalidate(self) -> None:
+        self._apply_renderer_relevance()
         issues = self.issues()
+        self._refresh_flow(issues)
         self.parameter_panel.show_issues(issues)
 
         errors = [issue for issue in issues if issue.severity == "error"]

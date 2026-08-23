@@ -51,6 +51,12 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
+# The engine decides which modes exist; this module only labels them. Both of
+# these are cheap - neither pulls ``sofar`` or ``h5py`` - so importing them at
+# module scope does not break the rule above about heavy imports.
+from src.audio.sam_workbench.hrtf.interpolation import INTERPOLATION_MODES
+from src.audio.sam_workbench.hrtf.sofa_io import DelayPolicy
+
 from .hrtf_coverage_plot import CoveragePlotWidget
 from .sam_hrtf_modify_panel import SamHrtfModifyPanel
 
@@ -61,19 +67,39 @@ HRTF_OPTIONS_SCHEMA_VERSION = 1
 
 DEFAULT_PROFILE = "default"
 
-#: Label, stored value. The order is the order the modes are meant to be
-#: adopted, so the list doubles as guidance.
-INTERPOLATION_CHOICES = (
-    ("Nearest with crossfade", "nearest"),
-    ("Three-neighbour (unit-sphere distance)", "three_neighbor"),
-    ("Spherical triangular (barycentric)", "spherical_triangular"),
-    ("Delay and magnitude (minimum phase)", "delay_magnitude"),
-    ("Spherical harmonic", "spherical_harmonic"),
-)
+#: How each mode is described to the user. The *set* of modes is not decided
+#: here: it comes from the engine, so a mode cannot be offered that rendering
+#: does not implement, and one cannot be added to the engine and quietly stay
+#: missing from the GUI. A mode without an entry here still appears, under a
+#: derived label, rather than disappearing from the list.
+INTERPOLATION_LABELS = {
+    "nearest": "Nearest with crossfade",
+    "three_neighbor": "Three-neighbour (unit-sphere distance)",
+    "spherical_triangular": "Spherical triangular (barycentric)",
+    "delay_magnitude": "Delay and magnitude (minimum phase)",
+    "spherical_harmonic": "Spherical harmonic",
+}
 
-DELAY_CHOICES = (
-    ("Embedded in HRIR", "bake_delay_into_ir"),
-    ("SOFA Data.Delay", "preserve_external_delay"),
+
+def _interpolation_choices() -> tuple[tuple[str, str], ...]:
+    return tuple(
+        (INTERPOLATION_LABELS.get(mode, mode.replace("_", " ").capitalize()), mode)
+        for mode in INTERPOLATION_MODES
+    )
+
+
+#: Label, stored value. Ordered as the engine orders the modes, which is the
+#: order they are meant to be adopted, so the list doubles as guidance.
+INTERPOLATION_CHOICES = _interpolation_choices()
+
+DELAY_LABELS = {
+    DelayPolicy.BAKE.value: "Embedded in HRIR",
+    DelayPolicy.PRESERVE.value: "SOFA Data.Delay",
+}
+
+DELAY_CHOICES = tuple(
+    (DELAY_LABELS.get(policy.value, policy.value), policy.value)
+    for policy in DelayPolicy
 )
 
 SOURCE_CHOICES = (

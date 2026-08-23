@@ -253,10 +253,18 @@ def test_timeline_view_maps_clicks_to_stages(qtbot):
 def test_routing_round_trips_and_tracks_cost(qtbot):
     panel = SamRoutingPanel()
     qtbot.addWidget(panel)
+    # The panel no longer invents a source, so the roster is what the track
+    # would supply. Starting from one routed source keeps this measuring what
+    # it is about - that cost follows the scene - rather than the old
+    # placeholder's side effects.
+    panel.set_roster([{"id": "source.1", "name": "Lead"}])
     before = panel.cost_inputs()
 
     panel._buses.append(BusSpec(id="reverb", name="Reverb send", gain_db=-3.0))
-    panel._sources.append(SourceRouting(source_id="source.2", bus_id="reverb"))
+    panel.set_roster(
+        [{"id": "source.1", "name": "Lead"}, {"id": "source.2", "name": "Pad"}]
+    )
+    panel._set_source(1, bus_id="reverb")
     panel._refresh_buses()
     panel._refresh_sources()
     panel.set_crossovers((180.0, 1200.0, 6000.0))
@@ -334,7 +342,16 @@ def test_rebuilt_tables_leave_no_orphan_widgets(qtbot):
 # --- the workbench dialog ---------------------------------------------------
 
 
-def test_scene_panels_reach_the_voice_parameters(qtbot):
+def test_scene_panels_reach_the_track_scene_not_the_voice(qtbot):
+    """Where the Scene panels' state goes, now that it has moved.
+
+    Stages, modulation and routing describe the track, not one voice, so they
+    are no longer written into voice parameters. `collect_params` strips the
+    three legacy keys deliberately and `scene_data` owns them. This checks both
+    halves: the state arrives in the scene, and it does not leak back into the
+    voice where a second copy could disagree with it.
+    """
+
     from src.ui.sam_workbench_dialog import SamWorkbenchDialog
 
     dialog = SamWorkbenchDialog(
@@ -349,25 +366,31 @@ def test_scene_panels_reach_the_voice_parameters(qtbot):
     dialog.modulation_panel.apply_cell()
     dialog.routing_panel.set_crossovers((300.0,))
 
+    scene = dialog.scene_data()
+    assert scene["stages"]["stages"]
+    assert scene["modulation"]["routes"]
+    assert scene["routing"]["bands"]
+
     params = dialog.collect_params()
     for key in ("samStages", "samModulation", "samRouting"):
-        assert key in params
-        # The workbench owns these keys, so validation must not report them as
-        # unknown and the compatibility view must not call them untouched.
-        assert key in WORKBENCH_OWNED_KEYS
-    assert validate_sam2_params(params) == ()
-    assert "(none)" in dialog.compatibility_view.toPlainText()
+        assert key not in params, f"{key} belongs to the scene, not the voice"
 
-    reopened = SamWorkbenchDialog(
-        {"synth_function_name": "spatial_angle_modulation_sam2", "params": dict(params)}
+
+def test_the_scene_carries_modulator_definitions_not_only_names(qtbot):
+    """A row used to be a name, and every name rendered as the same sine."""
+
+    from src.ui.sam_workbench_dialog import SamWorkbenchDialog
+
+    dialog = SamWorkbenchDialog(
+        {"synth_function_name": "spatial_angle_modulation_sam2", "params": {}}
     )
-    qtbot.addWidget(reopened)
-    restored = reopened.collect_params()
-    for key in ("samStages", "samModulation", "samRouting"):
-        assert restored[key] == params[key]
+    qtbot.addWidget(dialog)
 
+    modulators = {entry["id"]: entry for entry in dialog.scene_data()["modulators"]}
+    assert "random.walk" in modulators
+    assert modulators["random.walk"]["waveform"] == "random"
+    assert modulators["lfo.slow"]["rateHz"] != modulators["lfo.fast"]["rateHz"]
 
-# --- the localization test --------------------------------------------------
 
 
 def test_localization_test_stays_blind_until_it_is_scored(qtbot):

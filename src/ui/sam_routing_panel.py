@@ -48,12 +48,11 @@ __all__ = ["SamRoutingPanel", "BandStripView"]
 
 _MIN_HZ = 20.0
 _MAX_HZ = 20_000.0
-_INTERPOLATION_MODES = (
-    "nearest",
-    "three_neighbor",
-    "spherical_triangular",
-    "delay_magnitude",
-    "spherical_harmonic",
+#: Taken from the engine rather than repeated, so this panel cannot offer a
+#: mode that rendering does not implement, and cannot silently omit one that
+#: has been added.
+from src.audio.sam_workbench.hrtf.interpolation import (  # noqa: E402
+    INTERPOLATION_MODES as _INTERPOLATION_MODES,
 )
 
 
@@ -140,7 +139,14 @@ class SamRoutingPanel(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._buses: list[BusSpec] = [BusSpec(id=MASTER_BUS, name="Master")]
-        self._sources: list[SourceRouting] = [SourceRouting(source_id="source.1")]
+        # No invented source. This used to start with a "source.1" that looked
+        # exactly like a real route and referred to nothing, so a project could
+        # be routed, muted and soloed against a source the track does not have.
+        # The roster comes from the track; until it does, there is nothing to
+        # route.
+        self._sources: list[SourceRouting] = []
+        #: Identifier -> display name, from the track's own voices.
+        self._roster: dict[str, str] = {}
         self._band = BandRouting()
         self._throughput: float | None = None
         self._loading = False
@@ -349,7 +355,7 @@ class SamRoutingPanel(QWidget):
                     soloed=bool(entry.get("soloed", False)),
                 )
                 for entry in data.get("sources", ())
-            ] or [SourceRouting(source_id="source.1")]
+            ]
             bands = dict(data.get("bands", {}) or {})
             self._band = BandRouting(
                 crossovers_hz=tuple(float(value) for value in bands.get("crossoversHz", ())),
@@ -433,23 +439,97 @@ class SamRoutingPanel(QWidget):
 
     # --- sources ------------------------------------------------------------
 
+    def set_roster(self, sources) -> None:
+        """Adopt the track's source roster, keeping the routing already set.
+
+        The roster decides which sources exist; this panel decides where each
+        one goes. So a route whose source is still in the track keeps its bus,
+        gain, mute and solo, a source new to the track arrives routed to master,
+        and a route naming a source that is gone is kept but marked - dropping
+        it would silently discard a mute or a bus assignment that an undo in
+        the track editor would otherwise restore.
+
+        Order follows the track, so reordering voices reorders this table.
+        """
+
+        roster: dict[str, str] = {}
+        for entry in sources or ():
+            if isinstance(entry, Mapping):
+                identifier = str(entry.get("id", "")).strip()
+                name = str(entry.get("name", "") or identifier)
+            else:
+                identifier = str(getattr(entry, "source_id", "") or entry).strip()
+                name = str(getattr(entry, "name", "") or identifier)
+            if identifier:
+                roster.setdefault(identifier, name)
+        self._roster = roster
+
+        existing = {source.source_id: source for source in self._sources}
+        ordered = [
+            existing.get(identifier, SourceRouting(source_id=identifier))
+            for identifier in roster
+        ]
+        ordered.extend(
+            source for identifier, source in existing.items() if identifier not in roster
+        )
+        self._sources = ordered
+        self._refresh_sources()
+        self._refresh_cost()
+        self._emit()
+
+    def roster(self) -> dict[str, str]:
+        """Identifier to display name, as adopted from the track."""
+
+        return dict(self._roster)
+
+    def unresolved_sources(self) -> tuple[str, ...]:
+        """Routes naming a source the track does not have."""
+
+        return tuple(
+            source.source_id
+            for source in self._sources
+            if source.source_id not in self._roster
+        )
+
     def _add_source(self) -> None:
-        default = f"source.{len(self._sources) + 1}"
-        name, accepted = QInputDialog.getText(self, "Add source", "Source identifier:", text=default)
-        name = str(name).strip()
-        if not accepted or not name:
+        """Route a source the track actually has.
+
+        Typing an identifier freely is what allowed a route to name something
+        that does not exist. The choice is the roster minus what is already
+        routed; when that is empty there is nothing to add and saying so is
+        more use than an input box that can only produce a dangling route.
+        """
+
+        routed = {source.source_id for source in self._sources}
+        available = [
+            (identifier, name)
+            for identifier, name in self._roster.items()
+            if identifier not in routed
+        ]
+        if not self._roster:
+            self.status_label.setText(
+                "No sources yet: this panel routes the SAM voices in the track."
+            )
             return
-        if any(source.source_id == name for source in self._sources):
-            self.status_label.setText(f"A source called {name!r} already exists.")
+        if not available:
+            self.status_label.setText("Every source in the track is already routed.")
             return
-        self._sources.append(SourceRouting(source_id=name))
+
+        labels = [f"{name} ({identifier})" for identifier, name in available]
+        choice, accepted = QInputDialog.getItem(
+            self, "Add source", "Source:", labels, 0, False
+        )
+        if not accepted or not choice:
+            return
+        identifier = available[labels.index(choice)][0]
+        self._sources.append(SourceRouting(source_id=identifier))
         self._refresh_sources()
         self._refresh_cost()
         self._emit()
 
     def _remove_source(self) -> None:
         row = self.source_table.currentRow()
-        if not 0 <= row < len(self._sources) or len(self._sources) <= 1:
+        if not 0 <= row < len(self._sources):
             return
         self._sources.pop(row)
         self._refresh_sources()
@@ -461,7 +541,18 @@ class SamRoutingPanel(QWidget):
         table.blockSignals(True)
         reset_rows(table, len(self._sources))
         for row, source in enumerate(self._sources):
-            item = QTableWidgetItem(source.source_id)
+            # A name is for reading and an identifier is for referring, so the
+            # cell shows the name and carries the identifier as its data.
+            known = source.source_id in self._roster
+            name = self._roster.get(source.source_id, source.source_id)
+            item = QTableWidgetItem(name if known else f"{name} (missing)")
+            item.setData(Qt.UserRole, source.source_id)
+            item.setToolTip(
+                f"Source identifier {source.source_id}"
+                if known
+                else f"{source.source_id} is routed here but is not a source in "
+                "this track. Its settings are kept in case the voice comes back."
+            )
             item.setFlags(item.flags() & ~Qt.ItemIsEditable)
             table.setItem(row, 0, item)
 

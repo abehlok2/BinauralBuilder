@@ -538,15 +538,13 @@ def validate_sam2_params(
             )
         )
     else:
-        for requirement in REGISTRY.get(renderer_mode).assets:
-            if requirement.required and not params.get(requirement.key):
-                issues.append(
-                    ValidationIssue(
-                        requirement.key,
-                        f"an explicit {requirement.kind.upper()} asset is required "
-                        "for this renderer",
-                    )
-                )
+        # The renderer's own validation, which is what the compiled plan runs
+        # before rendering. Running it here too is the point: a configuration
+        # the GUI accepts and the plan then rejects is a control the user was
+        # invited to set and production ignores. This covers the renderer's
+        # config fields as well as its required assets, so the asset check that
+        # used to be repeated here is no longer needed.
+        issues.extend(REGISTRY.get(renderer_mode).validate(params))
     options = params.get("hrtfOptions", {})
     if options is not None and not isinstance(options, dict):
         issues.append(ValidationIssue("hrtfOptions", "must be a versioned object"))
