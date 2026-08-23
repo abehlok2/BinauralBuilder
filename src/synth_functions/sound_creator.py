@@ -1101,6 +1101,222 @@ def _generate_step_for_assembly(
     return step_audio_mix, step_voice_states, prev_step_reference
 
 
+def track_is_streamable(track_data) -> bool:
+    """Whether this track can be assembled without holding all of it.
+
+    Streaming works when each step only ever overlaps the one before it, so a
+    sample stops changing once the following step has started and can be handed
+    to the encoder. Two things break that and fall back to whole-track
+    assembly rather than being rendered wrongly:
+
+    * explicit ``start`` / ``start_time`` placements, which can put steps out of
+      order or overlap three at once;
+    * a background-noise layer, which is generated for the finished track's
+      duration and mixed over the whole of it.
+    """
+
+    if not isinstance(track_data, dict):
+        return False
+    background = track_data.get("background_noise", {})
+    if isinstance(background, dict) and (
+        background.get("file")
+        or background.get("params_path")
+        or background.get("noise_file")
+    ):
+        return False
+    for step in track_data.get("steps") or ():
+        if "start" in step or "start_time" in step:
+            return False
+    return True
+
+
+def iter_assembled_track_blocks(
+    track_data,
+    sample_rate,
+    crossfade_duration,
+    crossfade_curve="linear",
+    crossfade_overlap=1.0,
+    progress_callback=None,
+):
+    """Assemble a track and yield it in pieces, holding only a sliding window.
+
+    The whole-track path allocates one array for the finished render - about
+    1.3 GB for an hour of stereo float32 - before the encoder sees any of it.
+    Nothing needs that: a sample is final once the step after it has been
+    placed, because no later step reaches back past its own start.
+
+    This keeps a window covering only what is still being written, emits
+    everything behind it, and so costs a step plus a crossfade rather than a
+    track. The placement arithmetic mirrors
+    :func:`assemble_track_from_data` deliberately, and the tests assert the two
+    produce the same samples rather than trusting that they do.
+
+    Yields frame-major ``(frames, 2)`` float32 blocks.
+    """
+
+    steps_data = track_data.get("steps", [])
+    if not steps_data:
+        return
+
+    global_settings = track_data.get("global_settings", {})
+    preserve_relative_step_loudness = bool(
+        global_settings.get("preserve_relative_step_loudness", False)
+    )
+    prev_step_reference = None
+    prev_crossfade_samples = 0
+    prev_crossfade_curve = crossfade_curve
+    prev_step_voice_phase_map = {}
+    default_overlap_factor = _resolve_crossfade_overlap_factor(crossfade_overlap)
+    total_steps = len(steps_data)
+
+    if progress_callback:
+        try:
+            progress_callback(0.0)
+        except RenderCancelled:
+            raise
+        except Exception as error:
+            print(f"Progress callback error: {error}")
+
+    # The window, and where its first sample sits on the absolute timeline.
+    window = np.zeros((0, 2), dtype=np.float32)
+    window_start = 0
+    emitted = 0
+    current_time = 0.0
+    last_step_end = 0
+
+    def ensure(upto_abs):
+        """Grow the window so it covers up to ``upto_abs`` exclusive."""
+
+        nonlocal window
+        needed = upto_abs - window_start - window.shape[0]
+        if needed > 0:
+            window = np.concatenate(
+                (window, np.zeros((needed, 2), dtype=np.float32)), axis=0
+            )
+
+    for i, step_data in enumerate(steps_data):
+        step_duration = float(step_data.get("duration", 0))
+        if step_duration <= 0:
+            continue
+
+        step_start_sample_abs = int(current_time * sample_rate)
+        N_step = int(step_duration * sample_rate)
+        step_end_sample_abs = step_start_sample_abs + N_step
+
+        # Everything before this step's start is final: no later step reaches
+        # back past its own beginning. Hand it over and forget it.
+        release_to = max(emitted, min(step_start_sample_abs, last_step_end))
+        if release_to > emitted:
+            length = release_to - window_start
+            if length > 0:
+                yield window[:length].copy()
+                window = window[length:]
+                window_start += length
+                emitted = release_to
+
+        (
+            step_audio_mix,
+            step_voice_states,
+            prev_step_reference,
+        ) = _generate_step_for_assembly(
+            step_data,
+            global_settings,
+            step_duration,
+            N_step,
+            sample_rate=sample_rate,
+            prev_step_voice_phase_map=prev_step_voice_phase_map,
+            preserve_relative_step_loudness=preserve_relative_step_loudness,
+            prev_step_reference=prev_step_reference,
+            progress_callback=progress_callback,
+            step_index=i,
+            total_steps=total_steps,
+        )
+
+        prev_step_voice_phase_map = {}
+        for voice_idx, voice_data in enumerate(step_data.get("voices", [])):
+            if voice_idx >= len(step_voice_states):
+                continue
+            state = step_voice_states[voice_idx]
+            if not isinstance(state, dict):
+                continue
+            prev_step_voice_phase_map[_voice_logical_key(voice_data, voice_idx)] = (
+                copy.deepcopy(state)
+            )
+
+        safe_place_start = max(emitted, step_start_sample_abs)
+        safe_place_end = step_end_sample_abs
+        segment_len = safe_place_end - safe_place_start
+        if segment_len <= 0:
+            continue
+
+        ensure(safe_place_end)
+        audio_to_use = step_audio_mix[:segment_len]
+        if audio_to_use.shape[0] < segment_len:
+            audio_to_use = np.pad(
+                audio_to_use,
+                ((0, segment_len - audio_to_use.shape[0]), (0, 0)),
+                "constant",
+            )
+
+        step_crossfade_duration = float(
+            step_data.get("crossfade_duration", crossfade_duration)
+        )
+        step_crossfade_curve = str(step_data.get("crossfade_curve", crossfade_curve))
+        step_overlap_factor = _resolve_crossfade_overlap_factor(
+            step_data.get("crossfade_overlap", default_overlap_factor)
+        )
+        incoming_crossfade_samples = prev_crossfade_samples
+        incoming_crossfade_curve = prev_crossfade_curve
+
+        overlap_samples = min(safe_place_end, last_step_end) - safe_place_start
+        offset = safe_place_start - window_start
+
+        if i > 0 and overlap_samples > 0 and incoming_crossfade_samples > 0:
+            actual = min(overlap_samples, incoming_crossfade_samples)
+            prev_segment = window[offset : offset + actual]
+            lag = phase_align_signal(prev_segment, audio_to_use[:actual], actual)
+            aligned = apply_signal_lag_non_circular(
+                audio_to_use, lag, preserve_length=True
+            )
+            window[offset : offset + actual] = crossfade_signals(
+                prev_segment,
+                aligned[:actual],
+                sample_rate,
+                actual / sample_rate,
+                curve=incoming_crossfade_curve,
+            )
+            remaining = segment_len - actual
+            if remaining > 0 and actual < aligned.shape[0]:
+                tail = aligned[actual : actual + remaining]
+                window[offset + actual : offset + actual + tail.shape[0]] += tail
+        else:
+            window[offset : offset + segment_len] += audio_to_use
+
+        last_step_end = max(last_step_end, safe_place_end)
+        effective_advance = (
+            max(0.0, step_duration - max(0.0, step_crossfade_duration) * step_overlap_factor)
+            if incoming_crossfade_samples > 0 or step_crossfade_duration > 0
+            else step_duration
+        )
+        current_time += effective_advance
+        prev_crossfade_samples = int(
+            max(0.0, step_crossfade_duration) * step_overlap_factor * sample_rate
+        )
+        prev_crossfade_curve = step_crossfade_curve
+
+    tail_length = last_step_end - window_start
+    if tail_length > 0:
+        yield window[:tail_length].copy()
+
+    if progress_callback:
+        try:
+            progress_callback(1.0)
+        except RenderCancelled:
+            raise
+        except Exception as error:
+            print(f"Progress callback error: {error}")
+
+
 def assemble_track_from_data(track_data, sample_rate, crossfade_duration, crossfade_curve="linear", crossfade_overlap=1.0, progress_callback=None):
     """
     Assembles a track from a track_data dictionary.
@@ -1746,6 +1962,86 @@ def _stream_export(
     return True
 
 
+def _estimated_track_frames(track_data, sample_rate) -> int:
+    """Roughly how long the finished track will be, before rendering it."""
+
+    total = 0.0
+    for step in track_data.get("steps") or ():
+        try:
+            total += float(step.get("duration", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            continue
+    return int(total * float(sample_rate))
+
+
+def _stream_assemble_export(
+    track_data, sample_rate, crossfade_duration, crossfade_curve, crossfade_overlap,
+    output_filename, target_level, start_time, progress_callback,
+):
+    """Assemble and encode without ever holding the whole track.
+
+    The bounded-encoder path still needed a finished track to read from, so the
+    largest allocation in an export - one array for the whole render, about
+    1.3 GB for an hour of stereo - was untouched by it. Assembly now yields
+    blocks and the encoder consumes them, so peak memory follows the step size
+    rather than the track length.
+
+    Returns True or False like any export, or ``None`` when this track is not
+    one that can be streamed, so the caller falls back rather than guessing.
+    """
+
+    from src.audio.sam_workbench.streaming import (
+        STREAMING_THRESHOLD_FRAMES, stream_normalized_export,
+    )
+
+    suffix = os.path.splitext(str(output_filename))[1].lower()
+    if suffix not in (".wav", ".flac"):
+        return None
+    if not track_is_streamable(track_data):
+        return None
+    if _estimated_track_frames(track_data, sample_rate) < STREAMING_THRESHOLD_FRAMES:
+        # Short enough that a round trip through the filesystem costs more than
+        # the array it saves.
+        return None
+
+    produced = {"frames": 0}
+
+    def blocks():
+        for block in iter_assembled_track_blocks(
+            track_data, sample_rate, crossfade_duration, crossfade_curve,
+            crossfade_overlap, progress_callback,
+        ):
+            if block.size and not np.isfinite(block).all():
+                bad = np.count_nonzero(~np.isfinite(block))
+                print(
+                    f"Warning: assembly produced {bad} non-finite samples in a "
+                    "block; replacing with zeros before normalization."
+                )
+                block = np.nan_to_num(block, nan=0.0, posinf=0.0, neginf=0.0)
+            produced["frames"] += int(block.shape[0])
+            yield block
+
+    print("Streaming assembly straight into the encoder; the whole track is never held.")
+    try:
+        report = stream_normalized_export(
+            blocks(), output_filename, sample_rate, target_level=float(target_level),
+        )
+    except RenderCancelled:
+        raise
+    except Exception as error:  # noqa: BLE001 - reported, caller may still fall back
+        print(f"Streaming assembly failed ({error}); falling back to whole-track assembly.")
+        return None
+
+    if not produced["frames"]:
+        print("Error: Track assembly failed or resulted in empty audio.")
+        return False
+
+    print(f"Track successfully written to {output_filename}")
+    print(f"Total generation time: {time.time() - start_time:.2f} seconds")
+    print("--- Audio Generation Complete ---")
+    return True
+
+
 def generate_audio(track_data, output_filename=None, target_level=0.25, progress_callback=None):
     """Generate and export an audio file (WAV/FLAC/MP3) based on track_data."""
     if not track_data:
@@ -1784,6 +2080,18 @@ def generate_audio(track_data, output_filename=None, target_level=0.25, progress
     print(f"Sample Rate: {sample_rate} Hz")
     print(f"Crossfade Duration: {crossfade_duration} s (curve: {crossfade_curve}, overlap: {crossfade_overlap})")
     print(f"Output File: {output_filename}")
+
+    # A track whose steps follow one another can go straight from assembly into
+    # the encoder, so the finished render never exists as one array. Tracks that
+    # cannot - explicit step placements, a background-noise layer - fall back to
+    # assembling the whole thing.
+    streamed = _stream_assemble_export(
+        track_data, sample_rate, crossfade_duration, crossfade_curve,
+        crossfade_overlap, output_filename, target_level, start_time,
+        progress_callback,
+    )
+    if streamed is not None:
+        return streamed
 
     # Assemble the track (includes per-step normalization now)
     track_audio = assemble_track_from_data(track_data, sample_rate, crossfade_duration, crossfade_curve, crossfade_overlap, progress_callback)
