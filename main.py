@@ -3210,22 +3210,48 @@ class TrackEditorApp(QMainWindow):
                 global_settings,
             )
 
-            # Generate audio (float32, stereo)
-            audio_data_np_float32 = generate_single_step_audio_segment(
-                step_data,
-                global_settings,
-                test_duration,
-                test_duration,
-                continuity_context=continuity_context,
+            # Generated through the same job core the asynchronous path uses,
+            # so a synchronous caller and a backgrounded one cannot produce
+            # different audio for the same step.
+            from src.audio.render_job import StepPreviewSnapshot, run_step_preview
+
+            outcome = run_step_preview(
+                StepPreviewSnapshot.of(
+                    step_data,
+                    global_settings,
+                    test_duration,
+                    continuity_context=continuity_context,
+                    step_index=step_index,
+                )
             )
-            
-            if audio_data_np_float32 is None or audio_data_np_float32.size == 0:
-                QMessageBox.critical(self, "Audio Generation Error", "Failed to generate test audio data (empty).")
-                self.test_step_raw_audio = None; return False
-            if not isinstance(audio_data_np_float32, np.ndarray) or audio_data_np_float32.dtype != np.float32:
-                QMessageBox.critical(self, "Audio Format Error", "Generated audio is not float32 NumPy array.")
-                self.test_step_raw_audio = None; return False
-            
+            if not outcome.succeeded:
+                QMessageBox.critical(
+                    self,
+                    "Audio Generation Error",
+                    outcome.error or "Failed to generate test audio data (empty).",
+                )
+                self.test_step_raw_audio = None
+                return False
+            audio_data_np_float32 = outcome.audio
+
+            return self._install_test_step_audio(audio_data_np_float32, sample_rate, step_index)
+        except Exception as e:
+            QMessageBox.critical(self, "Test Audio Error", f"Error generating/preparing test audio for step {step_index}: {e}")
+            traceback.print_exc()
+            self.test_step_raw_audio = None
+            if self.test_audio_output: self.test_audio_output.stop()
+            self.test_audio_output = None; self.test_audio_io_device = None
+            return False
+
+    def _install_test_step_audio(self, audio_data_np_float32, sample_rate, step_index):
+        """Turn generated step audio into a playable buffer and output device.
+
+        Separate from generating it because only this half has to run on the
+        GUI thread: it builds QAudioOutput and QBuffer and touches widgets.
+        The generating half is what a background job now does.
+        """
+
+        try:
             # Ensure stereo
             if audio_data_np_float32.ndim == 1: # Mono to stereo
                 audio_data_np_float32 = np.column_stack((audio_data_np_float32, audio_data_np_float32))
@@ -3370,20 +3396,104 @@ class TrackEditorApp(QMainWindow):
                 step_desc_load = self.track_data["steps"][selected_step_idx_tree].get("description", "N/A")
                 short_desc_load = f"{step_desc_load[:25]}{'...' if len(step_desc_load) > 25 else ''}"
                 self.test_step_loaded_label.setText(f"Loading: {short_desc_load}")
-                QApplication.processEvents() 
+                # No processEvents(): generation no longer runs on this thread,
+                # so the event loop reaches the repaint on its own. This was the
+                # last place in the window that pumped events by hand.
             except IndexError:
                 self.test_step_loaded_label.setText("Error: Step not found for loading.")
                 self._update_step_actions_state(); return
 
-            if not self._generate_test_step_audio(selected_step_idx_tree):
-                self.test_step_loaded_label.setText(f"Failed to load: {short_desc_load}")
-                self.current_test_step_index = -1 
-                self.test_step_raw_audio = None
-                self._update_step_actions_state(); return
-            
-            self.current_test_step_index = selected_step_idx_tree 
-        
-        # At this point, self.current_test_step_index IS selected_step_idx_tree and audio is loaded
+            # Generation moves to a worker thread; playback resumes in
+            # _on_step_preview_ready when it arrives. A five-minute step used
+            # to be generated here, on the GUI thread, with the window frozen
+            # for the duration.
+            self._begin_step_preview(selected_step_idx_tree, short_desc_load)
+            return
+
+        self._play_pause_loaded_step()
+
+    def _begin_step_preview(self, step_index, short_desc):
+        """Start generating a step's audition audio off the GUI thread."""
+
+        from src.audio.render_job import StepPreviewSnapshot
+        from src.ui.render_job import StepPreviewJob
+
+        try:
+            step_data = self.track_data["steps"][step_index]
+            global_settings = self.track_data["global_settings"]
+        except (IndexError, KeyError):
+            self.test_step_loaded_label.setText("Error: Step not found for loading.")
+            self._update_step_actions_state()
+            return
+
+        self._normalize_voice_descriptions_for_phase_locking()
+
+        step_duration = 0.0
+        try:
+            step_duration = float(step_data.get("duration", 0.0))
+        except (TypeError, ValueError):
+            step_duration = 0.0
+        max_preview_duration_seconds = 300.0
+        if step_duration > 0.0:
+            test_duration = min(self.test_step_duration, step_duration, max_preview_duration_seconds)
+        else:
+            test_duration = min(self.test_step_duration, max_preview_duration_seconds)
+
+        job = getattr(self, "_step_preview_job", None)
+        if job is None:
+            job = StepPreviewJob(self)
+            job.finished.connect(self._on_step_preview_ready)
+            self._step_preview_job = job
+
+        self._pending_step_preview = (step_index, short_desc)
+        self._update_step_actions_state()
+        job.start(
+            StepPreviewSnapshot.of(
+                step_data,
+                global_settings,
+                test_duration,
+                continuity_context=self._prepare_step_test_continuity_context(
+                    step_index, global_settings
+                ),
+                step_index=step_index,
+            )
+        )
+
+    def _on_step_preview_ready(self, outcome):
+        """Install a finished step preview and start playing it."""
+
+        pending = getattr(self, "_pending_step_preview", None)
+        short_desc = pending[1] if pending else "step"
+        self._pending_step_preview = None
+
+        if outcome.cancelled:
+            # Superseded by a newer selection; the newer one will report.
+            return
+        if not outcome.succeeded:
+            self.test_step_loaded_label.setText(f"Failed to load: {short_desc}")
+            self.current_test_step_index = -1
+            self.test_step_raw_audio = None
+            QMessageBox.critical(
+                self,
+                "Test Audio Error",
+                outcome.error or "Failed to generate test audio for this step.",
+            )
+            self._update_step_actions_state()
+            return
+
+        sample_rate = int(outcome.sample_rate_hz)
+        if not self._install_test_step_audio(outcome.audio, sample_rate, outcome.step_index):
+            self.test_step_loaded_label.setText(f"Failed to load: {short_desc}")
+            self.current_test_step_index = -1
+            self.test_step_raw_audio = None
+            self._update_step_actions_state()
+            return
+
+        self.current_test_step_index = outcome.step_index
+        self._play_pause_loaded_step()
+
+    def _play_pause_loaded_step(self):
+        """Play, pause or resume the step whose audio is already loaded."""
 
         if not self.test_audio_output or not self.test_step_raw_audio:
             QMessageBox.critical(self, "Test Error", "Audio output not ready or no audio data.")
@@ -3707,6 +3817,15 @@ class TrackEditorApp(QMainWindow):
             manager.cancel_all()
             if not manager.wait_for_idle(30_000):
                 print("Render threads did not stop within 30 s; closing regardless.")
+
+        # A step preview cannot be interrupted part-way, but it can be told to
+        # discard its result, and it must be waited for: a thread outliving the
+        # window it reports to is how a close becomes a crash.
+        preview = getattr(self, "_step_preview_job", None)
+        if preview is not None and preview.busy:
+            preview.cancel()
+            if not preview.wait_for_idle(30_000):
+                print("Step preview did not stop within 30 s; closing regardless.")
 
         if self.test_audio_output:
             self.test_audio_output.stop()

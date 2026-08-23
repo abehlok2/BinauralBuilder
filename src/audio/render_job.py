@@ -29,6 +29,9 @@ from typing import Any, Callable, Mapping
 
 __all__ = [
     "RenderCancelled",
+    "StepPreviewOutcome",
+    "StepPreviewSnapshot",
+    "run_step_preview",
     "RenderMetrics",
     "RenderOutcome",
     "RenderSnapshot",
@@ -321,3 +324,121 @@ def _discard_partial(destination: Path, pre_existing: bool) -> None:
             os.unlink(destination)
     except OSError:  # pragma: no cover - the report matters more than the tidy-up
         pass
+
+
+@dataclass(frozen=True)
+class StepPreviewSnapshot:
+    """An immutable copy of one step, for auditioning it off the GUI thread.
+
+    The same discipline as :class:`RenderSnapshot` and for the same reason: the
+    step tester used to read the live project while the user could still edit
+    it, so a preview could be generated from half of an edit.
+    """
+
+    step_data: Mapping[str, Any]
+    global_settings: Mapping[str, Any]
+    duration_s: float
+    continuity_context: Mapping[str, Any] | None = None
+    #: Which step this came from, so a late result can be matched to what the
+    #: user has selected by the time it arrives.
+    step_index: int = 0
+
+    @staticmethod
+    def of(
+        step_data: Mapping[str, Any],
+        global_settings: Mapping[str, Any],
+        duration_s: float,
+        *,
+        continuity_context: Mapping[str, Any] | None = None,
+        step_index: int = 0,
+    ) -> "StepPreviewSnapshot":
+        return StepPreviewSnapshot(
+            step_data=copy.deepcopy(dict(step_data)),
+            global_settings=copy.deepcopy(dict(global_settings)),
+            duration_s=float(duration_s),
+            continuity_context=(
+                None if continuity_context is None else copy.deepcopy(dict(continuity_context))
+            ),
+            step_index=int(step_index),
+        )
+
+    @property
+    def sample_rate_hz(self) -> int:
+        try:
+            return int(self.global_settings.get("sample_rate", 44100))
+        except (TypeError, ValueError):
+            return 44100
+
+
+@dataclass(frozen=True)
+class StepPreviewOutcome:
+    """A generated step preview, or why there isn't one."""
+
+    audio: Any = None
+    sample_rate_hz: int = 44100
+    step_index: int = 0
+    succeeded: bool = False
+    cancelled: bool = False
+    error: str = ""
+    metrics: RenderMetrics = field(default_factory=RenderMetrics)
+
+    @property
+    def failed(self) -> bool:
+        return not self.succeeded and not self.cancelled
+
+
+def run_step_preview(
+    snapshot: StepPreviewSnapshot,
+    *,
+    should_cancel: Callable[[], bool] | None = None,
+) -> StepPreviewOutcome:
+    """Generate one step's audio for audition.
+
+    Cancellation here is weaker than for a render, and deliberately described
+    as what it is: ``generate_single_step_audio_segment`` takes no progress
+    callback, so there is nowhere to ask it to stop part-way. A cancel is
+    honoured before the work starts and again when it finishes - the result is
+    discarded rather than played - so the user is not left listening to a step
+    they have already moved away from. What this does buy, which is the point,
+    is that the window stays responsive while it runs.
+    """
+
+    import time as _time
+
+    from src.synth_functions.sound_creator import generate_single_step_audio_segment
+
+    if should_cancel is not None and should_cancel():
+        return StepPreviewOutcome(cancelled=True, step_index=snapshot.step_index)
+
+    started = _time.perf_counter()
+    try:
+        audio = generate_single_step_audio_segment(
+            dict(snapshot.step_data),
+            dict(snapshot.global_settings),
+            snapshot.duration_s,
+            snapshot.duration_s,
+            continuity_context=(
+                None if snapshot.continuity_context is None
+                else dict(snapshot.continuity_context)
+            ),
+        )
+    except Exception as error:  # noqa: BLE001 - reported to the caller verbatim
+        return StepPreviewOutcome(
+            error=str(error), step_index=snapshot.step_index
+        )
+    elapsed = _time.perf_counter() - started
+
+    if should_cancel is not None and should_cancel():
+        return StepPreviewOutcome(cancelled=True, step_index=snapshot.step_index)
+    if audio is None or getattr(audio, "size", 0) == 0:
+        return StepPreviewOutcome(
+            error="the audio engine produced no samples", step_index=snapshot.step_index
+        )
+
+    return StepPreviewOutcome(
+        audio=audio,
+        sample_rate_hz=snapshot.sample_rate_hz,
+        step_index=snapshot.step_index,
+        succeeded=True,
+        metrics=RenderMetrics(duration_s=snapshot.duration_s, wall_s=elapsed),
+    )
