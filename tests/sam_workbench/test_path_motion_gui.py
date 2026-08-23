@@ -232,3 +232,62 @@ def test_flow_summary_names_what_drives_the_path():
     plain = summarize_flow(params, scene=None, source_id="source.1")
     motion_stage = next(stage for stage in plain.stages if stage.name == "Path motion")
     assert not motion_stage.active
+
+
+# --- the workbench adopts a Motion edit --------------------------------------
+
+
+def test_a_motion_edit_from_the_designer_lands_in_the_shared_scene(qtbot):
+    """Emitting the panel's scene signal must not crash the host dialog.
+
+    This is the exact path a designer commit takes inside the workbench; it
+    used to die on the params-changed slot's signature before the route ever
+    reached the matrix panel.
+    """
+
+    from src.audio.sam_workbench.modulation import ModulationMatrix
+    from src.ui.sam_workbench_dialog import SamWorkbenchDialog
+
+    dialog = SamWorkbenchDialog(
+        {"synth_function_name": "spatial_angle_modulation_sam2", "params": {}}
+    )
+    qtbot.addWidget(dialog)
+    dialog.set_steps(
+        [
+            {
+                "start": 0.0,
+                "duration": 4.0,
+                "voices": [
+                    {
+                        "synth_function_name": "spatial_angle_modulation_sam2",
+                        "description": "orbit",
+                        "params": {"canonicalTrajectory": _orbit_spec()},
+                    }
+                ],
+            }
+        ]
+    )
+
+    scene = copy.deepcopy(dialog.scene_data())
+    scene["modulators"].append(
+        {"id": "lfo1", "waveform": "sine", "rateHz": 0.25, "phaseDeg": 0.0, "seed": 0}
+    )
+    scene["modulation"]["routes"].append(
+        {
+            "modulatorId": "lfo1",
+            "targetId": "source.1",
+            "parameterPath": "path.radiusM",
+            "depth": 0.5,
+            "polarity": 1,
+            "curve": "linear",
+            "enabled": True,
+        }
+    )
+
+    dialog.path_panel.sceneChanged.emit(scene)
+
+    routes = ModulationMatrix.from_mapping(dialog.scene_data()["modulation"]).routes
+    assert [route.parameter_path for route in routes] == ["path.radius_m"]
+    # The matrix panel now shows the adopted cell, so the two editors agree.
+    matrix = dialog.modulation_panel.matrix
+    assert matrix.route("lfo1", "source.1", "path.radius_m") is not None

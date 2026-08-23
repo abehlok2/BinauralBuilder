@@ -602,10 +602,31 @@ class SamWorkbenchDialog(QDialog):
     def _on_path_scene_changed(self, scene: dict) -> None:
         """Adopt a Motion edit from the 3D designer into the shared scene."""
 
-        self._scene = normalize_sam_scene(scene)
+        scene = normalize_sam_scene(scene)
+        # Adopted routes are stored under their canonical spellings, so the
+        # matrix panel, the designer's rows and the compiler all read one name.
+        from src.audio.sam_workbench.path_automation import is_reserved_path
+        from src.audio.sam_workbench.trajectory.parameter_catalog import (
+            PATH_PREFIX,
+            TRANSFORM_PREFIX,
+            split_parameter_path,
+        )
+
+        for route in scene.get("modulation", {}).get("routes", ()):
+            path = str(route.get("parameterPath", ""))
+            if not is_reserved_path(path):
+                continue
+            try:
+                section, field_name = split_parameter_path(path)
+            except ValueError:
+                continue
+            route["parameterPath"] = (
+                f"{PATH_PREFIX if section == 'geometry' else TRANSFORM_PREFIX}{field_name}"
+            )
+        self._scene = scene
         self.modulation_panel.set_matrix(self._scene.get("modulation"))
         self.modulation_panel.set_modulators(self._scene.get("modulators"))
-        self._on_params_changed()
+        self._on_params_changed({})
 
     def _on_mode_changed(self, mode: str) -> None:
         """Apply progressive disclosure within the shared parameter view."""
