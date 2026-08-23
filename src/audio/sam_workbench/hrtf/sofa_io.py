@@ -23,7 +23,25 @@ class SofaDependencyError(ImportError):
 
 class DelayPolicy(str, Enum):
     BAKE = "bake_delay_into_ir"
-    PRESERVE = "preserve_external_delay"
+    #: ``keep_external_delay`` is the canonical name the renderer registry
+    #: advertises: SOFA Data.Delay stays outside the impulse response.
+    KEEP = "keep_external_delay"
+    #: Historical spelling of :attr:`KEEP`. Older documents still carry it,
+    #: and it has always meant exactly this policy - never another behaviour.
+    PRESERVE = KEEP
+
+    @classmethod
+    def _missing_(cls, value: object) -> DelayPolicy | None:
+        if value == "preserve_external_delay":
+            return cls.KEEP
+        return None
+
+
+#: Renamed policy values that persisted documents may still contain, mapped to
+#: their canonical spellings; mirrors INTERPOLATION_ALIASES for logmag_delay.
+DELAY_POLICY_ALIASES: dict[str, str] = {
+    "preserve_external_delay": DelayPolicy.KEEP.value,
+}
 
 
 @dataclass(frozen=True)
