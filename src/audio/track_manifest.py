@@ -295,8 +295,11 @@ def reconstruct_track(manifest: Mapping[str, Any]) -> dict[str, Any]:
         voice: dict[str, Any] = {
             "synth_function_name": record.get("synthFunction", ""),
             "params": copy.deepcopy(record.get("parameters") or {}),
-            "is_transition": bool(record.get("isTransition", False)),
         }
+        # Only set when true. A voice that never carried the key should not
+        # gain it, so a reconstructed track compares equal to its original.
+        if record.get("isTransition"):
+            voice["is_transition"] = True
         if record.get("id"):
             voice["sam_source_id"] = record["id"]
         if record.get("name"):
@@ -305,6 +308,33 @@ def reconstruct_track(manifest: Mapping[str, Any]) -> dict[str, Any]:
 
     track: dict[str, Any] = {"global_settings": settings, "steps": steps}
     scene = manifest.get("scene")
-    if isinstance(scene, Mapping) and any(scene.values()):
+    if isinstance(scene, Mapping) and _scene_has_content(scene):
         track["sam_scene"] = copy.deepcopy(dict(scene))
     return track
+
+
+def _scene_has_content(scene: Mapping[str, Any]) -> bool:
+    """Whether a scene says anything, as opposed to merely existing.
+
+    A normalized scene is never empty - it carries schema versions and empty
+    section objects - so testing it for truthiness attaches one to every
+    reconstructed track. That is not harmless: a SAM2 voice with a scene
+    renders through the scene path, so a project that never used scene
+    features would come back sounding slightly different from the export the
+    manifest describes.
+    """
+
+    for key in ("sources", "modulators", "buses"):
+        if scene.get(key):
+            return True
+    for key in ("stages", "modulation", "routing"):
+        section = scene.get(key)
+        if not isinstance(section, Mapping):
+            continue
+        if any(
+            value
+            for name, value in section.items()
+            if name not in ("schemaVersion",)
+        ):
+            return True
+    return False
