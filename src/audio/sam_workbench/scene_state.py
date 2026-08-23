@@ -451,12 +451,8 @@ def modulator_series(
         rate = float(item.get("rateHz", 1.0))
         phase = math.radians(float(item.get("phaseDeg", 0.0)))
         wave = str(item.get("waveform", "sine"))
-        cycle = 2.0 * np.pi * rate * times + phase
-        values[identifier] = (
-            (np.sign(np.sin(cycle)) + 1.0) * 0.5
-            if wave == "square"
-            else (np.sin(cycle) + 1.0) * 0.5
-        )
+        seed = int(item.get("seed", 0))
+        values[identifier] = _modulator_waveform(wave, times, rate, phase, seed)
     # The first matrix UI shipped before explicit modulator definitions. Its
     # identifiers compile to a documented 1 Hz sine rather than remaining an
     # attractive but inaudible control; validate_scene warns about each one, so
@@ -464,6 +460,59 @@ def modulator_series(
     for identifier in required:
         values.setdefault(identifier, (np.sin(2.0 * np.pi * times) + 1.0) * 0.5)
     return values
+
+
+#: Waveforms a modulator can take. ``random`` is the reason ``seed`` exists:
+#: without one an export would not match the preview it was approved from.
+MODULATOR_WAVEFORMS = ("sine", "triangle", "square", "random")
+
+
+def _modulator_waveform(
+    wave: str, times: np.ndarray, rate: float, phase: float, seed: int
+) -> np.ndarray:
+    """One modulator's value over ``times``, in 0 to 1.
+
+    A pure function of absolute time, including the random one: its value comes
+    from interpolating a seeded sequence indexed by the cycle number, not from
+    drawing as the render advances. Drawing would make the result depend on how
+    the timeline was cut into blocks, and on whether anything was rendered
+    before it.
+    """
+
+    cycle = rate * times + phase / (2.0 * np.pi)
+    if wave == "square":
+        return (np.sign(np.sin(2.0 * np.pi * cycle)) + 1.0) * 0.5
+    if wave == "triangle":
+        # Rises over the first half of the cycle and falls over the second.
+        fraction = np.mod(cycle, 1.0)
+        return 1.0 - 2.0 * np.abs(fraction - 0.5)
+    if wave == "random":
+        step = np.floor(cycle).astype(np.int64)
+        fraction = cycle - step
+        low, high = _random_steps(seed, step), _random_steps(seed, step + 1)
+        # Smoothstep between held values, so a walk wanders rather than clicks.
+        blend = fraction * fraction * (3.0 - 2.0 * fraction)
+        return low + (high - low) * blend
+    return (np.sin(2.0 * np.pi * cycle) + 1.0) * 0.5
+
+
+def _random_steps(seed: int, index: np.ndarray) -> np.ndarray:
+    """A stable value in 0 to 1 for every step index, for one seed.
+
+    Hashed per index rather than generated in sequence, so asking for step
+    1,000 costs the same as step 1 and gives the same answer however the render
+    reached it.
+    """
+
+    # Mixed in uint64, where wraparound is defined rather than an overflow
+    # warning on every call.
+    mixed = np.asarray(index, dtype=np.int64).astype(np.uint64)
+    mixed = mixed * np.uint64(6364136223846793005)
+    mixed = mixed + (np.uint64(seed & 0xFFFFFFFFFFFFFFFF) * np.uint64(1442695040888963407))
+    mixed ^= mixed >> np.uint64(33)
+    mixed = mixed * np.uint64(0xFF51AFD7ED558CCD)
+    mixed ^= mixed >> np.uint64(33)
+    return (mixed >> np.uint64(11)).astype(np.float64) / float(1 << 53)
 
 
 #: Retained under its former private name for callers outside this module.

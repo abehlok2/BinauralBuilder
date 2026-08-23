@@ -79,6 +79,11 @@ SAM_FUNCTION_NAMES = (
 
 DEFAULT_PREVIEW_SECONDS = 5.0
 
+#: Used only when a voice is edited with no track and no scene to name it -
+#: opening the dialog on a bare voice dictionary, which the tests do. Inside a
+#: track the identifier always comes from the track.
+DEFAULT_SOURCE_ID = "source.1"
+
 
 class PreviewWorker(QObject):
     """Renders a preview off the GUI thread."""
@@ -143,13 +148,29 @@ class SamWorkbenchDialog(QDialog):
         self._voice.setdefault("params", {})
         legacy_scene = migrate_voice_scene(self._voice["params"])
         self._scene = normalize_sam_scene(scene_data or legacy_scene)
+        # The identifier on the voice is the one the track assigned. Where a
+        # voice arrives without one - an older project, or a voice opened
+        # outside a track - the scene's own roster is asked before anything is
+        # invented, and whatever is settled on is recorded on the voice so the
+        # next render and this dialog agree about which source this is.
         source_id = str(self._voice.get("sam_source_id", "")).strip()
         if not source_id:
+            declared = [
+                str(item.get("id"))
+                for item in self._scene.get("sources", ())
+                if item.get("id")
+            ]
             routed = self._scene.get("routing", {}).get("sources", ())
-            source_id = str(routed[0].get("sourceId", "source.1")) if routed else "source.1"
+            if declared:
+                source_id = declared[0]
+            elif routed:
+                source_id = str(routed[0].get("sourceId", ""))
+            source_id = source_id or DEFAULT_SOURCE_ID
             self._voice["sam_source_id"] = source_id
         if not any(str(item.get("id")) == source_id for item in self._scene["sources"]):
-            self._scene["sources"].append({"id": source_id, "name": source_id})
+            self._scene["sources"].append(
+                {"id": source_id, "name": self._voice_display_name()}
+            )
         self._original = copy.deepcopy(self._voice)
         self._sample_rate = int(sample_rate)
         self._on_apply = on_apply
@@ -519,14 +540,54 @@ class SamWorkbenchDialog(QDialog):
         area.setWidget(widget)
         return area
 
+    def _voice_display_name(self) -> str:
+        """What to call this voice in a roster, preferring what the user typed."""
+
+        for key in ("description", "name"):
+            value = str(self._voice.get(key, "") or "").strip()
+            if value:
+                return value
+        return str(self._voice.get("synth_function_name", "") or "SAM voice")
+
     def set_steps(self, steps) -> None:
-        """Give the stage view the session's steps.
+        """Give the stage view the session's steps, and the panels their roster.
 
         Stages are built from steps rather than invented alongside them, so
         without this the Stages tab has nothing to group and says so.
+
+        The steps are also where the source roster comes from. Routing and
+        modulation used to start from a placeholder that looked like a real
+        route and referred to nothing, so a project could be routed, muted and
+        soloed against a source the track does not have.
         """
 
-        self.stage_panel.set_steps(steps or ())
+        steps = list(steps or ())
+        self.stage_panel.set_steps(steps)
+        self._refresh_roster(steps)
+
+    def _refresh_roster(self, steps=None) -> None:
+        """Rebuild the source roster from the track and hand it to the panels."""
+
+        from src.audio.sam_workbench.scene_state import assign_source_ids
+
+        if steps is not None:
+            self._steps = list(steps)
+        steps = getattr(self, "_steps", [])
+        if steps:
+            # The identifiers are assigned to the real steps, not a copy: an
+            # identifier assigned to a throwaway is thrown away with it, and
+            # every route that named it dangles on the next open.
+            self._scene = assign_source_ids(
+                {"steps": steps, "sam_scene": self._scene}, self._scene
+            )
+        roster = [
+            {"id": str(item.get("id")), "name": str(item.get("name") or item.get("id"))}
+            for item in self._scene.get("sources", ())
+            if item.get("id")
+        ]
+        self.routing_panel.set_roster(roster)
+        self.modulation_panel.set_roster(roster)
+        self._revalidate()
 
     def _on_mode_changed(self, mode: str) -> None:
         """Apply progressive disclosure within the shared parameter view."""
@@ -551,6 +612,7 @@ class SamWorkbenchDialog(QDialog):
         self.hrtf_panel.set_params(params)
         self.stage_panel.set_timeline(self._scene.get("stages"))
         self.modulation_panel.set_matrix(self._scene.get("modulation"))
+        self.modulation_panel.set_modulators(self._scene.get("modulators"))
         self.routing_panel.set_params({"samRouting": self._scene.get("routing")})
         self._on_mode_changed(self.mode_combo.currentText())
 
@@ -589,6 +651,10 @@ class SamWorkbenchDialog(QDialog):
         scene = copy.deepcopy(self._scene)
         scene["stages"] = self.stage_panel.timeline.describe()
         scene["modulation"] = self.modulation_panel.matrix.describe()
+        # The definitions, not just the names the matrix refers to. Without
+        # these every modulator rendered as the same fallback sine whatever the
+        # row was called.
+        scene["modulators"] = [dict(entry) for entry in self.modulation_panel.modulators()]
         scene["routing"] = self.routing_panel.describe()
         scene["buses"] = copy.deepcopy(scene["routing"].get("buses", []))
         return normalize_sam_scene(scene)
@@ -707,11 +773,29 @@ class SamWorkbenchDialog(QDialog):
     # --- validation ---------------------------------------------------------
 
     def issues(self) -> tuple[Any, ...]:
-        return validate_sam2_params(
-            self.collect_params(),
-            is_transition=self._is_transition,
-            sample_rate_hz=self._sample_rate,
+        """Everything wrong with this voice *and* the scene around it.
+
+        The scene validator already detected duplicate identifiers, routes
+        naming a source that is gone and buses that do not exist; nothing
+        showed them. A dangling route is exactly the kind of fault that is
+        invisible in the panel that holds it - the row looks like any other -
+        so it has to be reported where the user is looking.
+        """
+
+        from src.audio.sam_workbench.scene_state import validate_scene
+
+        issues = list(
+            validate_sam2_params(
+                self.collect_params(),
+                is_transition=self._is_transition,
+                sample_rate_hz=self._sample_rate,
+            )
         )
+        try:
+            issues.extend(validate_scene(self.scene_data()))
+        except Exception:  # pragma: no cover - a half-built scene must not block editing
+            pass
+        return tuple(issues)
 
     def _refresh_flow(self, issues: tuple[Any, ...]) -> None:
         """Restate the whole chain from the parameters production reads."""

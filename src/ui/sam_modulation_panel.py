@@ -27,6 +27,7 @@ from PyQt5.QtWidgets import (
     QComboBox,
     QDoubleSpinBox,
     QFormLayout,
+    QSpinBox,
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
@@ -48,6 +49,7 @@ from src.audio.sam_workbench.modulation import (
     ModulationRoute,
     search_parameters,
 )
+from src.audio.sam_workbench.scene_state import MODULATOR_WAVEFORMS
 from src.audio.sam_workbench.stages import CURVES
 
 __all__ = ["SamModulationPanel"]
@@ -55,6 +57,25 @@ __all__ = ["SamModulationPanel"]
 #: Modulators a scene starts with. Named rather than numbered, because a matrix
 #: of "lfo1..lfo4" tells you nothing about what any row does.
 DEFAULT_MODULATORS = ("lfo.slow", "lfo.fast", "envelope", "random.walk")
+
+#: What each default modulator actually is. Before these existed every row
+#: rendered as the same 1 Hz sine whatever it was called, so "random.walk" was
+#: a name with no randomness behind it.
+#: What a modulator with no stored definition renders as. Documented rather
+#: than implicit, because it is what the engine already falls back to.
+_FALLBACK_SPEC: dict[str, Any] = {
+    "waveform": "sine",
+    "rateHz": 1.0,
+    "phaseDeg": 0.0,
+    "seed": 0,
+}
+
+DEFAULT_MODULATOR_SPECS: dict[str, dict[str, Any]] = {
+    "lfo.slow": {"waveform": "sine", "rateHz": 0.05, "phaseDeg": 0.0, "seed": 0},
+    "lfo.fast": {"waveform": "sine", "rateHz": 1.0, "phaseDeg": 0.0, "seed": 0},
+    "envelope": {"waveform": "triangle", "rateHz": 0.02, "phaseDeg": 0.0, "seed": 0},
+    "random.walk": {"waveform": "random", "rateHz": 0.2, "phaseDeg": 0.0, "seed": 1},
+}
 
 
 def _tint(depth: float, polarity: int) -> QColor:
@@ -76,12 +97,25 @@ class SamModulationPanel(QWidget):
         super().__init__(parent)
         self._matrix = ModulationMatrix()
         self._modulators: list[str] = list(DEFAULT_MODULATORS)
+        # Identifier -> the definition the engine renders. A row used to be a
+        # name and nothing else, so every route compiled to the documented 1 Hz
+        # sine fallback: "random.walk" modulated exactly like "lfo.slow". The
+        # panel now owns the definition the render actually uses.
+        self._definitions: dict[str, dict[str, Any]] = {
+            name: dict(spec) for name, spec in DEFAULT_MODULATOR_SPECS.items()
+        }
+        #: Identifier -> display name for the track's sources, as modulation
+        #: targets. Empty until a track supplies one.
+        self._roster: dict[str, str] = {}
         #: Columns are (target_id, parameter_path) pairs.
         self._columns: list[tuple[str, str]] = []
         self._selected: tuple[int, int] | None = None
         self._loading = False
         self._build_ui()
         self._rebuild_grid()
+        if self._modulators:
+            self.modulator_list.setCurrentRow(0)
+        self._show_definition()
 
     # --- construction -------------------------------------------------------
 
@@ -114,7 +148,53 @@ class SamModulationPanel(QWidget):
         outer.addWidget(QLabel("Modulators (rows)"))
         self.modulator_list = QListWidget()
         self.modulator_list.setMaximumWidth(230)
+        self.modulator_list.currentRowChanged.connect(lambda _row: self._show_definition())
         outer.addWidget(self.modulator_list, 1)
+
+        # What the selected row *is*, not just what it is called.
+        definition = QFormLayout()
+        self.waveform_combo = QComboBox()
+        self.waveform_combo.addItems(list(MODULATOR_WAVEFORMS))
+        self.waveform_combo.setToolTip(
+            "Shape this modulator traces. Random holds a seeded value and "
+            "smooths between held values, so it wanders rather than clicks."
+        )
+        self.waveform_combo.currentTextChanged.connect(
+            lambda value: self._set_definition(waveform=value)
+        )
+        definition.addRow("Waveform", self.waveform_combo)
+
+        self.rate_spin = QDoubleSpinBox()
+        self.rate_spin.setRange(0.001, 100.0)
+        self.rate_spin.setDecimals(3)
+        self.rate_spin.setSingleStep(0.05)
+        self.rate_spin.setSuffix(" Hz")
+        self.rate_spin.setToolTip("Cycles per second.")
+        self.rate_spin.valueChanged.connect(
+            lambda value: self._set_definition(rateHz=float(value))
+        )
+        definition.addRow("Rate", self.rate_spin)
+
+        self.phase_spin = QDoubleSpinBox()
+        self.phase_spin.setRange(-360.0, 360.0)
+        self.phase_spin.setSuffix("°")
+        self.phase_spin.setToolTip("Where in the cycle the render starts.")
+        self.phase_spin.valueChanged.connect(
+            lambda value: self._set_definition(phaseDeg=float(value))
+        )
+        definition.addRow("Phase", self.phase_spin)
+
+        self.seed_spin = QSpinBox()
+        self.seed_spin.setRange(0, 2_147_483_647)
+        self.seed_spin.setToolTip(
+            "Only the random waveform reads this. It is what makes an export "
+            "match the preview it was approved from."
+        )
+        self.seed_spin.valueChanged.connect(
+            lambda value: self._set_definition(seed=int(value))
+        )
+        definition.addRow("Seed", self.seed_spin)
+        outer.addLayout(definition)
 
         row = QHBoxLayout()
         add_modulator = QPushButton("Add…")
@@ -256,13 +336,134 @@ class SamModulationPanel(QWidget):
     def set_params(self, params: Mapping[str, Any]) -> None:
         self.set_matrix(params.get("samModulation"))
 
+    # --- modulator definitions ----------------------------------------------
+
+    def modulators(self) -> tuple[dict[str, Any], ...]:
+        """The definitions the engine renders, in row order.
+
+        This is what belongs in ``scene["modulators"]``. Returning only the
+        names is what left every row compiling to the same fallback sine.
+        """
+
+        return tuple(
+            {"id": name, **self._definitions.get(name, dict(_FALLBACK_SPEC))}
+            for name in self._modulators
+        )
+
+    def set_modulators(self, definitions) -> None:
+        """Adopt stored modulator definitions, keeping any row order they imply."""
+
+        names: list[str] = []
+        specs: dict[str, dict[str, Any]] = {}
+        for entry in definitions or ():
+            if not isinstance(entry, Mapping):
+                continue
+            identifier = str(entry.get("id", "")).strip()
+            if not identifier:
+                continue
+            spec = {key: entry[key] for key in ("waveform", "rateHz", "phaseDeg", "seed") if key in entry}
+            specs[identifier] = {**_FALLBACK_SPEC, **spec}
+            names.append(identifier)
+        if not names:
+            return
+        for name in self._modulators:
+            if name not in specs:
+                names.append(name)
+                specs[name] = self._definitions.get(name, dict(_FALLBACK_SPEC))
+        self._modulators = names
+        self._definitions = specs
+        self._rebuild_grid()
+        self._show_definition()
+
+    def _current_modulator(self) -> str:
+        row = self.modulator_list.currentRow()
+        if 0 <= row < len(self._modulators):
+            return self._modulators[row]
+        return ""
+
+    def _show_definition(self) -> None:
+        """Put the selected row's definition into the controls."""
+
+        name = self._current_modulator()
+        spec = self._definitions.get(name, dict(_FALLBACK_SPEC))
+        enabled = bool(name)
+        for widget in (self.waveform_combo, self.rate_spin, self.phase_spin, self.seed_spin):
+            widget.setEnabled(enabled)
+            widget.blockSignals(True)
+        try:
+            self.waveform_combo.setCurrentText(str(spec.get("waveform", "sine")))
+            self.rate_spin.setValue(float(spec.get("rateHz", 1.0)))
+            self.phase_spin.setValue(float(spec.get("phaseDeg", 0.0)))
+            self.seed_spin.setValue(int(spec.get("seed", 0)))
+            # Only the random waveform reads a seed; showing it live for the
+            # others would suggest it does something there.
+            self.seed_spin.setEnabled(enabled and spec.get("waveform") == "random")
+        finally:
+            for widget in (self.waveform_combo, self.rate_spin, self.phase_spin, self.seed_spin):
+                widget.blockSignals(False)
+
+    def _set_definition(self, **changes: Any) -> None:
+        name = self._current_modulator()
+        if not name or self._loading:
+            return
+        spec = dict(self._definitions.get(name, dict(_FALLBACK_SPEC)))
+        spec.update(changes)
+        self._definitions[name] = spec
+        if "waveform" in changes:
+            self.seed_spin.setEnabled(changes["waveform"] == "random")
+        self._emit()
+
+    # --- targets from the track ---------------------------------------------
+
+    def set_roster(self, sources) -> None:
+        """Adopt the track's sources as available modulation targets."""
+
+        roster: dict[str, str] = {}
+        for entry in sources or ():
+            if isinstance(entry, Mapping):
+                identifier = str(entry.get("id", "")).strip()
+                name = str(entry.get("name", "") or identifier)
+            else:
+                identifier = str(entry).strip()
+                name = identifier
+            if identifier:
+                roster.setdefault(identifier, name)
+        self._roster = roster
+
+    def roster(self) -> dict[str, str]:
+        return dict(self._roster)
+
+    def unresolved_targets(self) -> tuple[str, ...]:
+        """Routed target identifiers the track does not have.
+
+        ``voice`` is the voice being edited rather than a scene source, so it
+        is never counted as dangling.
+        """
+
+        if not self._roster:
+            return ()
+        return tuple(
+            sorted(
+                {
+                    target
+                    for target, _path in self._columns
+                    if target != "voice"
+                    and not target.startswith("lfo.")
+                    and target not in self._roster
+                    and target not in self._modulators
+                }
+            )
+        )
+
     # --- rows and columns ---------------------------------------------------
 
     def add_modulator(self, name: str) -> None:
         name = str(name).strip()
         if name and name not in self._modulators:
             self._modulators.append(name)
+            self._definitions.setdefault(name, dict(_FALLBACK_SPEC))
             self._rebuild_grid()
+            self._show_definition()
 
     def _add_modulator(self) -> None:
         name, accepted = QInputDialog.getText(
@@ -276,6 +477,7 @@ class SamModulationPanel(QWidget):
         if not 0 <= row < len(self._modulators):
             return
         name = self._modulators.pop(row)
+        self._definitions.pop(name, None)
         self._matrix = ModulationMatrix(
             routes=tuple(r for r in self._matrix.routes if r.modulator_id != name),
             schema_version=self._matrix.schema_version,
