@@ -82,6 +82,11 @@ from src.audio.sam_workbench.path_automation import (
 )
 from src.audio.sam_workbench.trajectory.serialization import _SPATIAL
 
+#: Curves that *shape* a modulator. ``hold`` is a stage edge: applied to a
+#: route it maps every value to zero, so offering it here would let a row
+#: look armed while silently contributing nothing.
+_MOTION_CURVES: tuple[str, ...] = tuple(curve for curve in CURVES if curve != "hold")
+
 from .sam_path3d_views import PLANES, OrthographicPathView, PerspectivePathView
 
 #: Geometry kinds edited as draggable control points rather than as parameters.
@@ -829,8 +834,13 @@ class SamPath3DDialog(QDialog):
         row.addWidget(depth)
 
         curve = QComboBox()
-        curve.addItems(list(CURVES))
-        curve.setToolTip("Shape applied to the modulator before scaling.")
+        curve.addItems(list(_MOTION_CURVES))
+        curve.setCurrentText("linear")
+        curve.setToolTip(
+            "Shape applied to the modulator before scaling. Linear keeps "
+            "the swing even; smooth eases the ends; exponential leans into "
+            "the top of each cycle."
+        )
         curve.currentTextChanged.connect(self._motion_edited)
         row.addWidget(curve)
 
@@ -1346,12 +1356,38 @@ class SamPath3DDialog(QDialog):
         except (ValueError, TypeError):
             return np.zeros((0, 3))
 
+    def _sample_curve(self):
+        """The *authored* shape, without motion - what coverage is judged on."""
+
+        model = self.path_model()
+        return self._positions_over(model)
+
+    def _positions_over(self, model, count=_CURVE_SAMPLES):
+        if model is None:
+            return np.zeros((0, 3))
+        # Sampled through the traversal, not the raw geometry: what is drawn is
+        # what the renderer will be sent.
+        times = np.linspace(0.0, self.duration_spin.value(), count)
+        try:
+            return np.asarray(model.positions(times), dtype=float)
+        except (ValueError, TypeError):
+            return np.zeros((0, 3))
+
     def _refresh(self):
         if self._updating:
             return
-        curve = self._sample_curve()
+        bound = self._preview_model()
+        base = self.path_model()
+        moving = getattr(bound, "bindings", None)
+        curve = self._positions_over(bound)
+        # The dashed twin beneath the sweep is what makes modulation visible:
+        # without it a breathing orbit reads as a slightly thick ring.
+        reference = (
+            self._positions_over(base) if moving and base is not None else np.zeros((0, 3))
+        )
         points = self._editable_points()
         for view in self.views.values():
+            view.set_reference_curve(reference)
             view.set_path(points, curve)
             view.set_selected(self._selected)
         self._refresh_table(points)
@@ -1398,6 +1434,25 @@ class SamPath3DDialog(QDialog):
             self._timer.stop()
             for view in self.views.values():
                 view.set_marker(None)
+            self._refresh_motion_status()
+
+    def _live_motion_text(self) -> str:
+        """The driven parameters' values right now, for the status line."""
+
+        model = self._preview_model()
+        if not getattr(model, "sample_parameter", None):
+            return ""
+        bits = []
+        for key, row in sorted(self._motion_rows.items()):
+            if not row["enable"].isChecked():
+                continue
+            values = model.sample_parameter(key, np.array([self._preview_time]))
+            if values is None or not len(values):
+                continue
+            bits.append(f"{key.split('.', 1)[1]}={float(values[0]):.3g}")
+        if not bits:
+            return ""
+        return f" · t {self._preview_time:.2f} s: " + ", ".join(bits)
 
     def _advance_preview(self):
         model = self._preview_model()
@@ -1416,3 +1471,10 @@ class SamPath3DDialog(QDialog):
             return
         for view in self.views.values():
             view.set_marker(position)
+        live = self._live_motion_text()
+        if live:
+            driven = ", ".join(
+                key for key, row in sorted(self._motion_rows.items())
+                if row["enable"].isChecked()
+            )
+            self.motion_status.setText(f"Driven: {driven}{live}")

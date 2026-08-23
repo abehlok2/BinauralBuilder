@@ -64,6 +64,9 @@ PLANES: dict[str, dict] = {
 _GRID = QColor(70, 74, 82)
 _AXIS = QColor(110, 116, 126)
 _PATH = QColor(80, 190, 230)
+#: The un-modulated shape, shown dashed beneath the moving one so a modulated
+#: sweep reads as a departure from something rather than as a smudge.
+_REFERENCE = QColor(120, 128, 142)
 _NODE = QColor(120, 210, 250)
 _SELECTED = QColor(255, 190, 60)
 _LISTENER = QColor(190, 195, 205)
@@ -87,6 +90,7 @@ class _PathViewBase(QWidget):
         self.setMouseTracking(True)
         self._points = np.zeros((0, 3))
         self._curve = np.zeros((0, 3))
+        self._reference = np.zeros((0, 3))
         self._selected = -1
         self._marker = None
         self._extent_m = 2.0
@@ -104,6 +108,21 @@ class _PathViewBase(QWidget):
             np.asarray(curve, dtype=float).reshape(-1, 3)
             if curve is not None and len(curve)
             else self._points
+        )
+        self._rescale()
+        self.update()
+
+    def set_reference_curve(self, points=None):
+        """The un-modulated shape to draw dashed beneath the live curve.
+
+        Empty (the default) draws nothing: a static path has no reference to
+        be compared against.
+        """
+
+        self._reference = (
+            np.asarray(points, dtype=float).reshape(-1, 3)
+            if points is not None and len(points)
+            else np.zeros((0, 3))
         )
         self._rescale()
         self.update()
@@ -129,8 +148,9 @@ class _PathViewBase(QWidget):
     def _rescale(self):
         source = self._curve if len(self._curve) else self._points
         extent = 1.0
-        if len(source):
-            extent = float(np.max(np.abs(source)))
+        for candidate in (source, self._reference):
+            if len(candidate):
+                extent = max(extent, float(np.max(np.abs(candidate))))
         if self._show_shell:
             extent = max(extent, self._shell_radius_m)
         self._extent_m = max(extent * 1.15, 0.5)
@@ -182,15 +202,24 @@ class _PathViewBase(QWidget):
             QPointF(centre.x(), centre.y() + radius),
         )
 
-    def _draw_polyline(self, painter, projected, colour, width=2):
+    def _draw_polyline(self, painter, projected, colour, width=2, style=Qt.SolidLine):
         if len(projected) < 2:
             return
         path = QPainterPath(projected[0])
         for point in projected[1:]:
             path.lineTo(point)
-        painter.setPen(QPen(colour, width))
+        painter.setPen(QPen(colour, width, style))
         painter.setBrush(Qt.NoBrush)
         painter.drawPath(path)
+
+    def _draw_reference(self, painter):
+        """The dashed un-modulated shape, under everything editable."""
+
+        if not len(self._reference):
+            return
+        self._draw_polyline(
+            painter, self._project(self._reference), _REFERENCE, 1, Qt.DashLine
+        )
 
     def _draw_nodes(self, painter, projected):
         for index, point in enumerate(projected):
@@ -276,6 +305,7 @@ class OrthographicPathView(_PathViewBase):
         self._draw_grid(painter)
         self._draw_shell(painter)
         self._draw_listener(painter)
+        self._draw_reference(painter)
         self._draw_polyline(painter, self._project(self._curve), _PATH)
         self._draw_nodes(painter, self._project(self._points))
         if self._marker is not None:
@@ -432,6 +462,7 @@ class PerspectivePathView(_PathViewBase):
         self._draw_ground(painter)
         self._draw_shell(painter)
         self._draw_listener(painter)
+        self._draw_reference(painter)
         self._draw_polyline(painter, self._project(self._curve), _PATH)
         self._draw_nodes(painter, self._project(self._points))
         if self._marker is not None:

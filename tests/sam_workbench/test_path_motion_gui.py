@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import copy
 
+import numpy as np
 import pytest
 
 pytest.importorskip("PyQt5")
@@ -204,6 +205,73 @@ def test_a_new_modulator_is_created_when_requested(qtbot):
     assert len(ids) == 1 and ids[0].startswith("lfo")
     routes = ModulationMatrix.from_mapping(committed["modulation"]).routes
     assert routes[0].modulator_id == ids[0]
+
+
+# --- visualization -----------------------------------------------------------
+
+
+def _feedback_dialog(qtbot):
+    """A host that adopts commits, the way the workbench does."""
+
+    holder = {"scene": _scene_with_lfo()}
+    ctx = {
+        "source_id": "source.1",
+        "scene": lambda: copy.deepcopy(holder["scene"]),
+        "commit": lambda edited: holder.update(scene=copy.deepcopy(edited)),
+    }
+    widget = SamPath3DDialog(_orbit_spec(), modulation=ctx)
+    qtbot.addWidget(widget)
+    return widget, holder
+
+
+def test_the_default_curve_is_linear_not_hold(qtbot):
+    """'hold' shapes every modulator value to zero: offered here it would let
+    a row look armed while silently moving nothing."""
+
+    widget, holder = _feedback_dialog(qtbot)
+    row = widget._motion_rows["path.radius_m"]
+    assert "hold" not in [row["curve"].itemText(i) for i in range(row["curve"].count())]
+    assert row["curve"].currentText() == "linear"
+
+
+def test_enabled_motion_reaches_the_drawn_views(qtbot):
+    widget, holder = _feedback_dialog(qtbot)
+
+    row = widget._motion_rows["path.radius_m"]
+    row["enable"].setChecked(True)
+    index = row["mod"].findData("lfo1")
+    row["mod"].setCurrentIndex(max(index, 0))
+    row["depth"].setValue(0.9)
+
+    top = widget.views["top"]
+    assert len(top._reference) > 0, "the dashed authored shape must be shown"
+    reference = np.linalg.norm(top._reference, axis=1)
+    swept = np.linalg.norm(top._curve, axis=1)
+    # The authored ring sits at 1.5 m; the modulated one breathes around it.
+    assert np.allclose(reference, 1.5, atol=1e-9)
+    assert not np.allclose(reference, swept)
+    assert swept.max() > 1.5 + 0.3 and swept.min() < 1.5 + 0.05
+
+
+def test_preview_tick_shows_live_parameter_values(qtbot):
+    widget, holder = _feedback_dialog(qtbot)
+
+    row = widget._motion_rows["path.radius_m"]
+    row["enable"].setChecked(True)
+    index = row["mod"].findData("lfo1")
+    row["mod"].setCurrentIndex(max(index, 0))
+    row["depth"].setValue(0.9)
+
+    widget._preview_time = 1.0
+    widget._advance_preview()
+
+    # The tick advances by one timer interval before drawing.
+    assert "radius_m=" in widget.motion_status.text()
+    assert "t 1.05 s" in widget.motion_status.text()
+
+    # Stopping the preview restores the plain status line.
+    widget._preview_toggled(False)
+    assert "radius_m=" not in widget.motion_status.text()
 
 
 # --- flow summary ------------------------------------------------------------
