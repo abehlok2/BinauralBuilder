@@ -397,11 +397,24 @@ def _compile_controls(
 def _compile_gain(
     scene: Mapping[str, Any] | None, source_id: str, sample_rate_hz: float
 ) -> CompiledControl:
+    """The source's own audible level, without its routing.
+
+    Routing must be applied exactly once. This gain is what stages and
+    modulation do to a source; its bus gain, mute and solo belong to the mixer,
+    which is where there is an actual bus to meter and to process. The plan
+    carries the routing separately for exactly that reason, so folding it in
+    here as well would attenuate every routed source twice - a -6 dB bus
+    arriving as -12 dB.
+    """
+
     if not scene:
         return CompiledControl("gain", constant=1.0)
 
     def evaluate(start_sample: int, frames: int) -> NDArray[np.float64]:
-        return scene_gain_envelope(scene, source_id, start_sample, frames, sample_rate_hz)
+        return scene_gain_envelope(
+            scene, source_id, start_sample, frames, sample_rate_hz,
+            include_routing=False,
+        )
 
     return CompiledControl("gain", automatable=True, _evaluate=evaluate)
 
