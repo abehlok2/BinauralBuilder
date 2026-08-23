@@ -33,6 +33,7 @@ from src.audio.sam_workbench.trajectory.legacy_paths import (
     SAM2_DEFAULT_SHAPES_BY_TYPE,
     custom_path_shape_and_scale,
     progress_closed,
+    promote_profile_to_trajectory,
     progress_discontinuous,
     progress_open,
     resolve_custom_path_xy,

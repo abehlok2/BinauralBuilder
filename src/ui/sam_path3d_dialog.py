@@ -109,6 +109,14 @@ class _AxisRow(QWidget):
 class SamPath3DDialog(QDialog):
     """Multi-view editor for a canonical three-dimensional trajectory."""
 
+    #: Measured positions of the dataset this path will be rendered against,
+    #: when one has been selected. Without it the coverage shell is drawn at a
+    #: radius guessed from the path itself, which tells the user nothing about
+    #: the dataset - a path can sit exactly on a guessed shell and still be
+    #: nowhere near a measurement.
+    _dataset_positions = None
+    _dataset_label = ""
+
     def __init__(self, trajectory_spec=None, parent=None):
         super().__init__(parent)
         self.setWindowTitle("SAM 3D Path Designer")
@@ -431,6 +439,18 @@ class SamPath3DDialog(QDialog):
         self.metrics_label = QLabel()
         self.metrics_label.setWordWrap(True)
         layout.addWidget(self.metrics_label)
+
+        # Coverage sits beside the path, not only in the render report: the
+        # moment to learn that a dome leaves the measured region is while it is
+        # being dragged.
+        self.coverage_label = QLabel()
+        self.coverage_label.setWordWrap(True)
+        self.coverage_label.setToolTip(
+            "What the selected HRTF dataset can and cannot support about this "
+            "path. Directions outside the measured region are extrapolated "
+            "rather than reproduced."
+        )
+        layout.addWidget(self.coverage_label)
         layout.addStretch(1)
         return page
 
@@ -800,13 +820,91 @@ class SamPath3DDialog(QDialog):
         index = self.direction_combo.currentIndex()
         self.direction_combo.setCurrentIndex(1 - index)
 
-    def _shell_toggled(self, visible):
-        radius = 1.5
+    def set_hrtf_dataset(self, dataset, label=""):
+        """Draw and check coverage against the dataset this path will use.
+
+        ``dataset`` may be a loaded dataset, a path to a SOFA file, or an array
+        of measured positions. Passing ``None`` returns the view to the guessed
+        shell and stops reporting coverage, which is honest: with no dataset
+        selected there is nothing to be outside of.
+        """
+
+        positions = None
+        if dataset is not None:
+            positions = getattr(dataset, "positions_m", None)
+            if positions is None and isinstance(dataset, (str, Path)):
+                try:
+                    from src.audio.sam_workbench.hrtf.sofa_io import load_sofa
+
+                    loaded = load_sofa(str(dataset))
+                    positions = loaded.positions_m
+                    label = label or Path(str(dataset)).name
+                except Exception as error:  # noqa: BLE001 - reported in the label
+                    self._dataset_positions = None
+                    self._dataset_label = f"{dataset} could not be read: {error}"
+                    self._refresh_coverage()
+                    return
+            if positions is None:
+                positions = np.asarray(dataset, dtype=np.float64)
+        self._dataset_positions = None if positions is None else np.asarray(
+            positions, dtype=np.float64
+        )
+        self._dataset_label = label
+        self._shell_toggled(self.shell_check.isChecked())
+        self._refresh_coverage()
+
+    def _shell_radius(self):
+        """The radius the shell is drawn at, and where it came from."""
+
+        if self._dataset_positions is not None and len(self._dataset_positions):
+            radii = np.linalg.norm(self._dataset_positions, axis=1)
+            radii = radii[radii > 0.0]
+            if len(radii):
+                return float(np.median(radii)), True
         points = self._sample_curve()
         if len(points):
-            radius = float(np.mean(np.linalg.norm(points, axis=1))) or 1.5
+            return float(np.mean(np.linalg.norm(points, axis=1))) or 1.5, False
+        return 1.5, False
+
+    def _shell_toggled(self, visible):
+        radius, _measured = self._shell_radius()
         for view in self.views.values():
             view.set_coverage_shell(visible, radius)
+
+    def _refresh_coverage(self):
+        """Report what the selected dataset cannot support about this path.
+
+        Shown beside the path rather than only at render time: the moment to
+        learn that a dome leaves the measured region is while dragging it.
+        """
+
+        label = getattr(self, "coverage_label", None)
+        if label is None:
+            return
+        if self._dataset_positions is None:
+            label.setText(
+                self._dataset_label
+                or "No HRTF dataset selected, so coverage is not being checked."
+            )
+            return
+        curve = self._sample_curve()
+        if len(curve) < 2:
+            label.setText("")
+            return
+        try:
+            from src.audio.sam_workbench.hrtf.coverage import assess_path_coverage
+
+            report = assess_path_coverage(self._dataset_positions, curve)
+        except Exception as error:  # noqa: BLE001 - advice must not block editing
+            label.setText(f"Coverage could not be assessed: {error}")
+            return
+        if not report.issues:
+            name = self._dataset_label or "the selected dataset"
+            label.setText(f"Fully covered by {name}.")
+            return
+        label.setText(
+            "\n".join(f"• {issue.message}" for issue in report.issues)
+        )
 
     # ----------------------------------------------------------------- refresh
 
@@ -887,6 +985,7 @@ class SamPath3DDialog(QDialog):
         self._refresh_table(points)
         self._refresh_numeric()
         self._refresh_metrics(curve)
+        self._refresh_coverage()
         if self.shell_check.isChecked():
             self._shell_toggled(True)
 
