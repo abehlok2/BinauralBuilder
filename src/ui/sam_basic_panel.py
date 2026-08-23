@@ -247,8 +247,15 @@ class SamBasicPanel(QWidget):
         self._coalesce.timeout.connect(self._emit_params)
 
         layout = QVBoxLayout(self)
+        # Every group is built, whatever mode the panel opens in, and `set_mode`
+        # decides which are shown. Building only the opening mode's groups left
+        # a panel opened in Basic with no Expert controls at all - not hidden,
+        # absent - so `set_mode(EXPERT)` could not reveal them and `params()`
+        # would not return them. That was invisible only because the dialog
+        # always constructed in Expert; opening in Basic would have started
+        # dropping expert parameters from saved voices.
         for group_mode, title in ((BASIC, "Basic"), (ADVANCED, "Advanced"), (EXPERT, "Expert")):
-            entries = [entry for entry in fields_for_mode(mode) if entry.mode == group_mode]
+            entries = [entry for entry in fields_for_mode(EXPERT) if entry.mode == group_mode]
             if not entries:
                 continue
             box = QGroupBox(title)
@@ -265,6 +272,7 @@ class SamBasicPanel(QWidget):
                     form.addRow(label, control)
             layout.addWidget(box)
         layout.addStretch(1)
+        self.set_mode(mode)
 
     def set_mode(self, mode: str) -> None:
         """Show parameter groups at or below ``mode`` in this one panel."""

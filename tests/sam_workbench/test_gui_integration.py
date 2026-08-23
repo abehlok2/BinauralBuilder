@@ -381,9 +381,50 @@ def test_disclosure_mode_filters_the_shared_parameter_tab(workbench):
     assert "earPolarity" in dialog.parameter_panel.parameter_names
 
 
-def test_disclosure_defaults_to_expert(workbench):
+def test_disclosure_defaults_to_basic_on_first_use(workbench):
+    """Expert is where to return to, not where to arrive.
+
+    It offers the whole parameter space before the user knows what any of it
+    does. Somebody who has chosen a mode gets that mode back, so this only
+    applies when nothing has been stored yet.
+    """
+
     dialog, _ = workbench
-    assert dialog.mode_combo.currentText() == EXPERT
+    assert dialog.mode_combo.currentText() == BASIC
+
+
+def test_the_chosen_disclosure_mode_comes_back_next_time(qtbot):
+    """An expert must not have to reselect Expert every time."""
+
+    from src.ui.sam_workbench_dialog import SamWorkbenchDialog
+
+    voice = {"synth_function_name": "spatial_angle_modulation_sam2", "params": {}}
+    first = SamWorkbenchDialog(voice)
+    qtbot.addWidget(first)
+    first.mode_combo.setCurrentText(EXPERT)
+
+    returning = SamWorkbenchDialog(voice)
+    qtbot.addWidget(returning)
+    assert returning.mode_combo.currentText() == EXPERT
+
+
+def test_every_parameter_group_exists_whatever_mode_the_panel_opens_in(qtbot):
+    """Opening in Basic must not cost the expert parameters.
+
+    The groups are built once and shown selectively. Building only the opening
+    mode's groups left a Basic panel with no expert controls at all, so
+    switching to Expert could not reveal them and `params()` would not return
+    them - which would quietly drop those keys from a saved voice.
+    """
+
+    from src.ui.sam_basic_panel import SamBasicPanel
+
+    panel = SamBasicPanel(mode=BASIC)
+    qtbot.addWidget(panel)
+    assert set(panel._groups) == {BASIC, ADVANCED, EXPERT}
+
+    panel.set_mode(EXPERT)
+    assert "earPolarity" in panel.parameter_names
 
 
 def test_phase_three_path_tools_are_part_of_the_standard_workbench(workbench):

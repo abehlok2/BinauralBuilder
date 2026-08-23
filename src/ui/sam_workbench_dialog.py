@@ -202,15 +202,27 @@ class SamWorkbenchDialog(QDialog):
         header.addWidget(QLabel("Disclosure:"))
         self.mode_combo = QComboBox()
         self.mode_combo.addItems([BASIC, ADVANCED, EXPERT])
-        self.mode_combo.setCurrentText(EXPERT)
-        self.mode_combo.setToolTip("How much of the parameter space to show.")
+        self.mode_combo.setCurrentText(self._stored_disclosure())
+        self.mode_combo.setToolTip(
+            "How much of the parameter space to show. Your choice is "
+            "remembered for next time."
+        )
         self.mode_combo.currentTextChanged.connect(self._on_mode_changed)
         header.addWidget(self.mode_combo)
         layout.addLayout(header)
 
+        # A persistent answer to "what happens when I press render?". The
+        # configuration is spread across tabs and each part is legible alone
+        # while the whole is not, so this stays visible whichever tab is open.
+        self.flow_label = QLabel("")
+        self.flow_label.setWordWrap(True)
+        self.flow_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.flow_label.setObjectName("samFlowSummary")
+        layout.addWidget(self.flow_label)
+
         self.tabs = QTabWidget()
         self.parameter_panel = SamBasicPanel(
-            mode=EXPERT, is_transition=self._is_transition
+            mode=self.mode_combo.currentText(), is_transition=self._is_transition
         )
         # Compatibility aliases for integrations that previously addressed the
         # two duplicated panels directly. Both now refer to the same editor.
@@ -355,10 +367,35 @@ class SamWorkbenchDialog(QDialog):
         return self.onboarding
 
     @staticmethod
-    def _onboarding_settings():
+    def _settings():
         from PyQt5.QtCore import QSettings
 
         return QSettings("BinauralBuilder", "SamWorkbench")
+
+    #: Kept under the old name because callers and tests already use it.
+    _onboarding_settings = _settings
+
+    def _stored_disclosure(self) -> str:
+        """The disclosure mode to open in.
+
+        Basic on first use. Expert is the whole parameter space at once, which
+        is the right place to *return* to and the wrong place to arrive: it
+        offers everything before the user knows what any of it does. Once
+        somebody has chosen a mode that choice is what they get back, so an
+        expert never has to reselect Expert.
+        """
+
+        try:
+            stored = self._settings().value("disclosureMode", "", type=str)
+        except Exception:  # pragma: no cover - restricted or read-only settings
+            return BASIC
+        return stored if stored in (BASIC, ADVANCED, EXPERT) else BASIC
+
+    def _remember_disclosure(self, mode: str) -> None:
+        try:
+            self._settings().setValue("disclosureMode", mode)
+        except Exception:  # pragma: no cover - restricted or read-only settings
+            pass
 
     def _onboarding_dismissed(self) -> bool:
         try:
@@ -495,6 +532,7 @@ class SamWorkbenchDialog(QDialog):
         """Apply progressive disclosure within the shared parameter view."""
 
         self.parameter_panel.set_mode(mode)
+        self._remember_disclosure(mode)
 
     # --- parameters ---------------------------------------------------------
 
@@ -675,9 +713,54 @@ class SamWorkbenchDialog(QDialog):
             sample_rate_hz=self._sample_rate,
         )
 
+    def _refresh_flow(self, issues: tuple[Any, ...]) -> None:
+        """Restate the whole chain from the parameters production reads."""
+
+        from src.audio.sam_workbench.flow import summarize_flow
+
+        summary = summarize_flow(
+            self.collect_params(),
+            scene=self._scene,
+            sample_rate_hz=self._sample_rate,
+            issues=issues,
+        )
+        self._flow_summary = summary
+
+        lines = [summary.chain_text()]
+        facts = [f"Renderer: {summary.renderer_label}"]
+        if summary.asset:
+            facts.append(f"Asset: {summary.asset}")
+        if summary.interpolation:
+            facts.append(f"Interpolation: {summary.interpolation}")
+        facts.append(f"Path: {summary.path_status}")
+        facts.append(f"Scene: {summary.scene_status}")
+        lines.append(" | ".join(facts))
+        if summary.cost:
+            lines.append(summary.cost)
+        if summary.inactive:
+            # Named rather than counted: "3 settings ignored" sends the user
+            # hunting, and the point of saying it at all is to stop that.
+            lines.append(
+                "Set but not used by this renderer: " + ", ".join(summary.inactive)
+            )
+        warnings = [issue for issue in summary.warnings if issue.severity == "warning"]
+        if warnings:
+            lines.append(
+                "Warnings: "
+                + "; ".join(f"{issue.path}: {issue.message}" for issue in warnings)
+            )
+        self.flow_label.setText("\n".join(lines))
+
+    @property
+    def flow_summary(self):
+        """The last computed :class:`FlowSummary`, for tests and the manifest."""
+
+        return getattr(self, "_flow_summary", None)
+
     def _revalidate(self) -> None:
         self._apply_renderer_relevance()
         issues = self.issues()
+        self._refresh_flow(issues)
         self.parameter_panel.show_issues(issues)
 
         errors = [issue for issue in issues if issue.severity == "error"]
