@@ -989,10 +989,17 @@ class SamWorkbenchDialog(QDialog):
         thread = QThread(self)
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
+        # The thread must quit before anything else reacts to the result. If a
+        # dialog slot raised mid-emission, PyQt5 aborts the remaining slots of
+        # that emission - and when one of the skipped slots was `quit`, the
+        # worker's event loop spun forever while the status line sat at
+        # "Rendering…". Direct connection makes quitting immune to whatever
+        # happens later in the chain; QThread.quit just posts an event, so it
+        # is safe from the worker's own thread.
+        worker.rendered.connect(thread.quit, Qt.DirectConnection)
+        worker.failed.connect(thread.quit, Qt.DirectConnection)
         worker.rendered.connect(self._on_preview_rendered)
         worker.failed.connect(self._on_preview_failed)
-        worker.rendered.connect(thread.quit)
-        worker.failed.connect(thread.quit)
         thread.finished.connect(self._on_preview_thread_finished)
         self._preview_worker = worker
         self._preview_thread = thread
@@ -1000,20 +1007,23 @@ class SamWorkbenchDialog(QDialog):
 
     @pyqtSlot(object)
     def _on_preview_rendered(self, result: PreviewResult) -> None:
-        self._last_preview = result
-        self.analysis_panel.set_audio(result.audio, result.sample_rate_hz)
-        # The HRTF Lab can audition a subject on this voice's own material,
-        # not just on test signals.
-        self.hrtf_panel.set_session_material(result.audio, result.sample_rate_hz)
-        self.play_button.setEnabled(AUDIO_OUTPUT_AVAILABLE)
-        message = (
-            f"Preview ready: {result.duration_s:.2f} s, peak {result.peak:.3f}"
-            f"{', limited' if result.limited else ''}"
-            f"{', truncated to the preview cap' if result.truncated else ''}"
-        )
-        if not AUDIO_OUTPUT_AVAILABLE:
-            message += " — audio output unavailable, showing analysis only"
-        self.status_label.setText(message)
+        try:
+            self._last_preview = result
+            self.analysis_panel.set_audio(result.audio, result.sample_rate_hz)
+            # The HRTF Lab can audition a subject on this voice's own material,
+            # not just on test signals.
+            self.hrtf_panel.set_session_material(result.audio, result.sample_rate_hz)
+            self.play_button.setEnabled(AUDIO_OUTPUT_AVAILABLE)
+            message = (
+                f"Preview ready: {result.duration_s:.2f} s, peak {result.peak:.3f}"
+                f"{', limited' if result.limited else ''}"
+                f"{', truncated to the preview cap' if result.truncated else ''}"
+            )
+            if not AUDIO_OUTPUT_AVAILABLE:
+                message += " — audio output unavailable, showing analysis only"
+            self.status_label.setText(message)
+        except Exception as error:  # noqa: BLE001 - a bad result is shown, not fatal
+            self.status_label.setText(f"Preview rendered but could not be shown: {error}")
 
     @pyqtSlot(str)
     def _on_preview_failed(self, message: str) -> None:

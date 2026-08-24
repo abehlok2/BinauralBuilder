@@ -1000,17 +1000,50 @@ def _render_hrtf_voice(
         listener=_listener_from(options),
         dataset_override=dataset_override,
     )
-    # Reconstruct the convolution and crossfade history from the voice origin,
-    # since the legacy synth boundary cannot return checkpointed renderer state.
-    discard = int(start_sample)
+    # Reconstruct the convolution and crossfade history with a *bounded*
+    # pre-roll: everything the renderer can still remember - overlap-save
+    # input history, a filter crossfade, the propagation-delay line - plus
+    # margin, and never the whole timeline from zero. Rendering from sample 0
+    # made "Start at: five minutes" push five minutes of audio through HRTF
+    # convolution only to throw it away, which is the preview that never came
+    # back. The discarded window covers every stateful depth, so what remains
+    # matches a from-zero render; this is the same reconstruction-with-preroll
+    # the geometric adapter has always done.
+    preroll = _hrtf_preroll_frames(renderer_spec, float(sample_rate))
+    discard = min(int(start_sample), int(preroll))
+    render_start = int(start_sample) - discard
     render_frames = frames + discard
     samples = np.arange(render_frames, dtype=np.float64)
-    mono = amplitude * np.sin(TWO_PI * carrier * samples / float(sample_rate))
+    mono = amplitude * np.sin(
+        TWO_PI * carrier * (samples + render_start) / float(sample_rate)
+    )
     rendered = render_hrtf(
         mono, renderer_spec, int(sample_rate), block_size=block_size or 4096,
-        start_sample=0,
+        start_sample=render_start,
     )
     return rendered[:, discard:discard + frames].astype(np.float64, copy=False)
+
+
+#: Overlap-save input history is as long as the longest filter it will hold.
+#: A conservative HRIR length here costs a few thousand extra discarded
+#: samples; under-estimating it would be audible at the seam instead.
+_HRTF_PREROLL_TAPS = 2048
+
+
+def _hrtf_preroll_frames(spec, sample_rate_hz: float) -> int:
+    """How much history the HRTF renderer can still be influenced by."""
+
+    from .dsp.envelopes import milliseconds_to_frames
+
+    crossfade = milliseconds_to_frames(float(spec.crossfade_ms), float(sample_rate_hz))
+    if spec.propagation_delay:
+        delay = (
+            float(spec.maximum_distance_m) / float(spec.speed_of_sound_m_s)
+            * float(sample_rate_hz)
+        )
+    else:
+        delay = 0.0
+    return int(_HRTF_PREROLL_TAPS + crossfade + delay + 64)
 
 
 def _render_geometric_voice(
