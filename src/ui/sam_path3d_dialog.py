@@ -1541,18 +1541,6 @@ class SamPath3DDialog(QDialog):
         return model if getattr(model, "bindings", None) else base
 
     def _sample_curve(self):
-        model = self._preview_model()
-        if model is None:
-            return np.zeros((0, 3))
-        # Sampled through the traversal, not the raw geometry: what is drawn is
-        # what the renderer will be sent.
-        times = np.linspace(0.0, self.duration_spin.value(), _CURVE_SAMPLES)
-        try:
-            return np.asarray(model.positions(times), dtype=float)
-        except (ValueError, TypeError):
-            return np.zeros((0, 3))
-
-    def _sample_curve(self):
         """The *authored* shape, without motion - what coverage is judged on."""
 
         model = self.path_model()
@@ -1630,7 +1618,23 @@ class SamPath3DDialog(QDialog):
             self._timer.stop()
             for view in self.views.values():
                 view.set_marker(None)
+                view.set_live_shape(None)
             self._refresh_motion_status()
+
+    def _live_shape(self, model, time_s):
+        """The path's shape at ``time_s``, or ``None`` when nothing moves it.
+
+        A static path has one shape, already drawn; asking for an instant of it
+        would put a second identical curve on top.
+        """
+
+        shape_at = getattr(model, "shape_at", None)
+        if not callable(shape_at) or not getattr(model, "bindings", None):
+            return None
+        try:
+            return np.asarray(shape_at(float(time_s), _CURVE_SAMPLES), dtype=float)
+        except (ValueError, TypeError):
+            return None
 
     def _live_motion_text(self) -> str:
         """The driven parameters' values right now, for the status line."""
@@ -1665,8 +1669,14 @@ class SamPath3DDialog(QDialog):
             position = np.asarray(model.positions(np.array([self._preview_time])))[0]
         except (ValueError, TypeError):
             return
+        # The shape the path has at this instant, so a modulated path is seen
+        # to breathe rather than sitting still under a moving dot. The marker
+        # comes from the same model at the same time, so it rides the shape
+        # being drawn rather than floating beside it.
+        shape = self._live_shape(model, self._preview_time)
         for view in self.views.values():
             view.set_marker(position)
+            view.set_live_shape(shape)
         live = self._live_motion_text()
         if live:
             driven = ", ".join(

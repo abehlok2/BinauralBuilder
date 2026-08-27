@@ -73,6 +73,11 @@ _LISTENER = QColor(190, 195, 205)
 _NOSE = QColor(120, 220, 140)
 _SHELL = QColor(140, 120, 200)
 _MARKER = QColor(255, 120, 120)
+#: The path's shape at the previewed instant, and the swept locus behind it.
+#: The sweep steps back to context while the live shape is on top, so the
+#: moving shape is what the eye follows.
+_LIVE = QColor(120, 220, 255)
+_SWEPT = QColor(64, 110, 132)
 _TEXT = QColor(190, 195, 205)
 
 
@@ -91,6 +96,7 @@ class _PathViewBase(QWidget):
         self._points = np.zeros((0, 3))
         self._curve = np.zeros((0, 3))
         self._reference = np.zeros((0, 3))
+        self._live = np.zeros((0, 3))
         self._selected = -1
         self._marker = None
         self._extent_m = 2.0
@@ -125,6 +131,23 @@ class _PathViewBase(QWidget):
             else np.zeros((0, 3))
         )
         self._rescale()
+        self.update()
+
+    def set_live_shape(self, points=None):
+        """The path's shape at this instant, during preview.
+
+        Drawn over the swept locus rather than replacing it, and deliberately
+        *not* fed to :meth:`_rescale`: the sweep already bounds everything the
+        shape does, so holding the scale to it keeps the view still while the
+        path breathes. Rescaling to a shape that changes every tick would zoom
+        the view in and out instead of showing motion.
+        """
+
+        self._live = (
+            np.asarray(points, dtype=float).reshape(-1, 3)
+            if points is not None and len(points)
+            else np.zeros((0, 3))
+        )
         self.update()
 
     def set_selected(self, index):
@@ -221,6 +244,13 @@ class _PathViewBase(QWidget):
             painter, self._project(self._reference), _REFERENCE, 1, Qt.DashLine
         )
 
+    def _draw_live_shape(self, painter):
+        """The shape the path has right now, over the swept locus."""
+
+        if not len(self._live):
+            return
+        self._draw_polyline(painter, self._project(self._live), _LIVE, 2)
+
     def _draw_nodes(self, painter, projected):
         for index, point in enumerate(projected):
             chosen = index == self._selected
@@ -306,7 +336,10 @@ class OrthographicPathView(_PathViewBase):
         self._draw_shell(painter)
         self._draw_listener(painter)
         self._draw_reference(painter)
-        self._draw_polyline(painter, self._project(self._curve), _PATH)
+        self._draw_polyline(
+            painter, self._project(self._curve), _SWEPT if len(self._live) else _PATH
+        )
+        self._draw_live_shape(painter)
         self._draw_nodes(painter, self._project(self._points))
         if self._marker is not None:
             self._draw_marker(painter, self._project([self._marker])[0])
@@ -463,7 +496,10 @@ class PerspectivePathView(_PathViewBase):
         self._draw_shell(painter)
         self._draw_listener(painter)
         self._draw_reference(painter)
-        self._draw_polyline(painter, self._project(self._curve), _PATH)
+        self._draw_polyline(
+            painter, self._project(self._curve), _SWEPT if len(self._live) else _PATH
+        )
+        self._draw_live_shape(painter)
         self._draw_nodes(painter, self._project(self._points))
         if self._marker is not None:
             self._draw_marker(painter, self._project([self._marker])[0])

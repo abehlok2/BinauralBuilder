@@ -495,3 +495,96 @@ def test_a_motion_edit_from_the_designer_lands_in_the_shared_scene(qtbot):
     # The matrix panel now shows the adopted cell, so the two editors agree.
     matrix = dialog.modulation_panel.matrix
     assert matrix.route("lfo1", "source.1", "path.radius_m") is not None
+
+
+# --- the path itself moves during preview ------------------------------------
+
+
+def _modulated_preview(qtbot, low=1.2, high=2.4):
+    widget, holder = _feedback_dialog(qtbot)
+    row = widget._motion_rows["path.radius_m"]
+    row["enable"].setChecked(True)
+    index = row["mod"].findData("lfo1")
+    row["mod"].setCurrentIndex(max(index, 0))
+    row["low"].setValue(low)
+    row["high"].setValue(high)
+    return widget, holder
+
+
+def test_the_drawn_shape_changes_as_preview_time_advances(qtbot):
+    """The defect: only the marker moved, over a path frozen in one smear.
+
+    The swept locus is every shape the path passes through at once, so a
+    breathing orbit read as a slightly thick ring with a dot running round it.
+    """
+
+    widget, _ = _modulated_preview(qtbot)
+    widget.preview_button.setChecked(True)
+
+    radii = []
+    for _ in range(4):
+        widget._advance_preview()
+        live = widget.views["top"]._live
+        assert len(live), "a modulated path must draw its shape at this instant"
+        distances = np.linalg.norm(live, axis=1)
+        # One instant is one shape: an orbit at a single radius, not a smear.
+        assert distances.max() - distances.min() < 1e-6
+        radii.append(distances.mean())
+        widget._preview_time += 0.7
+
+    assert max(radii) - min(radii) > 0.1, "the shape must change over time"
+    for radius in radii:
+        assert 1.2 - 1e-6 <= radius <= 2.4 + 1e-6
+
+
+def test_the_marker_rides_the_shape_that_is_drawn(qtbot):
+    """Marker and shape come from one model at one time, so the source sits on
+    the path rather than floating beside it."""
+
+    widget, _ = _modulated_preview(qtbot)
+    widget.preview_button.setChecked(True)
+
+    for _ in range(3):
+        widget._advance_preview()
+        view = widget.views["top"]
+        marker, live = view._marker, view._live
+        assert marker is not None and len(live)
+        gaps = np.linalg.norm(live - np.asarray(marker), axis=1)
+        assert gaps.min() < 0.05, "the marker must lie on the drawn shape"
+        widget._preview_time += 0.9
+
+
+def test_a_static_path_draws_no_second_curve_over_itself(qtbot):
+    widget = SamPath3DDialog(_orbit_spec())
+    qtbot.addWidget(widget)
+    widget.preview_button.setChecked(True)
+    widget._advance_preview()
+
+    assert len(widget.views["top"]._live) == 0
+
+
+def test_stopping_the_preview_clears_the_live_shape(qtbot):
+    widget, _ = _modulated_preview(qtbot)
+    widget.preview_button.setChecked(True)
+    widget._advance_preview()
+    assert len(widget.views["top"]._live)
+
+    widget.preview_button.setChecked(False)
+    assert len(widget.views["top"]._live) == 0
+    assert widget.views["top"]._marker is None
+
+
+def test_the_view_does_not_rescale_to_the_breathing_shape(qtbot):
+    """Scaling to a shape that changes every tick would zoom the view in and
+    out instead of showing motion."""
+
+    widget, _ = _modulated_preview(qtbot)
+    widget.preview_button.setChecked(True)
+
+    extents = []
+    for _ in range(4):
+        widget._advance_preview()
+        extents.append(widget.views["top"]._extent_m)
+        widget._preview_time += 0.8
+
+    assert len(set(extents)) == 1, "the frame must hold still while the path moves"
