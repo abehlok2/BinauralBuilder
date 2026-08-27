@@ -218,6 +218,11 @@ class SamStagePanel(QWidget):
         self.transition_spin.setRange(0.0, 120.0)
         self.transition_spin.setDecimals(2)
         self.transition_spin.setSuffix(" s")
+        self.transition_spin.setToolTip(
+            "How long each generated stage takes to blend into the next. "
+            "Zero switches abruptly at the boundary; longer overlaps the two "
+            "so parameters travel between their values instead of jumping."
+        )
         self.transition_spin.setValue(2.0)
         build_row.addWidget(self.transition_spin)
 
@@ -243,6 +248,11 @@ class SamStagePanel(QWidget):
 
         form = QFormLayout()
         self.name_edit = QLineEdit()
+        self.name_edit.setToolTip(
+            "What to call this stage. Naming is for you - it appears in the "
+            "timeline and the export manifest and changes nothing about the "
+            "audio."
+        )
         self.name_edit.editingFinished.connect(self._apply_editor)
         form.addRow("Name:", self.name_edit)
 
@@ -266,6 +276,10 @@ class SamStagePanel(QWidget):
 
         self.notes_edit = QLineEdit()
         self.notes_edit.setPlaceholderText("what this stage is for")
+        self.notes_edit.setToolTip(
+            "A note to yourself about this stage's purpose. Carried into the "
+            "export manifest; it does not affect the render."
+        )
         self.notes_edit.editingFinished.connect(self._apply_editor)
         second.addRow("Notes:", self.notes_edit)
         outer.addLayout(second)
@@ -438,12 +452,24 @@ class SamStagePanel(QWidget):
             spin = QDoubleSpinBox()
             spin.setRange(-1e6, 1e6)
             spin.setDecimals(4)
+            spin.setToolTip(
+                "The value this parameter is driven to while the stage is "
+                "running. The stage blends from whatever the voice stores "
+                "toward this number over its transition time."
+            )
             spin.setValue(float(binding.value))
             spin.valueChanged.connect(lambda value, r=row: self._set_override(r, value=value))
             place(table, row, 1, spin)
 
             combo = QComboBox()
             combo.addItems(list(CURVES))
+            combo.setToolTip(
+                "How the value travels from its stored setting to the "
+                "override across the stage's transition. 'linear' moves at a "
+                "steady rate; 'smooth' eases both ends; 'exponential' stays "
+                "low then rises late; 'hold' does not move at all until the "
+                "transition completes."
+            )
             combo.setCurrentText(binding.curve)
             combo.currentTextChanged.connect(lambda text, r=row: self._set_override(r, curve=text))
             place(table, row, 2, combo)

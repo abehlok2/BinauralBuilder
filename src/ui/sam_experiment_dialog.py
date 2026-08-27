@@ -139,10 +139,17 @@ class SamExperimentDialog(QDialog):
 
         form = QFormLayout()
         self.name_edit = QLineEdit()
+        self.name_edit.setToolTip(
+            "What to call this experiment. It labels the exported results."
+        )
         self.name_edit.setPlaceholderText("what this experiment is asking")
         form.addRow("Name:", self.name_edit)
 
         self.listener_edit = QLineEdit()
+        self.listener_edit.setToolTip(
+            "Who is listening. Recorded with the results so runs by different "
+            "people can be told apart."
+        )
         self.listener_edit.setPlaceholderText("listener identifier")
         form.addRow("Listener:", self.listener_edit)
 
@@ -159,6 +166,12 @@ class SamExperimentDialog(QDialog):
 
         self.blinded_check = QCheckBox("hide which condition is which until export")
         self.blinded_check.setChecked(True)
+        self.blinded_check.setToolTip(
+            "Hide which condition is playing, so a preference cannot be "
+            "influenced by knowing which is which. Leave it on for any "
+            "comparison whose result you intend to trust; the labels are "
+            "restored in the exported results."
+        )
         form.addRow("", self.blinded_check)
         outer.addLayout(form)
 
@@ -357,6 +370,12 @@ class SamExperimentDialog(QDialog):
             slider.setValue(50)
             slider.setTickPosition(QSlider.TicksBelow)
             slider.setTickInterval(25)
+            slider.setToolTip(
+                f"Rate this presentation for {criterion.replace('_', ' ')}, "
+                "0 at the left to 100 at the right. The midpoint is the "
+                "starting position, not a neutral answer - move it either "
+                "way to record a judgement."
+            )
             self.sliders[criterion] = slider
             self.criteria_form.addRow(criterion.replace("_", " ") + ":", slider)
 

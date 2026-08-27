@@ -238,6 +238,13 @@ class SamHrtfModifyPanel(QWidget):
         self.anchor_source = QComboBox()
         for source_type in ANCHOR_SOURCE_TYPES:
             self.anchor_source.addItem(source_type.replace("_", " ").capitalize(), source_type)
+        self.anchor_source.setToolTip(
+            "What the anchor is made of. Its job is to have energy where the "
+            "pinna works, which a low carrier does not, so the listener has "
+            "something to localise by. Pink and shaped noise are continuous; "
+            "sparse grains are intermittent and less intrusive; a harmonic "
+            "bank keeps a pitched character; imported uses your own file."
+        )
         self.anchor_source.currentIndexChanged.connect(self._on_control_changed)
         anchor_form.addRow("Source", self.anchor_source)
 
@@ -252,6 +259,12 @@ class SamHrtfModifyPanel(QWidget):
         self.anchor_path = QComboBox()
         for mode in ANCHOR_PATH_MODES:
             self.anchor_path.addItem(mode.capitalize(), mode)
+        self.anchor_path.setToolTip(
+            "Where the anchor sits relative to the source it supports. "
+            "'Same' puts it on the same path, which is what pulls the "
+            "carrier outward; 'offset' and 'mirrored' place it elsewhere, "
+            "which weakens that pull but keeps the two from masking."
+        )
         self.anchor_path.currentIndexChanged.connect(self._on_control_changed)
         anchor_form.addRow("Path", self.anchor_path)
         layout.addWidget(anchor)
@@ -261,6 +274,12 @@ class SamHrtfModifyPanel(QWidget):
         selector = QHBoxLayout()
         selector.addWidget(QLabel("View:"))
         self.plot_selector = QComboBox()
+        self.plot_selector.setToolTip(
+            "Which view of the measured and modified responses to compare. "
+            "Impulse response shows them in time; magnitude shows the "
+            "spectral notches that carry elevation; group delay and phase "
+            "show timing, where interaural differences live."
+        )
         for label, key in (
             ("Impulse response", "impulse"),
             ("Magnitude", "magnitude"),

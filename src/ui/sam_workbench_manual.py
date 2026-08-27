@@ -362,6 +362,9 @@ class SamWorkbenchManualDialog(QDialog):
         tools.addWidget(home)
         tools.addWidget(QLabel("Find:"))
         self.search_edit = QLineEdit()
+        self.search_edit.setToolTip(
+            "Filter the manual to sections mentioning this text."
+        )
         self.search_edit.setPlaceholderText("parameter or feature")
         self.search_edit.setClearButtonEnabled(True)
         self.search_edit.returnPressed.connect(self.find_next)
