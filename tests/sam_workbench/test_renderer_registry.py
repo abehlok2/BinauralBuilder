@@ -22,6 +22,8 @@ from src.audio.sam_workbench.render.registry import (
     renderer_ids,
     validate_renderer_config,
 )
+from src.audio.sam_workbench.render.registry import _delay_policy_choices
+from src.audio.sam_workbench.hrtf.sofa_io import DelayPolicy
 
 EXPECTED = ("abstract_pm", "geometric", "hrtf", "hybrid")
 VALID_HRTF = {
@@ -138,6 +140,45 @@ def test_the_delay_policy_choices_are_the_ones_the_engine_loads():
     for spelling in field.choices:
         issues = renderer("hrtf").validate({**base, "hrtfOptions": {"delayPolicy": spelling}})
         assert [issue.path for issue in issues if issue.path == "hrtfOptions.delayPolicy"] == []
+
+    # Validation accepting a spelling is not enough: the loader has to be able
+    # to turn it into a policy, which is what actually runs at render time.
+    for spelling in field.choices:
+        assert DelayPolicy(spelling) in tuple(DelayPolicy)
+
+
+def test_an_added_alias_is_accepted_without_touching_the_enum():
+    """The advertised set and the accepted set read one table.
+
+    ``_missing_`` used to match the alias spelling as a literal while the
+    registry built its choices from :data:`DELAY_POLICY_ALIASES`. Adding an
+    entry to that table therefore made a policy selectable in the interface
+    and rejected by the engine - an enabled control that export ignores.
+    """
+
+    from src.audio.sam_workbench.hrtf import sofa_io
+
+    original = dict(sofa_io.DELAY_POLICY_ALIASES)
+    sofa_io.DELAY_POLICY_ALIASES["legacy_external_delay"] = sofa_io.DelayPolicy.KEEP.value
+    try:
+        assert sofa_io.DelayPolicy("legacy_external_delay") is sofa_io.DelayPolicy.KEEP
+        assert "legacy_external_delay" in _delay_policy_choices()
+    finally:
+        sofa_io.DELAY_POLICY_ALIASES.clear()
+        sofa_io.DELAY_POLICY_ALIASES.update(original)
+
+    # And removing it again really does close the door.
+    with pytest.raises(ValueError):
+        sofa_io.DelayPolicy("legacy_external_delay")
+
+
+def test_a_policy_spelling_is_read_forgivingly_but_not_loosely():
+    """Case and stray whitespace in a hand-edited document still load."""
+
+    assert DelayPolicy("  Preserve_External_Delay  ") is DelayPolicy.KEEP
+    for rejected in ("nonsense", "", 42, None):
+        with pytest.raises(ValueError):
+            DelayPolicy(rejected)
 
 
 def test_compiling_fills_in_the_defaults():

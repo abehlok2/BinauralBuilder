@@ -187,6 +187,9 @@ class HRTFRenderer:
         self._next_sample = int(sample_index)
         self._selection = None
         self._selection_direction = None
+        #: Worst angular gap seen between the source's true direction and the
+        #: direction whose filter was playing. Reported as a diagnostic.
+        self._maximum_angular_error = 0.0
         self._selection_sample = None
         self._filter_changes = 0
         self._selections = 0
@@ -417,10 +420,28 @@ class HRTFRenderer:
             direction = self._selection_direction
             if direction is None:
                 direction = np.array([1.0, 0.0, 0.0])
+        self._observe_angular_error(direction)
         if not self._needs_new_filter(sample, direction):
             return False
         self._select(sample, direction)
         return True
+
+    def _observe_angular_error(self, direction) -> None:
+        """Record how far the playing filter has drifted from the true direction.
+
+        The adaptive control interval bounds this error; this measures what it
+        actually reached. Under motion fast enough that the minimum interval
+        binds, the bound stops holding and the figure rises - which is the
+        renderer degrading gracefully rather than producing a discontinuity,
+        and the number that says by how much.
+        """
+
+        if self._selection_direction is None or direction is None:
+            return
+        cosine = float(np.clip(np.dot(direction, self._selection_direction), -1.0, 1.0))
+        error = float(np.degrees(np.arccos(cosine)))
+        if error > self._maximum_angular_error:
+            self._maximum_angular_error = error
 
     # --- rendering ----------------------------------------------------------
 
@@ -484,6 +505,7 @@ class HRTFRenderer:
             "selections": int(self._selections),
             "filter_changes": int(self._filter_changes),
             "extrapolated_selections": int(self._extrapolated),
+            "maximum_angular_error_during_fade": float(self._maximum_angular_error),
             "taps": 0 if selection is None else int(selection.taps),
             # Transition bookkeeping. ``fade_restarts`` is the one worth
             # watching: it counts transitions abandoned part-way, which is

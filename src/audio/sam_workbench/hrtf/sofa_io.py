@@ -21,13 +21,6 @@ class SofaDependencyError(ImportError):
     pass
 
 
-#: Spellings that are still read but are not the canonical name any more.
-#: Kept as data rather than as extra enum members so that iterating the enum
-#: yields each policy once - a second member sharing a meaning would make the
-#: registry offer the same choice twice and a cache key store it twice.
-DELAY_POLICY_ALIASES = {"preserve_external_delay": "keep_external_delay"}
-
-
 class DelayPolicy(str, Enum):
     BAKE = "bake_delay_into_ir"
     #: ``keep_external_delay`` is the canonical name the renderer registry
@@ -39,13 +32,29 @@ class DelayPolicy(str, Enum):
 
     @classmethod
     def _missing_(cls, value: object) -> DelayPolicy | None:
-        if value == "preserve_external_delay":
-            return cls.KEEP
-        return None
+        """Accept exactly the alias spellings :data:`DELAY_POLICY_ALIASES` lists.
+
+        Read from that table rather than matching a literal, because the
+        renderer registry advertises its keys as selectable policies. Deciding
+        acceptance here and advertisement there from two different sources is
+        how a policy becomes offerable in the interface and unloadable in the
+        engine; one table means adding an alias cannot produce that.
+        """
+
+        if not isinstance(value, str):
+            return None
+        canonical = DELAY_POLICY_ALIASES.get(value.strip().lower())
+        return None if canonical is None else cls(canonical)
 
 
 #: Renamed policy values that persisted documents may still contain, mapped to
 #: their canonical spellings; mirrors INTERPOLATION_ALIASES for logmag_delay.
+#:
+#: Kept as data rather than as extra enum members so that iterating the enum
+#: yields each policy once - a second member sharing a meaning would make the
+#: registry offer the same choice twice and a cache key store it twice. Both
+#: :meth:`DelayPolicy._missing_` and the registry's advertised choices read
+#: this one table, so the set accepted and the set offered cannot drift apart.
 DELAY_POLICY_ALIASES: dict[str, str] = {
     "preserve_external_delay": DelayPolicy.KEEP.value,
 }
@@ -199,16 +208,44 @@ def _bake_delay(ir: NDArray[np.float64], delays: NDArray[np.float64]) -> NDArray
     return result
 
 
+#: Read size for hashing. Large enough that the syscall overhead is
+#: irrelevant, small enough that it never shows up as memory.
+_HASH_CHUNK_BYTES = 1 << 20
+
+
+def hash_asset(path: str | Path) -> str:
+    """The SHA-256 of an asset's bytes, read in pieces.
+
+    The whole file was previously read into memory to hash it. A SONICOM
+    dataset is large enough that doing so is a transient allocation the size
+    of the asset, for a value that never needs more than a megabyte in hand at
+    once - and it happened on a path whose entire purpose is bounding how much
+    a long render holds.
+    """
+
+    digest = hashlib.sha256()
+    with open(path, "rb") as stream:
+        for chunk in iter(lambda: stream.read(_HASH_CHUNK_BYTES), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def load_sofa(
     path: str | Path, *, target_sample_rate_hz: int | None = None,
     delay_policy: DelayPolicy | str = DelayPolicy.BAKE,
     project_directory: str | Path | None = None,
+    content_hash: str | None = None,
 ) -> HRTFDataset:
-    """Load an explicit SOFA asset, apply its delay policy, and resample once."""
+    """Load an explicit SOFA asset, apply its delay policy, and resample once.
+
+    ``content_hash`` lets a caller that has already hashed the bytes - the
+    cache, deciding whether it holds this dataset - pass the digest in rather
+    than have the file read through a second time for the same answer.
+    """
 
     source = resolve_sofa_path(path, project_directory)
     policy = DelayPolicy(delay_policy)
-    digest = hashlib.sha256(source.read_bytes()).hexdigest()
+    digest = hash_asset(source) if content_hash is None else str(content_hash)
     (ir, rate, raw_delay, delay_units, positions, kind, units, receiver,
      receiver_type, receiver_units, attrs) = _read_hdf5(source)
     ir = np.asarray(ir, dtype=np.float64)
