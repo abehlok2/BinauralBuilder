@@ -681,7 +681,14 @@ def scene_gain_envelope(
         if route.is_active and route.target_id in targets and route.parameter_path in AMPLITUDE_PATHS:
             value = modulators.get(route.modulator_id)
             if value is not None:
-                gain += float(route.depth * route.polarity) * value
+                # A ranged route says where the value goes outright, so it
+                # maps the modulator onto its interval; a depth route scales
+                # it, as before.
+                if route.has_range:
+                    low = float(route.minimum)
+                    gain += low + (float(route.maximum) - low) * value
+                else:
+                    gain += route.signed_depth * value
 
     if not include_routing:
         return gain

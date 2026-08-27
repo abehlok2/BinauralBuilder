@@ -142,6 +142,12 @@ class SamLocalizationDialog(QDialog):
 
         self.distance_check = QCheckBox("ask for distance as well as direction")
         self.distance_check.setChecked(True)
+        self.distance_check.setToolTip(
+            "Also ask the listener how far away each sound was, not just "
+            "which direction. Distance judgements are far less reliable than "
+            "direction, so leave this off unless distance is what is being "
+            "studied - it lengthens every trial."
+        )
         form.addRow("", self.distance_check)
         outer.addLayout(form)
 
@@ -151,6 +157,12 @@ class SamLocalizationDialog(QDialog):
         for name in SIGNAL_TYPES:
             check = QCheckBox(name.replace("_", " "))
             check.setChecked(name != "speech")
+            check.setToolTip(
+                f"Include {name.replace('_', ' ')} among the signals played "
+                "during trials. Broadband noise localizes most easily "
+                "because it excites the whole spectrum; narrow or tonal "
+                "signals are markedly harder and will lower scores."
+            )
             self.signal_checks[name] = check
             signal_row.addWidget(check)
         outer.addWidget(signals)
@@ -188,6 +200,9 @@ class SamLocalizationDialog(QDialog):
         self.distance_spin.setRange(0.1, 20.0)
         self.distance_spin.setDecimals(2)
         self.distance_spin.setValue(1.0)
+        self.distance_spin.setToolTip(
+            "How far away the listener judged the sound to be, in metres."
+        )
         self.distance_spin.setSuffix(" m")
         form.addRow("Distance:", self.distance_spin)
 

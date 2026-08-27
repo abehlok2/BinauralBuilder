@@ -148,10 +148,8 @@ def _path_motion_text(scene: Mapping[str, Any] | None, source_id: str) -> str:
             _section, field_name = split_parameter_path(route.parameter_path)
         except ValueError:
             continue
-        amount = route.depth * route.polarity
         parts.append(
-            f"{field_name} <- {route.modulator_id} "
-            f"{'+/-' if amount else ''}{abs(amount):g}"
+            f"{field_name} <- {route.modulator_id} {route.describe_amount()}"
         )
     return ", ".join(parts)
 

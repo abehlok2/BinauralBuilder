@@ -35,6 +35,14 @@ __all__ = [
 _EPSILON = 1e-12
 
 
+def _optional_float(value: Any) -> float | None:
+    """``None`` stays absent; anything numeric becomes a float."""
+
+    if value is None or value == "":
+        return None
+    return float(value)
+
+
 class ModulationCycleError(ValueError):
     """Raised when a route would make a modulator depend on itself."""
 
@@ -56,6 +64,14 @@ class ModulationRoute:
     polarity: int = 1
     curve: str = "linear"
     enabled: bool = True
+    #: An explicit interval for the parameter to sweep, replacing depth when
+    #: both ends are given. Depth measures a swing *away from* the stored base
+    #: in one direction, so a parameter could only ever travel between its base
+    #: and one other number; reaching -45 to +45 degrees meant storing a base of
+    #: -45 and a depth of 90, which no longer reads as the range it is. A range
+    #: says where the value goes, and may straddle zero.
+    minimum: float | None = None
+    maximum: float | None = None
 
     def __post_init__(self) -> None:
         if not self.modulator_id or not self.target_id or not self.parameter_path:
@@ -66,6 +82,38 @@ class ModulationRoute:
             raise ValueError(f"unknown curve {self.curve!r}; expected one of {CURVES}")
         if not math.isfinite(float(self.depth)):
             raise ValueError("depth must be finite")
+        if (self.minimum is None) != (self.maximum is None):
+            raise ValueError(
+                "a range needs both ends; give minimum and maximum together "
+                "or neither"
+            )
+        if self.minimum is not None:
+            if not math.isfinite(float(self.minimum)) or not math.isfinite(
+                float(self.maximum)
+            ):
+                raise ValueError("range ends must be finite")
+            if float(self.maximum) < float(self.minimum):
+                raise ValueError(
+                    f"maximum {self.maximum!r} is below minimum {self.minimum!r}"
+                )
+
+    @property
+    def has_range(self) -> bool:
+        """Whether this route sweeps an explicit interval rather than a depth."""
+
+        return self.minimum is not None and self.maximum is not None
+
+    @property
+    def span(self) -> float:
+        """How far the value travels, whichever way it is expressed."""
+
+        if self.has_range:
+            return float(self.maximum) - float(self.minimum)
+        return abs(float(self.depth))
+
+    @property
+    def signed_depth(self) -> float:
+        return float(self.depth) * float(self.polarity)
 
     @property
     def key(self) -> tuple[str, str, str]:
@@ -73,17 +121,51 @@ class ModulationRoute:
 
     @property
     def is_active(self) -> bool:
+        # A range always asserts control over its parameter, even a degenerate
+        # one: pinning a value to a constant is a thing someone may mean, and
+        # is not the same as leaving the base alone.
+        if self.has_range:
+            return bool(self.enabled)
         return self.enabled and abs(self.depth) > _EPSILON
 
     def apply(self, modulator_value, base_value):
-        """Offset a base value by this route's contribution.
+        """Resolve this route's value.
 
-        The modulator is expected in 0 to 1; the curve shapes it, polarity and
-        depth scale it, and the result is added to the base.
+        The modulator is expected in 0 to 1 and the curve shapes it. With a
+        range, the shaped modulator is mapped onto ``minimum``..``maximum`` and
+        the base is not consulted: the range says outright where the value
+        goes, which is the point of expressing it that way. Otherwise polarity
+        and depth scale the shaped modulator and the result is added to the
+        base, as it always was.
         """
 
         shaped = apply_curve(modulator_value, self.curve)
+        if self.has_range:
+            low = float(self.minimum)
+            # Ends are stored in order so the pair always reads as an
+            # interval; polarity carries which end the modulator's peak
+            # reaches, which is how a range entered high-to-low sweeps the
+            # other way instead of being refused.
+            if self.polarity < 0:
+                shaped = 1.0 - shaped
+            return low + (float(self.maximum) - low) * shaped
         return base_value + float(self.depth) * float(self.polarity) * shaped
+
+    def contribution(self, modulator_value):
+        """What this route adds to a parameter sitting at zero."""
+
+        return self.apply(modulator_value, 0.0)
+
+    def describe_amount(self) -> str:
+        """The route's reach, for a label or a tooltip."""
+
+        if self.has_range:
+            low, high = float(self.minimum), float(self.maximum)
+            if self.polarity < 0:
+                low, high = high, low
+            return f"{low:g} to {high:g}"
+        amount = self.signed_depth
+        return f"+/-{abs(amount):g}" if amount else "0"
 
     def describe(self) -> dict[str, Any]:
         return {
@@ -94,6 +176,13 @@ class ModulationRoute:
             "polarity": int(self.polarity),
             "curve": self.curve,
             "enabled": bool(self.enabled),
+            # Written only when set, so a document that never used a range is
+            # unchanged by a round trip through this class.
+            **(
+                {"minimum": float(self.minimum), "maximum": float(self.maximum)}
+                if self.has_range
+                else {}
+            ),
         }
 
     @classmethod
@@ -106,6 +195,8 @@ class ModulationRoute:
             polarity=int(data.get("polarity", 1)),
             curve=str(data.get("curve", "linear")),
             enabled=bool(data.get("enabled", True)),
+            minimum=_optional_float(data.get("minimum")),
+            maximum=_optional_float(data.get("maximum")),
         )
 
 

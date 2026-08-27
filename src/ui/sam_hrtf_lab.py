@@ -163,6 +163,46 @@ def application_data_root() -> Path:
     return data_root()
 
 
+
+#: What each rating criterion is asking the listener to judge. Perceptual by
+#: design - these are questions a listener can answer, not measurements.
+_CRITERION_TOOLTIPS = {
+    "externalization": (
+        "Whether the sound seemed to come from outside your head rather than "
+        "from between your ears. The single most telling sign of a good fit."
+    ),
+    "front_back_accuracy": (
+        "Whether sounds in front stayed in front. Front-back confusion is the "
+        "most common failure of an ill-fitting asset."
+    ),
+    "elevation_clarity": (
+        "How clearly you could tell high from low. Elevation is carried by "
+        "fine spectral notches, so it is the first thing a mismatched ear "
+        "shape loses."
+    ),
+    "left_right_accuracy": (
+        "Whether sounds sat where they should from side to side. This survives "
+        "a poor fit better than the others, so a low score here is serious."
+    ),
+    "motion_smoothness": (
+        "Whether a moving source travelled evenly, without jumping, smearing "
+        "or stalling on its way past."
+    ),
+    "timbre_naturalness": (
+        "Whether the sound kept its own tone colour, or was noticeably "
+        "coloured by the filtering."
+    ),
+    "perceived_distance": (
+        "Whether things sounded as far away as they were meant to be."
+    ),
+    "listening_comfort": (
+        "How comfortable this was to listen to for a while. An asset that "
+        "scores well elsewhere but is tiring is not the one to use."
+    ),
+}
+
+_RATING_SCALE = "  1 is poor, 5 is excellent; 3 is the starting position."
+
 class AuditionWorker(QObject):
     """Renders one audition clip off the GUI thread."""
 
@@ -326,6 +366,11 @@ class SamHrtfLab(QWidget):
         root_row = QHBoxLayout()
         self.library_edit = QLineEdit()
         self.library_edit.setPlaceholderText("Folder containing the SONICOM SOFA files")
+        self.library_edit.setToolTip(
+            "Where your SOFA assets live. Nothing is copied - the folder is "
+            "scanned for matching files, so the lists below stay empty until "
+            "this points somewhere with assets in it."
+        )
         self.library_edit.editingFinished.connect(self._refresh_library)
         browse_root = QPushButton("Browse…")
         browse_root.clicked.connect(self._browse_library)
@@ -363,10 +408,22 @@ class SamHrtfLab(QWidget):
             max(0, self.processing_combo.findData("FreeFieldComp"))
         )
         library_form.addRow("Processing", self.processing_combo)
+        self.processing_combo.setToolTip(
+            "Which prepared variant of each measurement to load. Free-field "
+            "compensated removes the measurement rig's own response and is "
+            "what most SONICOM work starts from; raw and windowed variants "
+            "keep more of it. A library holding only one variant looks empty "
+            "under the others."
+        )
 
         self.rate_combo = QComboBox()
         for rate in (44_100, 48_000, 96_000):
             self.rate_combo.addItem(f"{rate} Hz", rate)
+        self.rate_combo.setToolTip(
+            "Rate to resample the impulse responses to. Match your project's "
+            "rate: a mismatch means resampling at render time instead of "
+            "once here."
+        )
         library_form.addRow("Sample rate", self.rate_combo)
 
         self.subject_combo = QComboBox()
@@ -451,6 +508,12 @@ class SamHrtfLab(QWidget):
         self.interval_spin.setRange(1, 4096)
         self.interval_spin.setValue(128)
         self.interval_spin.setSuffix(" samples")
+        self.interval_spin.setToolTip(
+            "How often the direction is re-checked and a new filter possibly "
+            "chosen. Smaller intervals track fast motion more closely at more "
+            "cost per second; larger ones let the source drift further from "
+            "the filter being played before it is corrected."
+        )
         rendering_form.addRow("Direction interval", self.interval_spin)
 
         self.headphone_combo = QComboBox()
@@ -524,8 +587,22 @@ class SamHrtfLab(QWidget):
         controls = QGroupBox("Test signal and direction")
         form = QFormLayout(controls)
         self.azimuth_combo = QComboBox()
+        self.azimuth_combo.setToolTip(
+            "Direction to audition, around the listener. 0° is straight "
+            "ahead and the angle increases to the left."
+        )
         self.elevation_combo = QComboBox()
+        self.elevation_combo.setToolTip(
+            "Height to audition, relative to ear level. Assets measure far "
+            "less below the listener than above, so low elevations are the "
+            "ones most likely to sound wrong."
+        )
         self.signal_combo = QComboBox()
+        self.signal_combo.setToolTip(
+            "What to play through the filter. Broadband noise reveals the "
+            "most about an asset because it excites the whole spectrum; "
+            "tonal signals carry far fewer directional cues."
+        )
         form.addRow("Azimuth", self.azimuth_combo)
         form.addRow("Elevation", self.elevation_combo)
         form.addRow("Signal", self.signal_combo)
@@ -533,6 +610,10 @@ class SamHrtfLab(QWidget):
         self.duration_spin = QDoubleSpinBox()
         self.duration_spin.setRange(0.25, 10.0)
         self.duration_spin.setValue(1.5)
+        self.duration_spin.setToolTip(
+            "How long the audition clip is. Short clips render sooner; a "
+            "second or two is usually enough to place a static direction."
+        )
         self.duration_spin.setSuffix(" s")
         form.addRow("Clip length", self.duration_spin)
 
@@ -571,6 +652,7 @@ class SamHrtfLab(QWidget):
             slider.setValue(3)
             slider.setTickPosition(QSlider.TicksBelow)
             slider.setTickInterval(1)
+            slider.setToolTip(_CRITERION_TOOLTIPS.get(criterion, "") + _RATING_SCALE)
             value_label = QLabel("3")
             slider.valueChanged.connect(
                 lambda value, label=value_label: label.setText(str(value))
@@ -605,6 +687,11 @@ class SamHrtfLab(QWidget):
         row.addWidget(QLabel("Profile:"))
         self.ranking_profile_combo = QComboBox()
         self.ranking_profile_combo.setEditable(False)
+        self.ranking_profile_combo.setToolTip(
+            "Whose ratings to rank by. Each listener's scores are kept "
+            "separately, because a good fit is personal to the ears it was "
+            "rated with."
+        )
         self.ranking_profile_combo.currentIndexChanged.connect(self.refresh_ranking)
         row.addWidget(self.ranking_profile_combo, 1)
         refresh = QPushButton("Refresh")

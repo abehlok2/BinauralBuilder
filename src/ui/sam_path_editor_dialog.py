@@ -217,8 +217,19 @@ class SamPathEditorDialog(QDialog):
         )
         self.primitive_combo.currentTextChanged.connect(self.seed_primitive)
         self.closed_check = QCheckBox("Closed path")
+        self.closed_check.setToolTip(
+            "Join the last point back to the first, so a looping traversal "
+            "runs on without a jump at the seam. Leave it off for a path "
+            "meant to travel from one place to another."
+        )
         self.closed_check.toggled.connect(self._shape_changed)
         self.arc_length_check = QCheckBox("Constant physical speed")
+        self.arc_length_check.setToolTip(
+            "Move at an even speed in metres, so a long stretch of path takes "
+            "proportionally longer to cross. Off, the source advances evenly "
+            "along the curve's own parameter instead, which speeds up where "
+            "the points are far apart and slows down where they bunch."
+        )
         self.arc_length_check.setChecked(True)
         header.addWidget(QLabel("Geometry:"))
         header.addWidget(self.primitive_combo)
@@ -267,28 +278,68 @@ class SamPathEditorDialog(QDialog):
         form = QFormLayout(traversal)
         self.mode_combo = QComboBox()
         self.mode_combo.addItems(["loop", "ping_pong", "one_shot", "discontinuous"])
+        self.mode_combo.setToolTip(
+            "What happens when a cycle ends. 'loop' restarts from the "
+            "beginning; 'ping_pong' runs back the way it came, so there is no "
+            "jump at the turn; 'one_shot' travels once and stays where it "
+            "stopped; 'discontinuous' abandons smooth motion and hops between "
+            "a set number of fixed positions instead."
+        )
         self.duration_spin = QDoubleSpinBox()
         self.duration_spin.setRange(0.01, 36000)
         self.duration_spin.setValue(5)
         self.duration_spin.setSuffix(" s")
+        self.duration_spin.setToolTip(
+            "How long one full pass along the path takes. Shorter is faster "
+            "motion: past roughly one revolution a second an HRTF render "
+            "stops reading as movement and starts smearing, because the "
+            "filter cannot be reselected quickly enough to keep up."
+        )
         self.easing_combo = QComboBox()
         self.easing_combo.addItems(["linear", "sine", "smoothstep"])
+        self.easing_combo.setToolTip(
+            "Ease in and out of each cycle. 'sine' and 'smoothstep' start and "
+            "end slowly; 'linear' holds one speed throughout."
+        )
         self.direction_combo = QComboBox()
         self.direction_combo.addItem("Forward", 1)
         self.direction_combo.addItem("Reverse", -1)
+        self.direction_combo.setToolTip(
+            "Which way along the path the source travels. Reverse walks the "
+            "same shape backwards; it does not mirror it."
+        )
         self.steps_spin = QSpinBox()
         self.steps_spin.setRange(2, 128)
         self.steps_spin.setValue(8)
+        self.steps_spin.setToolTip(
+            "How many fixed positions the discontinuous mode hops between. "
+            "The path is divided into this many places and the source appears "
+            "at each in turn instead of travelling; more positions means "
+            "smaller, more frequent hops, and enough of them approaches "
+            "ordinary motion. Used only by the 'discontinuous' traversal."
+        )
         self.crossfade_spin = QDoubleSpinBox()
         self.crossfade_spin.setRange(0, 10)
         self.crossfade_spin.setDecimals(3)
         self.crossfade_spin.setSuffix(" s")
+        self.crossfade_spin.setToolTip(
+            "How long to blend between two positions before each hop. At zero "
+            "the source cuts straight from one place to the next, which is "
+            "heard as a click; raising it fades the two positions across each "
+            "other so the move is smooth but the source is briefly in both "
+            "places at once. Longer than one hop's worth of time is capped. "
+            "Used only by the 'discontinuous' traversal."
+        )
         form.addRow("Traversal", self.mode_combo)
         form.addRow("Cycle duration", self.duration_spin)
         form.addRow("Easing", self.easing_combo)
         form.addRow("Direction", self.direction_combo)
-        form.addRow("Jump positions", self.steps_spin)
-        form.addRow("Jump crossfade", self.crossfade_spin)
+        self.steps_label = QLabel("Jump positions")
+        self.crossfade_label = QLabel("Jump crossfade")
+        form.addRow(self.steps_label, self.steps_spin)
+        form.addRow(self.crossfade_label, self.crossfade_spin)
+        self.mode_combo.currentTextChanged.connect(self._sync_jump_controls)
+        self._sync_jump_controls(self.mode_combo.currentText())
         side.addWidget(traversal)
         content.addLayout(side, 1)
         layout.addLayout(content, 1)
@@ -347,6 +398,20 @@ class SamPathEditorDialog(QDialog):
             closed=self.closed_check.isChecked(),
             smooth=self.primitive_combo.currentText() in ("spline", "bezier"),
         )
+
+    def _sync_jump_controls(self, mode: str) -> None:
+        """Hopping only happens in the discontinuous traversal, so only enable
+        the controls for it there: an enabled field the render ignores is a
+        promise the output does not keep."""
+
+        active = str(mode) == "discontinuous"
+        for widget in (
+            self.steps_spin,
+            self.crossfade_spin,
+            self.steps_label,
+            self.crossfade_label,
+        ):
+            widget.setEnabled(active)
 
     def _shape_changed(self):
         self.canvas.set_shape(

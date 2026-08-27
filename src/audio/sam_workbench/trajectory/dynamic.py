@@ -291,6 +291,27 @@ class ModulatedPath:
         following = self._to_listener(self._resolve(blend.next_progress, times))
         return previous, following, blend.previous_gain, blend.next_gain
 
+    def shape_at(self, time_s: float, count: int = 256) -> NDArray[np.float64]:
+        """The whole path as it is shaped at one instant.
+
+        :meth:`positions` answers "where is the source now", sweeping the
+        traversal; each sample is taken with the parameters resolved at that
+        sample's own time, so drawing it gives the locus the source travels
+        over a whole traversal rather than any shape the path ever has.
+
+        This holds time still and sweeps the curve instead: the parameters are
+        frozen at ``time_s`` and the geometry is drawn right around. That is
+        what a designer needs to see a modulated path breathe - the shape at
+        this instant, with the source somewhere on it - rather than the smear
+        of every shape it passes through.
+        """
+
+        if count < 2:
+            raise ValueError("count must be at least 2 to describe a curve")
+        u = np.linspace(0.0, 1.0, int(count))
+        times = np.full(int(count), float(time_s), dtype=np.float64)
+        return self._to_listener(self._resolve(u, times))
+
     def parameter_paths(self) -> tuple[str, ...]:
         """The reserved paths bound here, normalized spellings."""
 

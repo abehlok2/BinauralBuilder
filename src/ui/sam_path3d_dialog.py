@@ -154,20 +154,43 @@ class _AxisRow(QWidget):
 
     changed = pyqtSignal()
 
+    #: What each of the three boxes means, in the canonical frame.
+    AXES = (
+        ("X", "forward from the listener; negative is behind"),
+        ("Y", "to the listener's left; negative is to the right"),
+        ("Z", "above the listener; negative is below"),
+    )
+
     def __init__(self, suffix="", minimum=-1e4, maximum=1e4, parent=None):
         super().__init__(parent)
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         self.spins = []
-        for _ in range(3):
+        for axis, meaning in self.AXES:
             spin = QDoubleSpinBox()
             spin.setRange(minimum, maximum)
             spin.setDecimals(3)
             spin.setSingleStep(0.1)
             spin.setSuffix(suffix)
+            # Which box is which is not obvious from three identical spinners
+            # side by side, and getting it wrong puts a source behind the
+            # listener instead of in front of them.
+            spin.setToolTip(f"{axis}: {meaning}.")
             spin.valueChanged.connect(self.changed)
             layout.addWidget(spin)
             self.spins.append(spin)
+
+    def setToolTip(self, text):
+        """Explain the row, and keep each box saying which axis it is.
+
+        A tooltip set on this widget does not reach the boxes inside it, so
+        the three spinners would stay unexplained however well the row was
+        described.
+        """
+
+        super().setToolTip(text)
+        for (axis, meaning), spin in zip(self.AXES, self.spins):
+            spin.setToolTip(f"{text}\n\n{axis}: {meaning}." if text else f"{axis}: {meaning}.")
 
     def value(self):
         return [spin.value() for spin in self.spins]
@@ -330,13 +353,29 @@ class SamPath3DDialog(QDialog):
         self.azimuth_spin = QDoubleSpinBox()
         self.azimuth_spin.setRange(-180.0, 180.0)
         self.azimuth_spin.setSuffix(" °")
+        self.azimuth_spin.setToolTip(
+            "Where the selected point sits around the listener. 0° is directly "
+            "in front and the angle increases to the left, so 90° is beside "
+            "the left ear and 180° is behind."
+        )
         self.elevation_spin = QDoubleSpinBox()
         self.elevation_spin.setRange(-90.0, 90.0)
         self.elevation_spin.setSuffix(" °")
+        self.elevation_spin.setToolTip(
+            "How far above or below ear height the selected point sits. 0° is "
+            "level with the ears, 90° straight overhead, -90° straight down. "
+            "Most HRTF assets measure far less below the listener than above, "
+            "so steep negative elevations are likely to be extrapolated."
+        )
         self.distance_spin = QDoubleSpinBox()
         self.distance_spin.setRange(0.0, 1000.0)
         self.distance_spin.setDecimals(3)
         self.distance_spin.setSuffix(" m")
+        self.distance_spin.setToolTip(
+            "How far the selected point is from the listener. Distance sets "
+            "level and air absorption, not just apparent position: halving it "
+            "is roughly +6 dB. Very small distances get loud and unstable."
+        )
         for spin in (self.azimuth_spin, self.elevation_spin, self.distance_spin):
             spin.valueChanged.connect(self._spherical_edited)
         form.addRow("Azimuth", self.azimuth_spin)
@@ -347,6 +386,11 @@ class SamPath3DDialog(QDialog):
         self.keyframe_time_spin.setRange(0.0, 36000.0)
         self.keyframe_time_spin.setDecimals(3)
         self.keyframe_time_spin.setSuffix(" s")
+        self.keyframe_time_spin.setToolTip(
+            "When the source reaches the selected point, in seconds from the "
+            "start of a cycle. Only keyframed paths use it; on a primitive "
+            "the traversal decides timing instead."
+        )
         self.keyframe_time_spin.valueChanged.connect(self._keyframe_time_edited)
         form.addRow("Keyframe time", self.keyframe_time_spin)
         layout.addWidget(numeric)
@@ -437,9 +481,20 @@ class SamPath3DDialog(QDialog):
         self.interpolation_combo = QComboBox()
         self.interpolation_combo.addItems(["hold", "linear", "cubic", "catmull_rom"])
         self.interpolation_combo.setCurrentText("cubic")
+        self.interpolation_combo.setToolTip(
+            "How the path is drawn between the points you place. 'linear' "
+            "joins them with straight segments and turns corners abruptly; "
+            "'cubic' and 'catmull_rom' curve smoothly through them; 'hold' "
+            "does not move between points at all, jumping at each one."
+        )
         self.interpolation_combo.currentTextChanged.connect(self._refresh)
         frame_form.addRow("Interpolation", self.interpolation_combo)
         self.closed_check = QCheckBox("Closed path")
+        self.closed_check.setToolTip(
+            "Join the last point back to the first, so a looping traversal "
+            "runs on without a jump at the seam. Leave it off for a path "
+            "meant to travel from one place to another."
+        )
         self.closed_check.toggled.connect(self._refresh)
         frame_form.addRow(self.closed_check)
         frame_form.addRow(
@@ -469,12 +524,25 @@ class SamPath3DDialog(QDialog):
         form = QFormLayout(box)
         self.mode_combo = QComboBox()
         self.mode_combo.addItems(["loop", "ping_pong", "one_shot", "discontinuous"])
+        self.mode_combo.setToolTip(
+            "What happens when a cycle ends. 'loop' restarts from the "
+            "beginning; 'ping_pong' runs back the way it came, so there is no "
+            "jump at the turn; 'one_shot' travels once and stays where it "
+            "stopped; 'discontinuous' abandons smooth motion and hops between "
+            "a set number of fixed positions instead."
+        )
         self.mode_combo.currentTextChanged.connect(self._refresh)
         form.addRow("Looping mode", self.mode_combo)
 
         self.duration_spin = QDoubleSpinBox()
         self.duration_spin.setRange(0.01, 36000.0)
         self.duration_spin.setValue(5.0)
+        self.duration_spin.setToolTip(
+            "How long one full pass along the path takes. Shorter is faster "
+            "motion: past roughly one revolution a second an HRTF render "
+            "stops reading as movement and starts smearing, because the "
+            "filter cannot be reselected quickly enough to keep up."
+        )
         self.duration_spin.setSuffix(" s")
         self.duration_spin.valueChanged.connect(self._refresh)
         form.addRow("Cycle duration", self.duration_spin)
@@ -491,6 +559,10 @@ class SamPath3DDialog(QDialog):
         self.direction_combo = QComboBox()
         self.direction_combo.addItem("Forward", 1)
         self.direction_combo.addItem("Reverse", -1)
+        self.direction_combo.setToolTip(
+            "Which way along the path the source travels. Reverse walks the "
+            "same shape backwards; it does not mirror it."
+        )
         self.direction_combo.currentIndexChanged.connect(self._refresh)
         form.addRow("Direction", self.direction_combo)
 
@@ -508,15 +580,33 @@ class SamPath3DDialog(QDialog):
         self.steps_spin = QSpinBox()
         self.steps_spin.setRange(2, 128)
         self.steps_spin.setValue(8)
+        self.steps_spin.setToolTip(
+            "How many fixed positions the discontinuous mode hops between. "
+            "The path is divided into this many places and the source appears "
+            "at each in turn instead of travelling; more positions means "
+            "smaller, more frequent hops, and enough of them approaches "
+            "ordinary motion."
+        )
         self.steps_spin.valueChanged.connect(self._refresh)
-        form.addRow("Jump positions", self.steps_spin)
+        self.steps_row_label = QLabel("Jump positions")
+        form.addRow(self.steps_row_label, self.steps_spin)
 
         self.crossfade_spin = QDoubleSpinBox()
         self.crossfade_spin.setRange(0.0, 10.0)
         self.crossfade_spin.setDecimals(3)
         self.crossfade_spin.setSuffix(" s")
+        self.crossfade_spin.setToolTip(
+            "How long to blend between two positions before each hop. At zero "
+            "the source cuts straight from one place to the next, which is "
+            "heard as a click; raising it fades the two positions across each "
+            "other so the move is smooth but the source is briefly in both "
+            "places at once. Longer than one hop's worth of time is capped."
+        )
         self.crossfade_spin.valueChanged.connect(self._refresh)
-        form.addRow("Jump crossfade", self.crossfade_spin)
+        self.crossfade_row_label = QLabel("Jump crossfade")
+        form.addRow(self.crossfade_row_label, self.crossfade_spin)
+        self.mode_combo.currentTextChanged.connect(self._sync_jump_controls)
+        self._sync_jump_controls(self.mode_combo.currentText())
         layout.addWidget(box)
 
         self.metrics_label = QLabel()
@@ -705,6 +795,20 @@ class SamPath3DDialog(QDialog):
 
         return normalize_sam_scene(scene) if isinstance(scene, Mapping) else None
 
+    @staticmethod
+    def _route_range(route) -> tuple[float, float]:
+        """The pair of numbers to show for a route, in the order it sweeps.
+
+        A route saved before ranges existed carries only a depth, which meant
+        base-to-base-plus-depth. Shown as that same interval so an existing
+        document opens reading exactly as it renders.
+        """
+
+        if getattr(route, "has_range", False):
+            low, high = float(route.minimum), float(route.maximum)
+            return (high, low) if route.polarity < 0 else (low, high)
+        return (0.0, float(route.depth) * float(route.polarity))
+
     def _motion_route_key(self, section: str, field: str) -> str:
         prefix = PATH_PREFIX if section == "geometry" else TRANSFORM_PREFIX
         return f"{prefix}{field}"
@@ -844,7 +948,9 @@ class SamPath3DDialog(QDialog):
                     index = widgets["mod"].findData(route.modulator_id)
                     if index >= 0:
                         widgets["mod"].setCurrentIndex(index)
-                    widgets["depth"].setValue(route.depth * route.polarity)
+                    low, high = self._route_range(route)
+                    widgets["low"].setValue(low)
+                    widgets["high"].setValue(high)
                     curve_index = widgets["curve"].findText(route.curve)
                     if curve_index >= 0:
                         widgets["curve"].setCurrentIndex(curve_index)
@@ -880,17 +986,31 @@ class SamPath3DDialog(QDialog):
         row.addWidget(modulator, 1)
 
         suffix = f" {unit}" if unit else ""
-        depth = QDoubleSpinBox()
-        depth.setRange(-10_000.0, 10_000.0)
-        depth.setDecimals(3)
-        depth.setSingleStep(0.1)
-        depth.setSuffix(suffix)
-        depth.setToolTip(
-            "How far the value swings either side of its base. Negative "
-            "depth reverses the direction of the swing."
+
+        def _spin(tip: str) -> QDoubleSpinBox:
+            box = QDoubleSpinBox()
+            box.setRange(-10_000.0, 10_000.0)
+            box.setDecimals(3)
+            box.setSingleStep(0.1)
+            box.setSuffix(suffix)
+            box.setToolTip(tip)
+            box.valueChanged.connect(self._motion_edited)
+            return box
+
+        low = _spin(
+            f"The value {label} falls to at the bottom of the modulator's "
+            "cycle. It may be negative, and it may be above the high end - "
+            "the path simply travels the other way."
         )
-        depth.valueChanged.connect(self._motion_edited)
-        row.addWidget(depth)
+        high = _spin(
+            f"The value {label} rises to at the top of the modulator's cycle. "
+            "The pair is a range the parameter sweeps between, so it can "
+            "cross zero; the number above is left behind while this row is on."
+        )
+        row.addWidget(QLabel("from"))
+        row.addWidget(low)
+        row.addWidget(QLabel("to"))
+        row.addWidget(high)
 
         curve = QComboBox()
         curve.addItems(list(_MOTION_CURVES))
@@ -907,7 +1027,8 @@ class SamPath3DDialog(QDialog):
             "container": container,
             "enable": enable,
             "mod": modulator,
-            "depth": depth,
+            "low": low,
+            "high": high,
             "curve": curve,
         }
 
@@ -1063,10 +1184,11 @@ class SamPath3DDialog(QDialog):
             for key, row in sorted(self._motion_rows.items()):
                 if not row["enable"].isChecked():
                     continue
-                depth = float(row["depth"].value())
-                if depth == 0.0:
+                low = float(row["low"].value())
+                high = float(row["high"].value())
+                if low == high:
                     # Inert rather than refused: the user may be mid-edit, and
-                    # a zero-depth route simply contributes nothing.
+                    # a range with no width simply holds the value still.
                     continue
                 modulator_id = row["mod"].currentData()
                 if modulator_id == "@new":
@@ -1077,13 +1199,19 @@ class SamPath3DDialog(QDialog):
                     index = row["mod"].findData(modulator_id)
                     if index >= 0:
                         row["mod"].setCurrentIndex(index)
+                # Stored low-to-high with polarity carrying the direction,
+                # so a range entered backwards still means "sweep the other
+                # way" rather than being refused.
+                inverted = high < low
                 route = ModulationRoute(
                     modulator_id,
                     source_id,
                     key,
-                    depth=abs(depth),
-                    polarity=-1 if depth < 0 else 1,
+                    depth=abs(high - low),
+                    polarity=-1 if inverted else 1,
                     curve=row["curve"].currentText(),
+                    minimum=min(low, high),
+                    maximum=max(low, high),
                 )
                 cycle = matrix.find_cycle(route)
                 if cycle:
@@ -1503,18 +1631,6 @@ class SamPath3DDialog(QDialog):
         return model if getattr(model, "bindings", None) else base
 
     def _sample_curve(self):
-        model = self._preview_model()
-        if model is None:
-            return np.zeros((0, 3))
-        # Sampled through the traversal, not the raw geometry: what is drawn is
-        # what the renderer will be sent.
-        times = np.linspace(0.0, self.duration_spin.value(), _CURVE_SAMPLES)
-        try:
-            return np.asarray(model.positions(times), dtype=float)
-        except (ValueError, TypeError):
-            return np.zeros((0, 3))
-
-    def _sample_curve(self):
         """The *authored* shape, without motion - what coverage is judged on."""
 
         model = self.path_model()
@@ -1555,6 +1671,29 @@ class SamPath3DDialog(QDialog):
         if self.shell_check.isChecked():
             self._shell_toggled(True)
 
+    def _sync_jump_controls(self, mode: str) -> None:
+        """Hopping only happens in the discontinuous mode, so only enable the
+        controls for it there: an enabled field the render ignores is a
+        promise the output does not keep."""
+
+        active = str(mode) == "discontinuous"
+        for widget in (
+            self.steps_spin,
+            self.crossfade_spin,
+            self.steps_row_label,
+            self.crossfade_row_label,
+        ):
+            widget.setEnabled(active)
+        note = (
+            ""
+            if active
+            else "\n\nInactive: only the 'discontinuous' looping mode hops "
+            "between positions, so this is ignored by preview and export."
+        )
+        for widget in (self.steps_spin, self.crossfade_spin):
+            base = widget.toolTip().split("\n\nInactive:")[0]
+            widget.setToolTip(base + note)
+
     def _refresh_table(self, points):
         self._updating = True
         self.table.setRowCount(len(points))
@@ -1592,7 +1731,23 @@ class SamPath3DDialog(QDialog):
             self._timer.stop()
             for view in self.views.values():
                 view.set_marker(None)
+                view.set_live_shape(None)
             self._refresh_motion_status()
+
+    def _live_shape(self, model, time_s):
+        """The path's shape at ``time_s``, or ``None`` when nothing moves it.
+
+        A static path has one shape, already drawn; asking for an instant of it
+        would put a second identical curve on top.
+        """
+
+        shape_at = getattr(model, "shape_at", None)
+        if not callable(shape_at) or not getattr(model, "bindings", None):
+            return None
+        try:
+            return np.asarray(shape_at(float(time_s), _CURVE_SAMPLES), dtype=float)
+        except (ValueError, TypeError):
+            return None
 
     def _live_motion_text(self) -> str:
         """The driven parameters' values right now, for the status line."""
@@ -1627,8 +1782,14 @@ class SamPath3DDialog(QDialog):
             position = np.asarray(model.positions(np.array([self._preview_time])))[0]
         except (ValueError, TypeError):
             return
+        # The shape the path has at this instant, so a modulated path is seen
+        # to breathe rather than sitting still under a moving dot. The marker
+        # comes from the same model at the same time, so it rides the shape
+        # being drawn rather than floating beside it.
+        shape = self._live_shape(model, self._preview_time)
         for view in self.views.values():
             view.set_marker(position)
+            view.set_live_shape(shape)
         live = self._live_motion_text()
         if live:
             driven = ", ".join(

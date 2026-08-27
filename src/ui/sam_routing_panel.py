@@ -55,6 +55,19 @@ from src.audio.sam_workbench.hrtf.interpolation import (  # noqa: E402
     INTERPOLATION_MODES as _INTERPOLATION_MODES,
 )
 
+_MUTE_TIP = (
+    "Silence this row without changing its gain, so the level you set is "
+    "still there when it comes back."
+)
+_SOLO_TIP = (
+    "Silence every row that is not soloed, so this one can be heard alone "
+    "without touching anyone else's settings."
+)
+_BAND_TIP = (
+    "Include this frequency band in the output. Switching it off drops that "
+    "part of the spectrum rather than attenuating it."
+)
+
 
 class BandStripView(QWidget):
     """The crossover layout on a log frequency axis, band by band."""
@@ -242,6 +255,12 @@ class SamRoutingPanel(QWidget):
         for order in (2, 4, 8):
             self.order_combo.addItem(f"LR{order}", order)
         self.order_combo.setCurrentIndex(1)
+        self.order_combo.setToolTip(
+            "Steepness of the Linkwitz-Riley crossover between bands. A "
+            "higher order separates the bands more sharply, at the cost of "
+            "more phase rotation around each crossover frequency; LR4 is the "
+            "usual choice because its two halves sum flat."
+        )
         self.order_combo.currentIndexChanged.connect(self._on_band_changed)
         row.addWidget(self.order_combo)
         outer.addLayout(row)
@@ -277,6 +296,12 @@ class SamRoutingPanel(QWidget):
         second = QFormLayout()
         self.interpolation_combo = QComboBox()
         self.interpolation_combo.addItems(list(_INTERPOLATION_MODES))
+        self.interpolation_combo.setToolTip(
+            "How a filter is found for a direction between measured ones. "
+            "Costlier modes interpolate more carefully - this control feeds "
+            "the estimate below, so raising it shows what the choice would "
+            "cost before you commit to it."
+        )
         self.interpolation_combo.currentIndexChanged.connect(self._refresh_cost)
         second.addRow("Interpolation:", self.interpolation_combo)
 
@@ -285,6 +310,11 @@ class SamRoutingPanel(QWidget):
         self.rate_spin.setDecimals(0)
         self.rate_spin.setValue(48_000.0)
         self.rate_spin.setSuffix(" Hz")
+        self.rate_spin.setToolTip(
+            "Sample rate to estimate against. Higher rates need the same work "
+            "done more often, so the real-time budget per block shrinks in "
+            "proportion."
+        )
         self.rate_spin.valueChanged.connect(self._refresh_cost)
         second.addRow("Sample rate:", self.rate_spin)
         outer.addLayout(second)
@@ -420,8 +450,8 @@ class SamRoutingPanel(QWidget):
             item.setToolTip(bus.id)
             table.setItem(row, 0, item)
             place(table, row, 1, self._gain_spin(bus.gain_db, lambda value, r=row: self._set_bus(r, gain_db=value)))
-            place(table, row, 2, self._check(bus.muted, lambda state, r=row: self._set_bus(r, muted=bool(state))))
-            place(table, row, 3, self._check(bus.soloed, lambda state, r=row: self._set_bus(r, soloed=bool(state))))
+            place(table, row, 2, self._check(bus.muted, lambda state, r=row: self._set_bus(r, muted=bool(state)), _MUTE_TIP))
+            place(table, row, 3, self._check(bus.soloed, lambda state, r=row: self._set_bus(r, soloed=bool(state)), _SOLO_TIP))
         table.blockSignals(False)
 
     def _set_bus(self, row: int, **changes: Any) -> None:
@@ -559,6 +589,10 @@ class SamRoutingPanel(QWidget):
             combo = QComboBox()
             for bus in self._buses:
                 combo.addItem(bus.name, bus.id)
+            combo.setToolTip(
+                "Which bus this source is mixed into. The bus's own gain, "
+                "mute and solo then apply on top of the source's."
+            )
             index = combo.findData(source.bus_id)
             combo.setCurrentIndex(max(0, index))
             combo.currentIndexChanged.connect(
@@ -566,8 +600,8 @@ class SamRoutingPanel(QWidget):
             )
             place(table, row, 1, combo)
             place(table, row, 2, self._gain_spin(source.gain_db, lambda value, r=row: self._set_source(r, gain_db=value)))
-            place(table, row, 3, self._check(source.muted, lambda state, r=row: self._set_source(r, muted=bool(state))))
-            place(table, row, 4, self._check(source.soloed, lambda state, r=row: self._set_source(r, soloed=bool(state))))
+            place(table, row, 3, self._check(source.muted, lambda state, r=row: self._set_source(r, muted=bool(state)), _MUTE_TIP))
+            place(table, row, 4, self._check(source.soloed, lambda state, r=row: self._set_source(r, soloed=bool(state)), _SOLO_TIP))
         table.blockSignals(False)
 
     def _set_source(self, row: int, **changes: Any) -> None:
@@ -667,7 +701,7 @@ class SamRoutingPanel(QWidget):
                 table,
                 band,
                 2,
-                self._check(self._band.enabled_for(band), lambda state, b=band: self._set_band(b, enabled=bool(state))),
+                self._check(self._band.enabled_for(band), lambda state, b=band: self._set_band(b, enabled=bool(state)), _BAND_TIP),
             )
         table.blockSignals(False)
 
@@ -725,13 +759,22 @@ class SamRoutingPanel(QWidget):
         spin.setSingleStep(0.5)
         spin.setValue(float(value))
         spin.setSuffix(" dB")
+        spin.setToolTip(
+            "Level applied here, in decibels. -6 dB is about half the "
+            "amplitude, +6 dB about double; 0 dB leaves the signal alone. "
+            "Source and bus gains multiply, so both apply in turn."
+        )
         spin.valueChanged.connect(on_change)
         return spin
 
     @staticmethod
-    def _check(value: bool, on_change) -> QCheckBox:
+    def _check(value: bool, on_change, tip: str = "") -> QCheckBox:
         box = QCheckBox()
         box.setChecked(bool(value))
+        if tip:
+            # Passed in rather than fixed here: this helper builds the mute,
+            # solo and band-enable boxes, which do three different things.
+            box.setToolTip(tip)
         box.stateChanged.connect(on_change)
         return box
 

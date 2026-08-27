@@ -302,6 +302,11 @@ class SamWorkbenchDialog(QDialog):
         self.preview_seconds.setDecimals(2)
         self.preview_seconds.setValue(DEFAULT_PREVIEW_SECONDS)
         self.preview_seconds.setSuffix(" s")
+        self.preview_seconds.setToolTip(
+            "How much audio to render for a preview. Shorter previews come "
+            "back sooner; this only affects auditioning, never what an export "
+            "writes."
+        )
         preview_row.addWidget(self.preview_seconds)
         self.preview_button = QPushButton("Render preview")
         self.preview_button.clicked.connect(self.start_preview)
