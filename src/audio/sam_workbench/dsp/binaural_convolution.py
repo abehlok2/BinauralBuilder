@@ -286,8 +286,16 @@ class BinauralConvolver:
         )
 
     def _begin(self, pair: BinauralFilterPair, fade: int, shape: str) -> bool:
-        """Start a transition to ``pair``, or install it when there is no fade."""
+        """Start a transition to ``pair``, or install it when there is no fade.
 
+        Displacing a fade that has not finished is the defect this engine was
+        rewritten to remove, so it is counted here rather than assumed absent.
+        No current path reaches it - callers queue instead - and the counter is
+        what would notice if a future one did.
+        """
+
+        if self._previous is not None and self._fade_position < self._fade_frames:
+            self._counters["fade_restarts"] += 1
         self._counters["filter_changes"] += 1
         self._age = 0
         if fade <= 0:

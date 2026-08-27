@@ -26,6 +26,7 @@ from src.audio.sam_workbench.dsp.binaural_convolution import (
     FADE_EQUAL_POWER,
     FADE_LINEAR,
     BinauralConvolver,
+    BinauralFilterPair,
 )
 from src.audio.sam_workbench.dsp.blocks import iter_blocks
 from src.audio.sam_workbench.render.hrtf import HRTFRenderer, HRTFRendererSpec
@@ -238,3 +239,59 @@ def test_a_linear_fade_does_not_bulge_where_an_equal_power_one_does():
 
     assert midpoint_gain(FADE_EQUAL_POWER) > 1.35
     assert abs(midpoint_gain(FADE_LINEAR) - 1.0) < 0.01
+
+
+def test_the_fade_restart_counter_can_actually_fire():
+    """The tripwire has to be able to trip, or asserting zero proves nothing.
+
+    Every other assertion in this module says ``fade_restarts`` is zero. That
+    was true for the wrong reason for a while: nothing incremented it, so it
+    would have read zero however badly a later change behaved. This reaches
+    past the public interface on purpose - no caller can displace a running
+    fade any more - to show the counter notices when one is displaced.
+    """
+
+    convolver = BinauralConvolver(sample_rate_hz=RATE, crossfade_ms=10.0)
+    convolver.set_filters(_pair(0))
+    convolver.set_filters(_pair(1))
+    convolver.process(np.zeros(32))
+    assert convolver.is_fading
+    assert convolver.counters["fade_restarts"] == 0
+
+    convolver._begin(BinauralFilterPair(_pair(2)), 480, "linear")
+
+    assert convolver.counters["fade_restarts"] == 1
+
+
+def test_a_fade_that_runs_to_completion_is_not_counted_as_a_restart():
+    convolver = BinauralConvolver(sample_rate_hz=RATE, crossfade_ms=10.0)
+    convolver.set_filters(_pair(0))
+    convolver.set_filters(_pair(1), fade_frames=64)
+    convolver.process(np.zeros(128))
+
+    convolver._begin(BinauralFilterPair(_pair(2)), 64, "linear")
+
+    assert convolver.counters["fade_restarts"] == 0
+
+
+def test_the_angular_error_diagnostic_reports_what_the_bound_reached():
+    """Under motion the minimum interval can no longer keep up, the bound stops
+    holding, and the diagnostic is what says by how much."""
+
+    def diagnostics_for(turns):
+        path = Torus(
+            major_radius_m=1.5, minor_radius_m=0.4, major_turns=turns, minor_turns=1.0
+        )
+        _, report = _render(
+            frames=RATE, trajectory=lambda t: path.evaluate(np.asarray(t, dtype=np.float64))
+        )
+        return report
+
+    slow = diagnostics_for(1.0)
+    fast = diagnostics_for(40.0)
+
+    assert slow["maximum_angular_error_during_fade"] > 0.0
+    assert fast["maximum_angular_error_during_fade"] > slow["maximum_angular_error_during_fade"]
+    # Degrading, not breaking: no transition is abandoned at any speed.
+    assert slow["fade_restarts"] == 0
+    assert fast["fade_restarts"] == 0
