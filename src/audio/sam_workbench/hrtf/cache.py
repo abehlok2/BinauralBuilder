@@ -12,12 +12,11 @@ just a miss.
 
 from __future__ import annotations
 
-import hashlib
 from collections import OrderedDict
 from pathlib import Path
 from threading import RLock
 
-from .sofa_io import DelayPolicy, HRTFDataset, load_sofa, resolve_sofa_path
+from .sofa_io import DelayPolicy, HRTFDataset, hash_asset, load_sofa, resolve_sofa_path
 
 
 class HRTFCache:
@@ -43,13 +42,15 @@ class HRTFCache:
                 return found
         # Content-addressed rather than path-addressed, so the key needs the
         # asset's bytes. Hashing a large SOFA file is far cheaper than parsing,
-        # converting, applying the delay policy and resampling it.
+        # converting, applying the delay policy and resampling it - and the
+        # digest is handed to the loader below rather than recomputed there.
         from .disk_cache import cache_key, read_cached_dataset, write_cached_dataset
 
+        digest = None
         disk_key = None
         if self.use_disk:
             try:
-                digest = hashlib.sha256(resolved.read_bytes()).hexdigest()
+                digest = hash_asset(resolved)
                 disk_key = cache_key(digest, sample_rate_hz, delay_policy)
                 stored = read_cached_dataset(disk_key, resolved)
             except Exception:  # noqa: BLE001 - the disk tier must not fail a load
@@ -62,7 +63,12 @@ class HRTFCache:
                         self._items.popitem(last=False)
                 return stored
 
-        loaded = load_sofa(resolved, target_sample_rate_hz=sample_rate_hz, delay_policy=delay_policy)
+        loaded = load_sofa(
+            resolved,
+            target_sample_rate_hz=sample_rate_hz,
+            delay_policy=delay_policy,
+            content_hash=digest,
+        )
         if self.use_disk and disk_key is not None:
             write_cached_dataset(disk_key, loaded)
         with self._lock:

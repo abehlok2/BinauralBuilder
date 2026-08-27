@@ -208,16 +208,44 @@ def _bake_delay(ir: NDArray[np.float64], delays: NDArray[np.float64]) -> NDArray
     return result
 
 
+#: Read size for hashing. Large enough that the syscall overhead is
+#: irrelevant, small enough that it never shows up as memory.
+_HASH_CHUNK_BYTES = 1 << 20
+
+
+def hash_asset(path: str | Path) -> str:
+    """The SHA-256 of an asset's bytes, read in pieces.
+
+    The whole file was previously read into memory to hash it. A SONICOM
+    dataset is large enough that doing so is a transient allocation the size
+    of the asset, for a value that never needs more than a megabyte in hand at
+    once - and it happened on a path whose entire purpose is bounding how much
+    a long render holds.
+    """
+
+    digest = hashlib.sha256()
+    with open(path, "rb") as stream:
+        for chunk in iter(lambda: stream.read(_HASH_CHUNK_BYTES), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def load_sofa(
     path: str | Path, *, target_sample_rate_hz: int | None = None,
     delay_policy: DelayPolicy | str = DelayPolicy.BAKE,
     project_directory: str | Path | None = None,
+    content_hash: str | None = None,
 ) -> HRTFDataset:
-    """Load an explicit SOFA asset, apply its delay policy, and resample once."""
+    """Load an explicit SOFA asset, apply its delay policy, and resample once.
+
+    ``content_hash`` lets a caller that has already hashed the bytes - the
+    cache, deciding whether it holds this dataset - pass the digest in rather
+    than have the file read through a second time for the same answer.
+    """
 
     source = resolve_sofa_path(path, project_directory)
     policy = DelayPolicy(delay_policy)
-    digest = hashlib.sha256(source.read_bytes()).hexdigest()
+    digest = hash_asset(source) if content_hash is None else str(content_hash)
     (ir, rate, raw_delay, delay_units, positions, kind, units, receiver,
      receiver_type, receiver_units, attrs) = _read_hdf5(source)
     ir = np.asarray(ir, dtype=np.float64)

@@ -347,3 +347,56 @@ def test_a_disk_failure_still_loads_the_asset(monkeypatch):
     )
     dataset = HRTFCache().get(FIXTURE, 44100, "bake_delay_into_ir")
     assert dataset.ir.size > 0
+
+
+# --- hashing the asset without holding it -----------------------------------
+
+
+def test_the_chunked_hash_is_the_hash_of_the_whole_file():
+    import hashlib
+
+    from src.audio.sam_workbench.hrtf.sofa_io import hash_asset
+
+    asset = Path(__file__).parent / "fixtures" / "synthetic_hrir.sofa"
+    assert hash_asset(asset) == hashlib.sha256(asset.read_bytes()).hexdigest()
+
+
+def test_hashing_an_asset_does_not_hold_it_in_memory(tmp_path):
+    """A SONICOM asset is large enough that reading it whole to hash it is a
+    transient allocation its own size - on the path whose purpose is bounding
+    what a long render holds."""
+
+    import tracemalloc
+
+    from src.audio.sam_workbench.hrtf.sofa_io import hash_asset
+
+    asset = tmp_path / "large.bin"
+    size = 32 << 20
+    asset.write_bytes(b"\x00" * size)
+
+    tracemalloc.start()
+    try:
+        hash_asset(asset)
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+
+    assert peak < size // 4
+
+
+def test_a_supplied_digest_is_used_rather_than_read_again(monkeypatch):
+    """The cache has already hashed the bytes by the time it calls the loader."""
+
+    from src.audio.sam_workbench.hrtf import sofa_io
+
+    asset = Path(__file__).parent / "fixtures" / "synthetic_hrir.sofa"
+    calls = []
+    real = sofa_io.hash_asset
+    monkeypatch.setattr(
+        sofa_io, "hash_asset", lambda path: (calls.append(path), real(path))[1]
+    )
+
+    dataset = sofa_io.load_sofa(asset, content_hash="supplied-digest")
+
+    assert dataset.content_hash == "supplied-digest"
+    assert calls == []
