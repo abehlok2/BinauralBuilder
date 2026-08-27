@@ -705,6 +705,20 @@ class SamPath3DDialog(QDialog):
 
         return normalize_sam_scene(scene) if isinstance(scene, Mapping) else None
 
+    @staticmethod
+    def _route_range(route) -> tuple[float, float]:
+        """The pair of numbers to show for a route, in the order it sweeps.
+
+        A route saved before ranges existed carries only a depth, which meant
+        base-to-base-plus-depth. Shown as that same interval so an existing
+        document opens reading exactly as it renders.
+        """
+
+        if getattr(route, "has_range", False):
+            low, high = float(route.minimum), float(route.maximum)
+            return (high, low) if route.polarity < 0 else (low, high)
+        return (0.0, float(route.depth) * float(route.polarity))
+
     def _motion_route_key(self, section: str, field: str) -> str:
         prefix = PATH_PREFIX if section == "geometry" else TRANSFORM_PREFIX
         return f"{prefix}{field}"
@@ -844,7 +858,9 @@ class SamPath3DDialog(QDialog):
                     index = widgets["mod"].findData(route.modulator_id)
                     if index >= 0:
                         widgets["mod"].setCurrentIndex(index)
-                    widgets["depth"].setValue(route.depth * route.polarity)
+                    low, high = self._route_range(route)
+                    widgets["low"].setValue(low)
+                    widgets["high"].setValue(high)
                     curve_index = widgets["curve"].findText(route.curve)
                     if curve_index >= 0:
                         widgets["curve"].setCurrentIndex(curve_index)
@@ -880,17 +896,31 @@ class SamPath3DDialog(QDialog):
         row.addWidget(modulator, 1)
 
         suffix = f" {unit}" if unit else ""
-        depth = QDoubleSpinBox()
-        depth.setRange(-10_000.0, 10_000.0)
-        depth.setDecimals(3)
-        depth.setSingleStep(0.1)
-        depth.setSuffix(suffix)
-        depth.setToolTip(
-            "How far the value swings either side of its base. Negative "
-            "depth reverses the direction of the swing."
+
+        def _spin(tip: str) -> QDoubleSpinBox:
+            box = QDoubleSpinBox()
+            box.setRange(-10_000.0, 10_000.0)
+            box.setDecimals(3)
+            box.setSingleStep(0.1)
+            box.setSuffix(suffix)
+            box.setToolTip(tip)
+            box.valueChanged.connect(self._motion_edited)
+            return box
+
+        low = _spin(
+            f"The value {label} falls to at the bottom of the modulator's "
+            "cycle. It may be negative, and it may be above the high end - "
+            "the path simply travels the other way."
         )
-        depth.valueChanged.connect(self._motion_edited)
-        row.addWidget(depth)
+        high = _spin(
+            f"The value {label} rises to at the top of the modulator's cycle. "
+            "The pair is a range the parameter sweeps between, so it can "
+            "cross zero; the number above is left behind while this row is on."
+        )
+        row.addWidget(QLabel("from"))
+        row.addWidget(low)
+        row.addWidget(QLabel("to"))
+        row.addWidget(high)
 
         curve = QComboBox()
         curve.addItems(list(_MOTION_CURVES))
@@ -907,7 +937,8 @@ class SamPath3DDialog(QDialog):
             "container": container,
             "enable": enable,
             "mod": modulator,
-            "depth": depth,
+            "low": low,
+            "high": high,
             "curve": curve,
         }
 
@@ -1063,10 +1094,11 @@ class SamPath3DDialog(QDialog):
             for key, row in sorted(self._motion_rows.items()):
                 if not row["enable"].isChecked():
                     continue
-                depth = float(row["depth"].value())
-                if depth == 0.0:
+                low = float(row["low"].value())
+                high = float(row["high"].value())
+                if low == high:
                     # Inert rather than refused: the user may be mid-edit, and
-                    # a zero-depth route simply contributes nothing.
+                    # a range with no width simply holds the value still.
                     continue
                 modulator_id = row["mod"].currentData()
                 if modulator_id == "@new":
@@ -1077,13 +1109,19 @@ class SamPath3DDialog(QDialog):
                     index = row["mod"].findData(modulator_id)
                     if index >= 0:
                         row["mod"].setCurrentIndex(index)
+                # Stored low-to-high with polarity carrying the direction,
+                # so a range entered backwards still means "sweep the other
+                # way" rather than being refused.
+                inverted = high < low
                 route = ModulationRoute(
                     modulator_id,
                     source_id,
                     key,
-                    depth=abs(depth),
-                    polarity=-1 if depth < 0 else 1,
+                    depth=abs(high - low),
+                    polarity=-1 if inverted else 1,
                     curve=row["curve"].currentText(),
+                    minimum=min(low, high),
+                    maximum=max(low, high),
                 )
                 cycle = matrix.find_cycle(route)
                 if cycle:

@@ -5,7 +5,8 @@ The rules this file protects:
 * every parameter row is constructed whether or not a scene is attached, and
   Basic disclosure hides the group rather than destroying it;
 * enabling a row writes one modulation route through the matrix, addressed to
-  the voice's stable identifier, with negative depth as reversed polarity;
+  the voice's stable identifier, with a range entered high-to-low as
+  reversed polarity;
 * without scene context the group says so instead of pretending;
 * the flow summary names what drives the path.
 """
@@ -110,7 +111,8 @@ def test_enabling_a_row_commits_one_route_to_the_scene(qtbot):
     row["enable"].setChecked(True)
     index = row["mod"].findData("lfo1")
     row["mod"].setCurrentIndex(max(index, 0))
-    row["depth"].setValue(0.4)
+    row["low"].setValue(0.0)
+    row["high"].setValue(0.4)
 
     committed = holder.get("committed")
     assert committed is not None, "an enabled row must reach the host scene"
@@ -127,32 +129,60 @@ def test_enabling_a_row_commits_one_route_to_the_scene(qtbot):
     assert route.polarity == 1
 
 
-def test_negative_depth_stores_reversed_polarity(qtbot):
+def test_a_range_entered_high_to_low_sweeps_the_other_way(qtbot):
+    """Ends are stored in order so the pair always reads as an interval;
+    polarity carries which end the modulator's peak reaches."""
+
     holder = {"scene": _scene_with_lfo()}
     widget = SamPath3DDialog(_orbit_spec(), modulation=_context(holder))
     qtbot.addWidget(widget)
 
     row = widget._motion_rows["transform.roll_deg"]
     row["enable"].setChecked(True)
-    row["depth"].setValue(-12.0)
+    row["low"].setValue(0.0)
+    row["high"].setValue(-12.0)
 
     routes = ModulationMatrix.from_mapping(holder["committed"]["modulation"]).routes
     route = next(r for r in routes if r.parameter_path == "transform.roll_deg")
-    assert route.depth == pytest.approx(12.0)
+    assert (route.minimum, route.maximum) == pytest.approx((-12.0, 0.0))
     assert route.polarity == -1
+    # The modulator's trough reaches 0 and its peak reaches -12.
+    assert route.apply(0.0, 0.0) == pytest.approx(0.0)
+    assert route.apply(1.0, 0.0) == pytest.approx(-12.0)
 
 
-def test_zero_depth_is_inert_but_not_refused(qtbot):
+def test_a_range_can_straddle_zero(qtbot):
+    """The point of the range: a parameter that swings negative and positive
+    without having to store an offset base."""
+
+    holder = {"scene": _scene_with_lfo()}
+    widget = SamPath3DDialog(_orbit_spec(), modulation=_context(holder))
+    qtbot.addWidget(widget)
+
+    row = widget._motion_rows["transform.yaw_deg"]
+    row["enable"].setChecked(True)
+    row["low"].setValue(-45.0)
+    row["high"].setValue(45.0)
+
+    routes = ModulationMatrix.from_mapping(holder["committed"]["modulation"]).routes
+    route = next(r for r in routes if r.parameter_path == "transform.yaw_deg")
+    assert route.apply(0.0, 0.0) == pytest.approx(-45.0)
+    assert route.apply(0.5, 0.0) == pytest.approx(0.0)
+    assert route.apply(1.0, 0.0) == pytest.approx(45.0)
+
+
+def test_an_empty_range_is_inert_but_not_refused(qtbot):
     holder = {"scene": _scene_with_lfo()}
     widget = SamPath3DDialog(_orbit_spec(), modulation=_context(holder))
     qtbot.addWidget(widget)
 
     row = widget._motion_rows["path.elevation_deg"]
     row["enable"].setChecked(True)
-    row["depth"].setValue(0.0)
+    row["low"].setValue(0.0)
+    row["high"].setValue(0.0)
 
-    # Mid-edit friendliness: the row stays armed, but a zero-depth route
-    # contributes nothing and none is written.
+    # Mid-edit friendliness: the row stays armed, but a range with no width
+    # holds the value still and none is written.
     assert row["enable"].isChecked()
     routes = ModulationMatrix.from_mapping(holder["committed"]["modulation"]).routes
     assert routes == ()
@@ -175,15 +205,19 @@ def test_existing_routes_populate_the_rows_on_open(qtbot):
     widget = SamPath3DDialog(_orbit_spec(), modulation=_context(holder))
     qtbot.addWidget(widget)
 
+    # A route saved before ranges existed meant base-to-base-plus-depth, and
+    # opens showing exactly that interval.
     row = widget._motion_rows["path.radius_m"]
     assert row["enable"].isChecked()
-    assert row["depth"].value() == pytest.approx(-0.3)
+    assert row["low"].value() == pytest.approx(0.0)
+    assert row["high"].value() == pytest.approx(-0.3)
 
     # Disabling it removes exactly that route; adding another keeps both
     # edits in one committed scene.
     yaw = widget._motion_rows["transform.yaw_deg"]
     yaw["enable"].setChecked(True)
-    yaw["depth"].setValue(5.0)
+    yaw["low"].setValue(0.0)
+    yaw["high"].setValue(5.0)
     row["enable"].setChecked(False)
     routes = ModulationMatrix.from_mapping(holder["committed"]["modulation"]).routes
     assert [r.parameter_path for r in routes] == ["transform.yaw_deg"]
@@ -198,7 +232,8 @@ def test_a_new_modulator_is_created_when_requested(qtbot):
     row["enable"].setChecked(True)
     index = row["mod"].findData("@new")
     row["mod"].setCurrentIndex(index)
-    row["depth"].setValue(0.2)
+    row["low"].setValue(0.0)
+    row["high"].setValue(0.2)
 
     committed = holder["committed"]
     ids = [str(item.get("id")) for item in committed["modulators"]]
@@ -241,16 +276,20 @@ def test_enabled_motion_reaches_the_drawn_views(qtbot):
     row["enable"].setChecked(True)
     index = row["mod"].findData("lfo1")
     row["mod"].setCurrentIndex(max(index, 0))
-    row["depth"].setValue(0.9)
+    # A range says outright where the radius goes, so it is written in metres
+    # from the listener rather than as a swing away from the authored 1.5 m.
+    row["low"].setValue(1.2)
+    row["high"].setValue(2.4)
 
     top = widget.views["top"]
     assert len(top._reference) > 0, "the dashed authored shape must be shown"
     reference = np.linalg.norm(top._reference, axis=1)
     swept = np.linalg.norm(top._curve, axis=1)
-    # The authored ring sits at 1.5 m; the modulated one breathes around it.
+    # The authored ring sits at 1.5 m; the modulated one breathes across the
+    # range, which straddles it.
     assert np.allclose(reference, 1.5, atol=1e-9)
     assert not np.allclose(reference, swept)
-    assert swept.max() > 1.5 + 0.3 and swept.min() < 1.5 + 0.05
+    assert swept.max() > 2.0 and swept.min() < 1.5
 
 
 def test_preview_tick_shows_live_parameter_values(qtbot):
@@ -260,7 +299,8 @@ def test_preview_tick_shows_live_parameter_values(qtbot):
     row["enable"].setChecked(True)
     index = row["mod"].findData("lfo1")
     row["mod"].setCurrentIndex(max(index, 0))
-    row["depth"].setValue(0.9)
+    row["low"].setValue(0.0)
+    row["high"].setValue(0.9)
 
     widget._preview_time = 1.0
     widget._advance_preview()
@@ -335,7 +375,8 @@ def test_a_newly_created_modulator_is_selected_in_the_editor(qtbot):
     row["enable"].setChecked(True)
     index = row["mod"].findData("@new")
     row["mod"].setCurrentIndex(index)
-    row["depth"].setValue(0.2)
+    row["low"].setValue(0.0)
+    row["high"].setValue(0.2)
 
     # The editor adopts the definition the row just created. The host scene
     # already had lfo1, so the quick-add becomes lfo2.
@@ -354,7 +395,8 @@ def test_definition_edits_change_the_previewed_motion(qtbot):
     row["enable"].setChecked(True)
     index = row["mod"].findData("lfo1")
     row["mod"].setCurrentIndex(max(index, 0))
-    row["depth"].setValue(0.9)
+    row["low"].setValue(0.0)
+    row["high"].setValue(0.9)
     slow = np.linalg.norm(widget.views["top"]._curve, axis=1)
 
     widget.motion_rate_spin.setValue(2.0)
