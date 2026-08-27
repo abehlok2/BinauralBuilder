@@ -12,6 +12,7 @@ that was reading the project as it went.
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from PyQt5.QtCore import QObject, QThread, pyqtSignal, pyqtSlot
@@ -19,6 +20,7 @@ from PyQt5.QtCore import QObject, QThread, pyqtSignal, pyqtSlot
 from src.audio.render_job import (
     RenderOutcome,
     RenderSnapshot,
+    StepPreviewOutcome,
     StepPreviewSnapshot,
     estimate_peak_bytes,
     estimate_render_seconds,
@@ -60,11 +62,27 @@ class RenderWorker(QObject):
 
     @pyqtSlot()
     def run(self) -> None:
-        outcome = run_render(
-            self._snapshot,
-            progress=self.progressed.emit,
-            should_cancel=lambda: self._cancelled,
-        )
+        """Render, and emit an outcome whatever happens.
+
+        ``finished`` is what retires the thread and drops the job from the
+        manager. Letting an exception escape instead would leave the thread
+        running and the job listed for the rest of the session, so closing the
+        window would block for the whole of its timeout and then report
+        failure - a thread outliving the window it reports to being exactly
+        what this class exists to prevent.
+        """
+
+        try:
+            outcome = run_render(
+                self._snapshot,
+                progress=self.progressed.emit,
+                should_cancel=lambda: self._cancelled,
+            )
+        except BaseException as error:  # noqa: BLE001 - reported, never escapes
+            outcome = RenderOutcome(
+                error=str(error) or type(error).__name__,
+                output_path=self._snapshot.output_path,
+            )
         self.finished.emit(outcome)
 
 
@@ -140,9 +158,10 @@ class RenderJobManager(QObject):
         reports to is how a shutdown turns into a crash.
         """
 
-        deadline = timeout_ms
+        deadline = time.monotonic() + max(0, timeout_ms) / 1000.0
         for thread, _worker in list(self._jobs):
-            if not thread.wait(max(0, deadline)):
+            remaining = int((deadline - time.monotonic()) * 1000.0)
+            if not thread.wait(max(0, remaining)):
                 return False
         return not self._jobs
 
@@ -199,9 +218,14 @@ class StepPreviewWorker(QObject):
 
     @pyqtSlot()
     def run(self) -> None:
-        outcome = run_step_preview(
-            self._snapshot, should_cancel=lambda: self._cancelled
-        )
+        """Preview, and emit an outcome whatever happens - see RenderWorker.run."""
+
+        try:
+            outcome = run_step_preview(
+                self._snapshot, should_cancel=lambda: self._cancelled
+            )
+        except BaseException as error:  # noqa: BLE001 - reported, never escapes
+            outcome = StepPreviewOutcome(error=str(error) or type(error).__name__)
         self.finished.emit(outcome)
 
 
@@ -257,8 +281,10 @@ class StepPreviewJob(QObject):
         self._current = None
 
     def wait_for_idle(self, timeout_ms: int = 30_000) -> bool:
+        deadline = time.monotonic() + max(0, timeout_ms) / 1000.0
         for thread, _worker in list(self._running):
-            if not thread.wait(max(0, timeout_ms)):
+            remaining = int((deadline - time.monotonic()) * 1000.0)
+            if not thread.wait(max(0, remaining)):
                 return False
         return not self._running
 

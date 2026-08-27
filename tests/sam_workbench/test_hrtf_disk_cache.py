@@ -400,3 +400,60 @@ def test_a_supplied_digest_is_used_rather_than_read_again(monkeypatch):
 
     assert dataset.content_hash == "supplied-digest"
     assert calls == []
+
+
+def test_two_threads_missing_at_once_load_the_asset_only_once(monkeypatch, tmp_path):
+    """Preview and export render at the same time now, so this is reachable.
+
+    Preparing a dataset is seconds of work. Both threads used to do all of it.
+    """
+
+    import threading
+
+    from src.audio.sam_workbench.hrtf import cache as cache_module
+
+    asset = Path(__file__).parent / "fixtures" / "synthetic_hrir.sofa"
+    loads = []
+    started = threading.Barrier(2)
+    real = cache_module.load_sofa
+
+    def counted(*args, **kwargs):
+        loads.append(1)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(cache_module, "load_sofa", counted)
+    subject = cache_module.HRTFCache(use_disk=False)
+    results = {}
+
+    def load(name):
+        started.wait(timeout=10)
+        results[name] = subject.get(asset, 44100, "bake_delay_into_ir")
+
+    threads = [threading.Thread(target=load, args=(n,)) for n in ("a", "b")]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+        assert not thread.is_alive()
+
+    assert len(loads) == 1
+    assert results["a"] is results["b"]
+
+
+def test_a_failed_load_does_not_wedge_later_ones(monkeypatch):
+    """A load that raises must not leave the gate held for the session."""
+
+    from src.audio.sam_workbench.hrtf import cache as cache_module
+
+    asset = Path(__file__).parent / "fixtures" / "synthetic_hrir.sofa"
+    subject = cache_module.HRTFCache(use_disk=False)
+
+    def explode(*args, **kwargs):
+        raise RuntimeError("no")
+
+    monkeypatch.setattr(cache_module, "load_sofa", explode)
+    with pytest.raises(RuntimeError):
+        subject.get(asset, 44100, "bake_delay_into_ir")
+
+    monkeypatch.undo()
+    assert subject.get(asset, 44100, "bake_delay_into_ir") is not None

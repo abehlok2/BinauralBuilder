@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from pathlib import Path
-from threading import RLock
+from threading import Lock, RLock
 
 from .sofa_io import DelayPolicy, HRTFDataset, hash_asset, load_sofa, resolve_sofa_path
 
@@ -29,6 +29,13 @@ class HRTFCache:
         self.use_disk = bool(use_disk)
         self._items: OrderedDict[tuple, HRTFDataset] = OrderedDict()
         self._lock = RLock()
+        #: One lock per key being loaded. Preparing a dataset is seconds of
+        #: work, and preview and export now render at the same time, so two
+        #: threads missing on one asset would otherwise both read, convert,
+        #: resample and write it. The second waits and takes the first's
+        #: result instead. Keyed rather than global so a load of one asset
+        #: does not hold up a different one.
+        self._loading: dict[tuple, Lock] = {}
 
     def get(self, path: str | Path, sample_rate_hz: int, delay_policy: DelayPolicy | str,
             project_directory: str | Path | None = None) -> HRTFDataset:
@@ -63,20 +70,40 @@ class HRTFCache:
                         self._items.popitem(last=False)
                 return stored
 
-        loaded = load_sofa(
-            resolved,
-            target_sample_rate_hz=sample_rate_hz,
-            delay_policy=delay_policy,
-            content_hash=digest,
-        )
-        if self.use_disk and disk_key is not None:
-            write_cached_dataset(disk_key, loaded)
         with self._lock:
-            self._items[key] = loaded
-            self._items.move_to_end(key)
-            while len(self._items) > self.max_entries:
-                self._items.popitem(last=False)
-        return loaded
+            gate = self._loading.get(key)
+            if gate is None:
+                gate = self._loading[key] = Lock()
+
+        with gate:
+            # Another thread may have finished this exact load while this one
+            # waited, in which case its result is the answer.
+            with self._lock:
+                found = self._items.get(key)
+                if found is not None:
+                    self._items.move_to_end(key)
+                    return found
+
+            try:
+                loaded = load_sofa(
+                    resolved,
+                    target_sample_rate_hz=sample_rate_hz,
+                    delay_policy=delay_policy,
+                    content_hash=digest,
+                )
+                if self.use_disk and disk_key is not None:
+                    write_cached_dataset(disk_key, loaded)
+                with self._lock:
+                    self._items[key] = loaded
+                    self._items.move_to_end(key)
+                    while len(self._items) > self.max_entries:
+                        self._items.popitem(last=False)
+            finally:
+                # Dropped whether or not the load worked: a failed one must
+                # leave nothing behind that a later attempt has to step over.
+                with self._lock:
+                    self._loading.pop(key, None)
+            return loaded
 
     def clear(self) -> None:
         with self._lock:

@@ -306,3 +306,70 @@ def test_unknown_serialized_fields_survive_an_export_round_trip(tmp_path):
     manifest = build_track_manifest(track, audio_path=tmp_path / "x.wav")
     rebuilt = reconstruct_track(manifest)
     assert rebuilt["steps"][0]["voices"][0]["params"]["someFutureKey"] == {"a": [1, 2]}
+
+
+def test_a_worker_that_raises_still_retires_its_thread(qtbot, tmp_path, monkeypatch):
+    """``finished`` is what retires the thread and drops the job.
+
+    ``run_render`` catches broadly inside its own try, but the metrics it
+    assembles afterwards are outside it. Anything raising there used to escape
+    ``run``, so ``finished`` never fired: the thread kept running and the job
+    stayed listed, and closing the window blocked for the whole of its timeout
+    before reporting failure.
+    """
+
+    from src.ui import render_job as ui_render_job
+
+    def explode(*args, **kwargs):
+        raise RuntimeError("something the render did not expect")
+
+    monkeypatch.setattr(ui_render_job, "run_render", explode)
+
+    manager = ui_render_job.RenderJobManager()
+    outcomes = []
+    manager.finished.connect(lambda _w, outcome: outcomes.append(outcome))
+
+    manager.start(
+        RenderSnapshot.of(_track("abstract_pm"), str(tmp_path / "raises.wav"))
+    )
+    qtbot.waitUntil(lambda: bool(outcomes), timeout=30_000)
+
+    assert outcomes[0].succeeded is False
+    assert "something the render did not expect" in outcomes[0].error
+    assert manager.wait_for_idle(5_000) is True
+    assert manager.busy is False
+
+
+def test_waiting_for_idle_bounds_the_total_not_each_thread(qtbot, tmp_path, monkeypatch):
+    """The timeout was handed to every thread in full, so N jobs could block
+    for N times as long as the caller asked for."""
+
+    import time
+
+    from src.ui import render_job as ui_render_job
+
+    release = []
+
+    def slow(*args, **kwargs):
+        while not release:
+            time.sleep(0.01)
+        raise RuntimeError("done")
+
+    monkeypatch.setattr(ui_render_job, "run_render", slow)
+    manager = ui_render_job.RenderJobManager()
+    for index in range(3):
+        manager.start(
+            RenderSnapshot.of(_track("abstract_pm"), str(tmp_path / f"slow{index}.wav"))
+        )
+
+    started = time.monotonic()
+    assert manager.wait_for_idle(600) is False
+    elapsed = time.monotonic() - started
+    release.append(True)
+
+    # Three stuck threads, one 600 ms budget: comfortably under the 1.8 s the
+    # per-thread reading would have taken.
+    assert elapsed < 1.2
+
+    manager.cancel_all()
+    qtbot.waitUntil(lambda: not manager.busy, timeout=30_000)
