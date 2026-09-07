@@ -31,6 +31,7 @@ from PyQt5.QtCore import QObject, QThread, Qt, pyqtSignal, pyqtSlot
 from PyQt5.QtWidgets import (
     QAbstractItemView,
     QComboBox,
+    QCheckBox,
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
@@ -163,7 +164,6 @@ def application_data_root() -> Path:
     return data_root()
 
 
-
 #: What each rating criterion is asking the listener to judge. Perceptual by
 #: design - these are questions a listener can answer, not measurements.
 _CRITERION_TOOLTIPS = {
@@ -283,6 +283,60 @@ class AuditionWorker(QObject):
             )
         else:
             path = pointing
+
+        if self._options.get("verticalCheck"):
+            from src.audio.sam_workbench.render.anchor import (
+                AnchorSpec,
+                make_anchor_signal,
+            )
+            from src.audio.sam_workbench.trajectory import spherical_to_cartesian
+
+            mode = self._options.get("verticalMaterial", "broadband")
+            frames = mono.size
+            times = np.arange(frames) / sample_rate
+            carrier = 0.2 * np.sin(
+                2 * np.pi * float(self._options.get("carrierFreq", 250)) * times
+            )
+            broadband = make_anchor_signal(
+                AnchorSpec(enabled=True, level_db=0), frames, sample_rate
+            )
+            mono = 0.2 * broadband if mode == "broadband" else carrier
+            if mode == "carrier_anchor":
+                mono = carrier + 0.2 * make_anchor_signal(
+                    AnchorSpec(enabled=True, level_db=-30), frames, sample_rate
+                )
+            fade = min(int(0.02 * sample_rate), frames // 2)
+            if fade:
+                envelope = np.ones(frames)
+                envelope[:fade] = np.linspace(0, 1, fade)
+                envelope[-fade:] = np.linspace(1, 0, fade)
+                mono *= envelope
+            radii = np.linalg.norm(dataset.positions_m, axis=1)
+            distance = float(np.median(radii[radii > 1e-9]))
+            path = spherical_to_cartesian(
+                self._direction_deg[0],
+                np.linspace(
+                    self._options.get("verticalStart", 0),
+                    self._options.get("verticalEnd", 60),
+                    frames,
+                ),
+                distance,
+            )
+            from src.audio.sam_workbench.hrtf.coverage import assess_path_coverage
+
+            coverage = assess_path_coverage(
+                dataset.positions_m, path[:: max(1, frames // 512)]
+            )
+            directional = [
+                issue.message
+                for issue in coverage.issues
+                if any(word in issue.path for word in ("elevation", "coverage"))
+            ]
+            if directional:
+                raise ValueError(
+                    "Vertical audition leaves measured coverage: "
+                    + "; ".join(directional)
+                )
 
         harmonic_order = self._options.get("harmonicOrder")
         spec = SpatialHrtfSpec(
@@ -617,6 +671,43 @@ class SamHrtfLab(QWidget):
         self.duration_spin.setSuffix(" s")
         form.addRow("Clip length", self.duration_spin)
 
+        self.vertical_check = QCheckBox("Check vertical localization")
+        self.vertical_check.setToolTip(
+            "Compare broadband, the current carrier frequency, and carrier plus an explicitly selected -30 dB anchor on the same constant-distance vertical arc. Does not change the voice."
+        )
+        form.addRow(self.vertical_check)
+        self.vertical_material = QComboBox()
+        for label, value in (
+            ("Broadband", "broadband"),
+            ("Carrier only", "carrier"),
+            ("Carrier + anchor (-30 dB)", "carrier_anchor"),
+        ):
+            self.vertical_material.addItem(label, value)
+        self.vertical_start = QDoubleSpinBox()
+        self.vertical_end = QDoubleSpinBox()
+        for spin in (self.vertical_start, self.vertical_end):
+            spin.setRange(-90, 90)
+            spin.setSuffix(" °")
+            spin.setToolTip(
+                "Vertical arc endpoint. Coverage is checked against the selected subject before rendering."
+            )
+        self.vertical_end.setValue(60)
+        form.addRow("Comparison material", self.vertical_material)
+        form.addRow("Start elevation", self.vertical_start)
+        form.addRow("End elevation", self.vertical_end)
+
+        def update_vertical(enabled):
+            for widget in (
+                self.vertical_material,
+                self.vertical_start,
+                self.vertical_end,
+            ):
+                widget.setEnabled(enabled)
+            self.signal_combo.setEnabled(not enabled)
+            self.elevation_combo.setEnabled(not enabled)
+
+        self.vertical_check.toggled.connect(update_vertical)
+        update_vertical(False)
         button_row = QHBoxLayout()
         self.audition_button = QPushButton("Render audition")
         self.audition_button.clicked.connect(self.start_audition)
@@ -1074,7 +1165,16 @@ class SamHrtfLab(QWidget):
     # --- audition -----------------------------------------------------------
 
     def audition_options(self) -> dict[str, Any]:
-        return dict(self.params().get("hrtfOptions", {}))
+        result = dict(self.params().get("hrtfOptions", {}))
+        if self.vertical_check.isChecked():
+            result.update(
+                verticalCheck=True,
+                verticalMaterial=self.vertical_material.currentData(),
+                verticalStart=self.vertical_start.value(),
+                verticalEnd=self.vertical_end.value(),
+                carrierFreq=float(self._params.get("carrierFreq", 250)),
+            )
+        return result
 
     def set_session_material(self, audio, sample_rate_hz: int | None = None) -> None:
         """Supply the session's own carrier or noise for auditioning.
@@ -1105,7 +1205,11 @@ class SamHrtfLab(QWidget):
         if not path:
             self.status_label.setText("Select a SOFA asset before auditioning.")
             return
-        if self.signal_combo.currentData() == "session_material" and not self.has_session_material:
+        if (
+            not self.vertical_check.isChecked()
+            and self.signal_combo.currentData() == "session_material"
+            and not self.has_session_material
+        ):
             self.status_label.setText(
                 "Render a preview first: session material auditions this voice's "
                 "own audio, so there has to be some."
@@ -1119,8 +1223,15 @@ class SamHrtfLab(QWidget):
         self.status_label.setText("Rendering audition…")
         worker = AuditionWorker(
             path,
-            (float(self.azimuth_combo.currentData()), float(self.elevation_combo.currentData())),
-            str(self.signal_combo.currentData()),
+            (
+                float(self.azimuth_combo.currentData()),
+                float(self.elevation_combo.currentData()),
+            ),
+            (
+                "pink_noise_burst"
+                if self.vertical_check.isChecked()
+                else str(self.signal_combo.currentData())
+            ),
             self.audition_options(),
             duration_s=self.duration_spin.value(),
             material=self._session_material,

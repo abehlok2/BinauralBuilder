@@ -228,10 +228,14 @@ class ModulatedPath:
         """False once a geometry field moves: the arc-length table describes
         one frozen shape, so a moving shape advances by curve parameter."""
 
-        return not self._geometry_groups
+        return not self._geometry_groups and self._model.speed_law != "angular_speed"
 
     @property
     def notes(self) -> tuple[str, ...]:
+        if self._model.speed_law == "angular_speed":
+            return (
+                "Animated geometry or transforms use parameter speed; constant angular speed is available for static paths only.",
+            )
         if self._geometry_groups:
             names = ", ".join(sorted(self._geometry_groups))
             return (
@@ -266,6 +270,8 @@ class ModulatedPath:
                 previous * blend.previous_gain[..., None]
                 + following * blend.next_gain[..., None]
             ) / total[..., None]
+        elif self._model.speed_law == "authored_timing":
+            resolved = self._apply_transform(self._model.geometry.at_time(times), times)
         else:
             resolved = self._resolve(traversal.progress(times), times)
         return self._to_listener(resolved)
@@ -498,11 +504,10 @@ class ModulatedPath:
         return apply_stacked(points, linear) + translation
 
     def _to_listener(self, points: NDArray[np.float64]) -> NDArray[np.float64]:
-        if self._model.is_listener_relative:
-            return np.asarray(points, dtype=np.float64)
-        return np.asarray(
-            self._model.listener.world_to_listener(points), dtype=np.float64
-        )
+        values = np.asarray(points, dtype=np.float64)
+        if not self._model.is_listener_relative:
+            values = self._model.listener.world_to_listener(values)
+        return self._model.constraints.apply(values)
 
 
 def _base_field_of(component: str) -> str:

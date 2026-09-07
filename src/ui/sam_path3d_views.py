@@ -88,6 +88,8 @@ class _PathViewBase(QWidget):
     selectionChanged = pyqtSignal(int)
     #: A point was dragged. Carries its index and the new ``(x, y, z)`` metres.
     pointMoved = pyqtSignal(int, object)
+    dragStarted = pyqtSignal()
+    dragFinished = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -103,6 +105,8 @@ class _PathViewBase(QWidget):
         self._show_shell = False
         self._shell_radius_m = 1.5
         self._editable = True
+        self._scale_locked = False
+        self._coverage_bad = np.zeros(0, dtype=bool)
 
     # --- state ------------------------------------------------------------
 
@@ -168,7 +172,22 @@ class _PathViewBase(QWidget):
     def set_editable(self, editable):
         self._editable = bool(editable)
 
+    def set_coverage_mask(self, mask):
+        self._coverage_bad = np.asarray(mask, dtype=bool)
+        self.update()
+
+    def _draw_coverage(self, painter):
+        if len(self._coverage_bad) != len(self._curve):
+            return
+        projected = self._project(self._curve)
+        painter.setPen(QPen(QColor(255, 150, 75), 3))
+        for index in range(1, len(projected)):
+            if self._coverage_bad[index - 1] or self._coverage_bad[index]:
+                painter.drawLine(projected[index - 1], projected[index])
+
     def _rescale(self):
+        if self._scale_locked:
+            return
         source = self._curve if len(self._curve) else self._points
         extent = 1.0
         for candidate in (source, self._reference):
@@ -339,6 +358,7 @@ class OrthographicPathView(_PathViewBase):
         self._draw_polyline(
             painter, self._project(self._curve), _SWEPT if len(self._live) else _PATH
         )
+        self._draw_coverage(painter)
         self._draw_live_shape(painter)
         self._draw_nodes(painter, self._project(self._points))
         if self._marker is not None:
@@ -347,7 +367,16 @@ class OrthographicPathView(_PathViewBase):
 
     def _draw_labels(self, painter):
         painter.setPen(QPen(_TEXT.darker(130)))
-        painter.drawText(self.width() - 62, self.height() // 2 - 4, self._config["right_label"])
+        painter.drawText(
+            max(
+                8,
+                self.width()
+                - painter.fontMetrics().horizontalAdvance(self._config["right_label"])
+                - 8,
+            ),
+            self.height() // 2 - 4,
+            self._config["right_label"],
+        )
         painter.drawText(self.width() // 2 + 6, 30, self._config["up_label"])
         painter.drawText(8, self.height() - 8, f"{self._extent_m:.1f} m")
 
@@ -429,6 +458,8 @@ class OrthographicPathView(_PathViewBase):
         super().mousePressEvent(event)
         if self._editable and self._selected >= 0 and event.button() == Qt.LeftButton:
             self._dragging = self._selected
+            self._scale_locked = True
+            self.dragStarted.emit()
 
     def mouseMoveEvent(self, event):
         if self._dragging < 0 or self._dragging >= len(self._points):
@@ -441,6 +472,8 @@ class OrthographicPathView(_PathViewBase):
 
     def mouseReleaseEvent(self, event):
         self._dragging = -1
+        self._scale_locked = False
+        self.dragFinished.emit()
         event.accept()
 
 
@@ -479,7 +512,7 @@ class PerspectivePathView(_PathViewBase):
         forward = np.array(
             [math.cos(yaw) * math.cos(pitch), math.sin(yaw) * math.cos(pitch), math.sin(pitch)]
         )
-        up = np.cross(right, forward)
+        up = np.cross(forward, right)
         centre, scale = self._centre(), self._scale() * 0.9
         horizontal = values @ right
         vertical = values @ up
@@ -499,6 +532,7 @@ class PerspectivePathView(_PathViewBase):
         self._draw_polyline(
             painter, self._project(self._curve), _SWEPT if len(self._live) else _PATH
         )
+        self._draw_coverage(painter)
         self._draw_live_shape(painter)
         self._draw_nodes(painter, self._project(self._points))
         if self._marker is not None:

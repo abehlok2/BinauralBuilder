@@ -40,7 +40,13 @@ __all__ = [
 ]
 
 #: Interpolation kinds a keyframed path understands.
-KEYFRAME_INTERPOLATIONS: tuple[str, ...] = ("hold", "linear", "cubic", "catmull_rom")
+KEYFRAME_INTERPOLATIONS: tuple[str, ...] = (
+    "hold",
+    "linear",
+    "cubic",
+    "catmull_rom",
+    "spherical",
+)
 
 
 @dataclass(frozen=True)
@@ -175,6 +181,10 @@ class KeyframedPath:
         # keys keep their spacing.
         target = self.start_time_s + progress * self.duration_s
 
+        if self.interpolation == "spherical":
+            from .authoring import spherical_segments
+
+            return spherical_segments(points, times, target)
         if self.interpolation == "hold":
             index = np.clip(
                 np.searchsorted(times, target, side="right") - 1, 0, len(times) - 1

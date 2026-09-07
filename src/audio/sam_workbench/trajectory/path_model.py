@@ -31,6 +31,7 @@ from typing import Any, Mapping
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
+from .authoring import PathConstraints, EvaluatedGeometry, AngularGeometry
 from .spherical import cartesian_array_to_spherical
 from .transforms import ListenerTransform, Transform, rotation_matrix_ypr
 from .traversal import CanonicalTrajectory, Traversal
@@ -53,10 +54,21 @@ COORDINATE_SYSTEMS: tuple[str, ...] = (
 )
 
 #: How positions between control points are reconstructed.
-INTERPOLATION_KINDS: tuple[str, ...] = ("hold", "linear", "cubic", "catmull_rom")
+INTERPOLATION_KINDS: tuple[str, ...] = (
+    "hold",
+    "linear",
+    "cubic",
+    "catmull_rom",
+    "spherical",
+)
 
 #: Whether ``u`` advances by physical distance or by the curve's own parameter.
-SPEED_LAWS: tuple[str, ...] = ("constant_speed", "parameter_speed")
+SPEED_LAWS: tuple[str, ...] = (
+    "constant_speed",
+    "parameter_speed",
+    "angular_speed",
+    "authored_timing",
+)
 
 #: The frame every core module uses; see :mod:`..conventions`.
 AXIS_DEFINITIONS: Mapping[str, str] = {
@@ -128,8 +140,13 @@ class PathModel:
     orientation: SourceOrientation | None = None
     coordinate_smoothing: bool = False
     arclength_samples: int = 2049
+    constraints: PathConstraints = field(default_factory=PathConstraints)
 
     def __post_init__(self) -> None:
+        if self.speed_law == "authored_timing" and not hasattr(
+            self.geometry, "at_time"
+        ):
+            raise ValueError("Authored timing requires keyframes")
         if self.coordinate_system not in COORDINATE_SYSTEMS:
             raise ValueError(
                 f"unknown coordinateSystem {self.coordinate_system!r}; "
@@ -169,6 +186,10 @@ class PathModel:
         geometry = self.geometry
         if self.transform != Transform():
             geometry = TransformedGeometry(geometry, self.transform)
+        if self.speed_law == "angular_speed" or self.constraints != PathConstraints():
+            geometry = EvaluatedGeometry(self)
+            if self.speed_law == "angular_speed":
+                geometry = AngularGeometry(geometry)
         compiled = CanonicalTrajectory(
             geometry,
             self.traversal,
@@ -187,7 +208,16 @@ class PathModel:
         know which frame the project used.
         """
 
+        if self.speed_law == "authored_timing":
+            points = self.transform.apply(self.geometry.at_time(time_s))
+            if not self.is_listener_relative:
+                points = self.listener.world_to_listener(points)
+            return self.constraints.apply(points)
         points = np.asarray(self.trajectory().evaluate(time_s), dtype=np.float64)
+        if self.speed_law == "angular_speed" or self.constraints != PathConstraints():
+            # Coordinate smoothing can blend constrained endpoints off the
+            # constraint surface; enforce the contract on the final sample.
+            return self.constraints.apply(points)
         if self.is_listener_relative:
             return points
         return np.asarray(self.listener.world_to_listener(points), dtype=np.float64)
@@ -224,6 +254,8 @@ class PathModel:
 
     @property
     def duration_s(self) -> float:
+        if self.speed_law == "authored_timing":
+            return float(self.geometry.times_s[-1])
         return float(getattr(self.traversal, "duration_s", 0.0) or 0.0)
 
     # --- serialization -----------------------------------------------------
@@ -267,4 +299,13 @@ class PathModel:
             }
         if self.orientation is not None:
             result["sourceOrientation"] = self.orientation.describe()
+        if (
+            self.speed_law in ("angular_speed", "authored_timing")
+            or self.interpolation == "spherical"
+            or result["geometry"].get("interpolation") == "spherical"
+            or self.constraints != PathConstraints()
+        ):
+            result["schemaVersion"] = 3
+        if self.constraints != PathConstraints():
+            result["constraints"] = self.constraints.describe()
         return result

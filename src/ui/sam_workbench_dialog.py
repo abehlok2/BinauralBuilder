@@ -285,6 +285,7 @@ class SamWorkbenchDialog(QDialog):
             signal.connect(self._on_params_changed)
         # Auditions play through the dialog's output rather than a second one.
         self.hrtf_panel.auditionRendered.connect(self._on_audition_rendered)
+        self.path_panel.set_render_context_provider(self._path_render_context)
 
         preview_row = QHBoxLayout()
         preview_row.addWidget(QLabel("Start at:"))
@@ -597,6 +598,26 @@ class SamWorkbenchDialog(QDialog):
         # shared scene; it needs the identifier and a way to read/commit it.
         self.path_panel.set_scene_context(self._fresh_scene_copy, self._source_id())
         self._revalidate()
+
+    def _path_render_context(self):
+        from src.audio.sam_workbench.conventions import seconds_to_samples
+
+        origin = 0
+        running = 0.0
+        for step in getattr(self, "_steps", []):
+            start = float(step.get("start", step.get("start_time", running)) or 0)
+            if any(
+                str(voice.get("sam_source_id", "")) == self._source_id()
+                for voice in step.get("voices", [])
+            ):
+                origin = seconds_to_samples(start, self._sample_rate)
+                break
+            running = start + float(step.get("duration", 0) or 0)
+        return {
+            "params": self.collect_params(),
+            "sample_rate_hz": self._sample_rate,
+            "origin_sample": origin,
+        }
 
     def _source_id(self) -> str:
         return str(self._voice.get("sam_source_id", "") or "")

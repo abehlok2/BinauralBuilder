@@ -437,7 +437,8 @@ def test_phase_three_path_tools_are_part_of_the_standard_workbench(workbench):
     ]
     assert "Path & Geometry" in labels
     assert dialog.path_panel.designer_button.isEnabled()
-    assert "visual path designer" in dialog.path_panel.designer_button.text().lower()
+    assert "legacy point editor" in dialog.path_panel.designer_button.text().lower()
+    assert "3d path" in dialog.path_panel.designer_3d_button.text().lower()
 
 
 def test_path_panel_preserves_legacy_profile_before_designer_is_accepted(qtbot):
