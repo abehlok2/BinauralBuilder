@@ -19,6 +19,7 @@ from PyQt5.QtWidgets import (
 from src.audio.sam_workbench.analysis.trajectory_metrics import trajectory_metrics
 from src.audio.sam_workbench.trajectory.legacy_paths import (
     legacy_profile_geometry,
+    promote_profile_to_trajectory,
 )
 from src.audio.sam_workbench.trajectory import (
     CanonicalTrajectory,
@@ -86,17 +87,18 @@ class SamPathPanel(QWidget):
         self._segments = []
         self._trajectory_spec = {}
         self._scene_provider = None
+        self._render_context_provider = None
         self._source_id = ""
         self._disclosure = "advanced"
         layout = QVBoxLayout(self)
         buttons = QHBoxLayout()
-        self.designer_button = QPushButton("Open visual path designer…")
+        self.designer_button = QPushButton("Legacy point editor…")
         self.designer_button.setToolTip(
             "Edit x/y from a top-down metre grid and enter elevation (z) numerically. This is not a full 3D viewer."
         )
         self.designer_button.clicked.connect(self.open_designer)
-        buttons.addWidget(self.designer_button)
-        self.designer_3d_button = QPushButton("Open 3D path designer…")
+
+        self.designer_3d_button = QPushButton("Edit 3D path…")
         self.designer_3d_button.setToolTip(
             "Edit the full three-dimensional path: perspective, top, front and "
             "side views, numeric x/y/z and azimuth/elevation/distance entry, "
@@ -105,6 +107,7 @@ class SamPathPanel(QWidget):
         )
         self.designer_3d_button.clicked.connect(self.open_3d_designer)
         buttons.addWidget(self.designer_3d_button)
+        buttons.addWidget(self.designer_button)
         buttons.addStretch(1)
         layout.addLayout(buttons)
         self.metadata_label = QLabel()
@@ -120,7 +123,11 @@ class SamPathPanel(QWidget):
         )
         plots.addWidget(self.itd_plot, 0, 0)
         plots.addWidget(self.ild_plot, 0, 1)
-        plots.addWidget(self.distance_plot, 1, 0, 1, 2)
+        self.elevation_plot = PlotWidget(
+            "Elevation", x_label="time (s)", y_label="degrees"
+        )
+        plots.addWidget(self.distance_plot, 1, 0)
+        plots.addWidget(self.elevation_plot, 1, 1)
         layout.addLayout(plots)
 
     def set_params(self, params):
@@ -142,6 +149,27 @@ class SamPathPanel(QWidget):
             result["canonicalTrajectory"] = copy.deepcopy(self._trajectory_spec)
         return result
 
+    def set_render_context_provider(self, provider):
+        self._render_context_provider = provider
+
+    def _effective_model(self):
+        from src.audio.sam_workbench.path_automation import compile_bound_trajectory
+
+        context = (
+            self._render_context_provider()
+            if callable(self._render_context_provider)
+            else {}
+        )
+        scene = self._scene_provider() if callable(self._scene_provider) else None
+        return compile_bound_trajectory(
+            self._trajectory_spec,
+            scene,
+            self._source_id,
+            sample_rate_hz=context.get("sample_rate_hz", 44100),
+            origin_sample=context.get("origin_sample", 0),
+            params=context.get("params", self._params),
+        ).model
+
     def set_scene_context(self, scene_provider, source_id: str) -> None:
         """Give the 3D designer the scene it needs to drive path parameters.
 
@@ -159,6 +187,9 @@ class SamPathPanel(QWidget):
         self._disclosure = str(mode or "advanced")
 
     def open_designer(self):
+        if self._trajectory_spec:
+            self.open_3d_designer()
+            return
         dialog = SamPathEditorDialog(self._profile, self._trajectory_spec, self)
         if dialog.exec_() == QDialog.Accepted:
             self._profile = dialog.compatibility_profile()
@@ -182,14 +213,32 @@ class SamPathPanel(QWidget):
                 "commit": self.sceneChanged.emit,
                 "disclosure": self._disclosure,
             }
-        dialog = SamPath3DDialog(self._trajectory_spec, self, modulation=modulation)
+        initial_spec = self._trajectory_spec
+        if not initial_spec and self._profile:
+            initial_spec = promote_profile_to_trajectory(self._profile)
+        dialog = SamPath3DDialog(initial_spec, self, modulation=modulation)
+        if callable(self._render_context_provider):
+            dialog.set_render_context(self._render_context_provider())
+        else:
+            dialog.set_render_context({"params": self._params})
         if dialog.exec_() == QDialog.Accepted:
             self._trajectory_spec = dialog.trajectory_spec()
             self.refresh_preview()
             self.paramsChanged.emit(self.params())
 
     def refresh_preview(self):
-        if self._profile:
+        self.designer_button.setEnabled(not bool(self._trajectory_spec))
+        self.designer_button.setToolTip(
+            "Use Edit 3D path to preserve canonical transforms, timing and constraints."
+            if self._trajectory_spec else
+            "Edit a legacy profile on a top-down metre grid with numeric height."
+        )
+        if self._trajectory_spec:
+            self.metadata_label.setText(
+                "Canonical 3D path: "
+                + str(self._trajectory_spec.get("geometry", {}).get("type", "path"))
+            )
+        elif self._profile:
             version = self._profile.get("schemaVersion", "legacy (unversioned)")
             scale = self._profile.get("sceneUnitsPerMetre", 100.0)
             self.metadata_label.setText(
@@ -208,8 +257,10 @@ class SamPathPanel(QWidget):
                 traversal_data = self._trajectory_spec.get("traversal", {})
                 duration = float(traversal_data.get("durationS", 5.0))
                 times = np.linspace(0.0, duration, 512)
-                trajectory = trajectory_from_dict(self._trajectory_spec)
-                points = trajectory.evaluate(times)
+                trajectory = self._effective_model()
+                if trajectory is None:
+                    raise ValueError("Invalid canonical path")
+                points = trajectory.positions(times)
             elif self._segments:
                 times = np.linspace(
                     0.0,
@@ -228,11 +279,27 @@ class SamPathPanel(QWidget):
             metrics = trajectory_metrics(points, 1.0 / (times[1] - times[0]))
             self.itd_plot.set_series([PlotSeries(times, metrics["itd_s"], name="ITD")])
             self.ild_plot.set_series([PlotSeries(times, metrics["ild_db"], name="ILD")])
+            from src.audio.sam_workbench.trajectory import cartesian_array_to_spherical
+
+            self.elevation_plot.set_series(
+                [
+                    PlotSeries(
+                        times,
+                        cartesian_array_to_spherical(points)[:, 1],
+                        name="Elevation",
+                    )
+                ]
+            )
             distance = np.linalg.norm(points, axis=1)
             self.distance_plot.set_series(
                 [PlotSeries(times, distance, name="distance")]
             )
         except (ValueError, TypeError, KeyError):
             self.preview.set_points([])
-            for plot in (self.itd_plot, self.ild_plot, self.distance_plot):
+            for plot in (
+                self.itd_plot,
+                self.ild_plot,
+                self.distance_plot,
+                self.elevation_plot,
+            ):
                 plot.clear("Create a valid path to preview cues")

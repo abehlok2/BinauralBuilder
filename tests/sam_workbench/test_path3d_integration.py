@@ -135,6 +135,7 @@ def test_a_path_the_dataset_cannot_support_is_reported_beside_it(qtbot):
     qtbot.addWidget(dialog)
     dialog.set_hrtf_dataset(load_sofa(SOFA), label="synthetic")
 
+    qtbot.waitUntil(lambda: dialog._coverage_future is None, timeout=10000)
     assert "•" in dialog.coverage_label.text()
 
 
@@ -144,6 +145,7 @@ def test_an_unreadable_dataset_is_reported_rather_than_ignored(qtbot, tmp_path):
     dialog = SamPath3DDialog()
     qtbot.addWidget(dialog)
     dialog.set_hrtf_dataset(str(tmp_path / "missing.sofa"))
+    qtbot.waitUntil(lambda: dialog._asset_future is None, timeout=10000)
     assert "could not be read" in dialog.coverage_label.text()
 
 

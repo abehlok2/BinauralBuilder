@@ -187,6 +187,10 @@ def trajectory_from_dict(payload: Mapping[str, Any]) -> CanonicalTrajectory:
     not acquire subtly different interpretations of the same saved data.
     """
 
+    if int(payload.get("schemaVersion", 1)) not in (1, 2, 3):
+        raise ValueError(
+            "Unsupported trajectory schemaVersion; preserve this document without editing"
+        )
     geometry_data = payload.get("geometry")
     if not isinstance(geometry_data, Mapping):
         raise ValueError("canonicalTrajectory.geometry must be an object")
@@ -215,6 +219,13 @@ def trajectory_from_dict(payload: Mapping[str, Any]) -> CanonicalTrajectory:
             str(expressions.get("y", "sin(2*pi*u)")),
             str(expressions.get("z", "0")),
         )
+    elif (
+        kind in ("spline", "polyline")
+        and geometry_data.get("interpolation") == "spherical"
+    ):
+        from .authoring import SphericalPolyline
+
+        geometry = SphericalPolyline(points, closed)
     elif kind == "spline":
         geometry = Spline(points, closed)
     elif kind == "bezier":
@@ -261,6 +272,15 @@ def geometry_to_dict(geometry: Any, *, closed: bool = False) -> dict[str, Any]:
     the author sees and edits.
     """
 
+    from .authoring import SphericalPolyline
+
+    if isinstance(geometry, SphericalPolyline):
+        return {
+            "type": "polyline",
+            "controlPointsM": [list(p) for p in geometry.points_m],
+            "closed": geometry.closed,
+            "interpolation": "spherical",
+        }
     for name, factory in _SPATIAL.items():
         if isinstance(geometry, factory):
             return {"type": name, "parameters": _fields(geometry)}
@@ -329,6 +349,7 @@ def path_model_from_dict(payload: Mapping[str, Any]):
     """
 
     from .path_model import PathModel, SourceOrientation
+    from .authoring import PathConstraints
     from .transforms import ListenerTransform, Transform
 
     trajectory = trajectory_from_dict(payload)
@@ -369,6 +390,7 @@ def path_model_from_dict(payload: Mapping[str, Any]):
         )
     )
     return PathModel(
+        constraints=PathConstraints.from_mapping(payload.get("constraints")),
         geometry=trajectory.geometry,
         traversal=trajectory.traversal,
         transform=transform,

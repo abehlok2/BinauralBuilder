@@ -114,8 +114,8 @@ def test_enabling_a_row_commits_one_route_to_the_scene(qtbot):
     row["low"].setValue(0.0)
     row["high"].setValue(0.4)
 
-    committed = holder.get("committed")
-    assert committed is not None, "an enabled row must reach the host scene"
+    committed = widget._motion_scene()
+    assert committed is not None, "an enabled row must reach the draft scene"
     routes = ModulationMatrix.from_mapping(committed["modulation"]).routes
     matching = [
         route
@@ -142,7 +142,7 @@ def test_a_range_entered_high_to_low_sweeps_the_other_way(qtbot):
     row["low"].setValue(0.0)
     row["high"].setValue(-12.0)
 
-    routes = ModulationMatrix.from_mapping(holder["committed"]["modulation"]).routes
+    routes = ModulationMatrix.from_mapping(widget._motion_scene()["modulation"]).routes
     route = next(r for r in routes if r.parameter_path == "transform.roll_deg")
     assert (route.minimum, route.maximum) == pytest.approx((-12.0, 0.0))
     assert route.polarity == -1
@@ -164,7 +164,7 @@ def test_a_range_can_straddle_zero(qtbot):
     row["low"].setValue(-45.0)
     row["high"].setValue(45.0)
 
-    routes = ModulationMatrix.from_mapping(holder["committed"]["modulation"]).routes
+    routes = ModulationMatrix.from_mapping(widget._motion_scene()["modulation"]).routes
     route = next(r for r in routes if r.parameter_path == "transform.yaw_deg")
     assert route.apply(0.0, 0.0) == pytest.approx(-45.0)
     assert route.apply(0.5, 0.0) == pytest.approx(0.0)
@@ -184,7 +184,7 @@ def test_an_empty_range_is_inert_but_not_refused(qtbot):
     # Mid-edit friendliness: the row stays armed, but a range with no width
     # holds the value still and none is written.
     assert row["enable"].isChecked()
-    routes = ModulationMatrix.from_mapping(holder["committed"]["modulation"]).routes
+    routes = ModulationMatrix.from_mapping(widget._motion_scene()["modulation"]).routes
     assert routes == ()
 
 
@@ -219,7 +219,7 @@ def test_existing_routes_populate_the_rows_on_open(qtbot):
     yaw["low"].setValue(0.0)
     yaw["high"].setValue(5.0)
     row["enable"].setChecked(False)
-    routes = ModulationMatrix.from_mapping(holder["committed"]["modulation"]).routes
+    routes = ModulationMatrix.from_mapping(widget._motion_scene()["modulation"]).routes
     assert [r.parameter_path for r in routes] == ["transform.yaw_deg"]
 
 
@@ -235,7 +235,7 @@ def test_a_new_modulator_is_created_when_requested(qtbot):
     row["low"].setValue(0.0)
     row["high"].setValue(0.2)
 
-    committed = holder["committed"]
+    committed = widget._motion_scene()
     ids = [str(item.get("id")) for item in committed["modulators"]]
     assert len(ids) == 1 and ids[0].startswith("lfo")
     routes = ModulationMatrix.from_mapping(committed["modulation"]).routes
@@ -302,10 +302,10 @@ def test_preview_tick_shows_live_parameter_values(qtbot):
     row["low"].setValue(0.0)
     row["high"].setValue(0.9)
 
-    widget._preview_time = 1.0
-    widget._advance_preview()
+    widget._preview_time = 1.05
+    widget._draw_preview()
 
-    # The tick advances by one timer interval before drawing.
+    # Drawing uses explicit source time; the timer now uses elapsed time.
     assert "radius_m=" in widget.motion_status.text()
     assert "t 1.05 s" in widget.motion_status.text()
 
@@ -349,7 +349,7 @@ def test_editing_a_definition_commits_it_to_the_scene(qtbot):
     widget.motion_rate_spin.setValue(1.5)
     widget.motion_waveform_combo.setCurrentText("random")
 
-    committed = holder["committed"]["modulators"][0]
+    committed = widget._motion_scene()["modulators"][0]
     assert committed["rateHz"] == pytest.approx(1.5)
     assert committed["waveform"] == "random"
     # Seed becomes relevant the moment the waveform is random.
@@ -364,7 +364,7 @@ def test_seed_edits_are_committed_for_random_waveforms(qtbot):
     widget.motion_waveform_combo.setCurrentText("random")
     widget.motion_seed_spin.setValue(42)
 
-    committed = holder["committed"]["modulators"][0]
+    committed = widget._motion_scene()["modulators"][0]
     assert committed["seed"] == 42
 
 
@@ -382,7 +382,7 @@ def test_a_newly_created_modulator_is_selected_in_the_editor(qtbot):
     # already had lfo1, so the quick-add becomes lfo2.
     created = widget.motion_modulator_combo.currentData()
     assert created == "lfo2"
-    ids = {str(item.get("id")) for item in holder["scene"]["modulators"]}
+    ids = {str(item.get("id")) for item in widget._motion_scene()["modulators"]}
     assert ids == {"lfo1", "lfo2"}
     assert widget.modulator_box.isEnabled()
     assert widget.motion_rate_spin.value() == pytest.approx(0.25)
@@ -523,7 +523,7 @@ def test_the_drawn_shape_changes_as_preview_time_advances(qtbot):
 
     radii = []
     for _ in range(4):
-        widget._advance_preview()
+        widget._draw_preview()
         live = widget.views["top"]._live
         assert len(live), "a modulated path must draw its shape at this instant"
         distances = np.linalg.norm(live, axis=1)

@@ -23,11 +23,14 @@ from __future__ import annotations
 import copy
 import dataclasses
 import math
+import json
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Mapping
 
 import numpy as np
-from PyQt5.QtCore import Qt, QTimer, pyqtSignal
+from PyQt5.QtCore import Qt, QTimer, QElapsedTimer, pyqtSignal
+from PyQt5.QtGui import QKeySequence
 from PyQt5.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -43,6 +46,9 @@ from PyQt5.QtWidgets import (
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QShortcut,
+    QSlider,
+    QSizePolicy,
     QSpinBox,
     QSplitter,
     QTableWidget,
@@ -170,6 +176,8 @@ class _AxisRow(QWidget):
             spin = QDoubleSpinBox()
             spin.setRange(minimum, maximum)
             spin.setDecimals(3)
+            spin.setMinimumWidth(0)
+            spin.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
             spin.setSingleStep(0.1)
             spin.setSuffix(suffix)
             # Which box is which is not obvious from three identical spinners
@@ -223,6 +231,34 @@ class SamPath3DDialog(QDialog):
         # that persists an edited scene. Without it the Motion group is built
         # but disabled, so its absence is stated rather than silent.
         self._motion = dict(modulation or {})
+        self._host_commit = self._motion.get("commit")
+        provider = self._motion.get("scene")
+        self._draft_scene = copy.deepcopy(provider()) if callable(provider) else None
+        if self._draft_scene is not None:
+            self._motion["scene"] = lambda: copy.deepcopy(self._draft_scene)
+            self._motion["commit"] = self._stage_scene
+        self._history = []
+        self._history_index = -1
+        self._restoring = True
+        self._drag_active = False
+        self._model_cache = {}
+        self._render_context = {}
+        self._preview_clock = QElapsedTimer()
+        self._play_origin = 0.0
+        self._coverage_timer = QTimer(self)
+        self._coverage_timer.setSingleShot(True)
+        self._coverage_timer.setInterval(150)
+        self._coverage_timer.timeout.connect(self._refresh_coverage)
+        self._unsupported = False
+        self._coverage_executor = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="path-coverage"
+        )
+        self._coverage_future = None
+        self._asset_future = None
+        self._revision = 0
+        self._coverage_poll = QTimer(self)
+        self._coverage_poll.setInterval(40)
+        self._coverage_poll.timeout.connect(self._poll_coverage)
         self._motion_disclosure = str(self._motion.get("disclosure", "advanced"))
         self._updating = False
         self._selected = -1
@@ -239,6 +275,11 @@ class SamPath3DDialog(QDialog):
         self._timer = QTimer(self)
         self._timer.setInterval(50)
         self._timer.timeout.connect(self._advance_preview)
+        self._restoring = False
+        self._refresh_coverage()
+        self._remember_edit()
+        self._undo_shortcut = QShortcut(QKeySequence.Undo, self, activated=self.undo)
+        self._redo_shortcut = QShortcut(QKeySequence.Redo, self, activated=self.redo)
 
     # ------------------------------------------------------------------ setup
 
@@ -261,6 +302,7 @@ class SamPath3DDialog(QDialog):
         layout.addWidget(chain)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        self.button_box = buttons
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
@@ -269,6 +311,12 @@ class SamPath3DDialog(QDialog):
         header = QWidget()
         row = QHBoxLayout(header)
         row.setContentsMargins(0, 0, 0, 0)
+        self.undo_button = QPushButton("Undo")
+        self.redo_button = QPushButton("Redo")
+        self.undo_button.clicked.connect(self.undo)
+        self.redo_button.clicked.connect(self.redo)
+        row.addWidget(self.undo_button)
+        row.addWidget(self.redo_button)
         row.addWidget(QLabel("Geometry:"))
         self.primitive_combo = QComboBox()
         self.primitive_combo.addItem("— points —")
@@ -288,10 +336,10 @@ class SamPath3DDialog(QDialog):
         self.primitive_combo.currentTextChanged.connect(self._primitive_changed)
         row.addWidget(self.primitive_combo)
 
-        self.shell_check = QCheckBox("HRTF coverage shell")
+        self.shell_check = QCheckBox("Measurement radius")
         self.shell_check.setToolTip(
-            "Draw the sphere an HRTF dataset measures on. A path that leaves it "
-            "is being extrapolated rather than reproduced."
+            "Draw the dataset measurement radius. This sphere does not indicate "
+            "directional coverage; orange path sections indicate sparse or uncovered directions."
         )
         self.shell_check.toggled.connect(self._shell_toggled)
         row.addWidget(self.shell_check)
@@ -318,6 +366,8 @@ class SamPath3DDialog(QDialog):
         for index, plane in enumerate(("top", "front", "side")):
             view = OrthographicPathView(plane)
             view.pointMoved.connect(self._point_dragged)
+            view.dragStarted.connect(self._begin_drag)
+            view.dragFinished.connect(self._end_drag)
             self.views[plane] = view
             grid.addWidget(view, (index + 1) // 2, (index + 1) % 2)
         for view in self.views.values():
@@ -344,8 +394,9 @@ class SamPath3DDialog(QDialog):
         page = QWidget()
         layout = QVBoxLayout(page)
 
-        numeric = QGroupBox("Selected point")
+        numeric = QGroupBox("Selected point — listener frame")
         form = QFormLayout(numeric)
+        form.setRowWrapPolicy(QFormLayout.WrapLongRows)
         self.cartesian_row = _AxisRow(" m")
         self.cartesian_row.changed.connect(self._cartesian_edited)
         form.addRow("X / Y / Z", self.cartesian_row)
@@ -396,7 +447,9 @@ class SamPath3DDialog(QDialog):
         layout.addWidget(numeric)
 
         self.table = QTableWidget(0, 4)
-        self.table.setHorizontalHeaderLabels(["Time (s)", "X", "Y", "Z"])
+        self.table.setHorizontalHeaderLabels(
+            ["Time (s)", "Local X", "Local Y", "Local Z"]
+        )
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.itemSelectionChanged.connect(self._table_selection_changed)
         self.table.itemChanged.connect(self._table_edited)
@@ -417,23 +470,73 @@ class SamPath3DDialog(QDialog):
         helpers = QGroupBox("Whole-path helpers")
         helper_layout = QVBoxLayout(helpers)
         for text, slot, tip in (
-            ("Snap to horizontal plane", self._snap_horizontal,
-             "Set every height to zero, flattening the path into the ear-height plane"),
-            ("Snap to listener height", self._snap_listener_height,
-             "Move the path vertically so its mean height is the listener's"),
-            ("Normalize distance", self._normalize_distance,
-             "Scale the path so its mean distance is one metre"),
-            ("Maintain constant distance", self._constant_distance,
-             "Push every point onto one sphere, keeping its direction. "
-             "This is the surface an HRTF dataset measures."),
-            ("Reverse direction", self._reverse,
-             "Traverse the same geometry the other way round"),
+            (
+                "Snap to horizontal plane",
+                self._snap_horizontal,
+                "Set every height to zero, flattening the path into the ear-height plane",
+            ),
+            (
+                "Snap to listener height",
+                self._snap_listener_height,
+                "Move the path vertically so its mean height is the listener's",
+            ),
+            (
+                "Normalize distance",
+                self._normalize_distance,
+                "Scale the path so its mean distance is one metre",
+            ),
+            (
+                "Project control points to sphere",
+                self._constant_distance,
+                "Push every point onto one sphere, keeping its direction. "
+                "Interpolated segments may leave the sphere; use a distance constraint to lock the whole path.",
+            ),
+            (
+                "Reverse direction",
+                self._reverse,
+                "Traverse the same geometry the other way round",
+            ),
         ):
             button = QPushButton(text)
             button.setToolTip(tip)
             button.clicked.connect(slot)
             helper_layout.addWidget(button)
         layout.addWidget(helpers)
+        constraints = QGroupBox("Whole-path constraints — listener-relative")
+        rows = QFormLayout(constraints)
+        self.constraint_controls = {}
+        for key, label, low, high, default in (
+            ("distance_m", "Lock distance (m)", 0.001, 1000, 1),
+            ("elevation_deg", "Lock elevation (°)", -90, 90, 0),
+            ("azimuth_deg", "Lock azimuth (°)", -180, 180, 0),
+            ("minimum_height_m", "Minimum height (m)", -1000, 1000, -1),
+            ("maximum_height_m", "Maximum height (m)", -1000, 1000, 1),
+        ):
+            enabled = QCheckBox(label)
+            enabled.setToolTip("Enable this constraint for the complete listener-relative path, including interpolated positions and modulation.")
+            value = QDoubleSpinBox()
+            value.setDecimals(3)
+            value.setRange(low, high)
+            value.setValue(default)
+            value.setEnabled(False)
+            value.setToolTip(
+                "Applied to every evaluated position after the path transform, including between control points."
+            )
+            enabled.toggled.connect(value.setEnabled)
+            enabled.toggled.connect(self._refresh)
+            value.valueChanged.connect(self._refresh)
+            rows.addRow(enabled, value)
+            self.constraint_controls[key] = (enabled, value)
+        self.clearance_spin = QDoubleSpinBox()
+        self.clearance_spin.setRange(0, 10)
+        self.clearance_spin.setDecimals(3)
+        self.clearance_spin.setSuffix(" m")
+        self.clearance_spin.setToolTip(
+            "Warn when the evaluated path enters this radius around the listener. Does not silently move the path."
+        )
+        self.clearance_spin.valueChanged.connect(self._refresh)
+        rows.addRow("Listener clearance", self.clearance_spin)
+        layout.addWidget(constraints)
         return page
 
     # --- geometry tab -------------------------------------------------------
@@ -477,9 +580,12 @@ class SamPath3DDialog(QDialog):
             "Listener-relative coordinates follow the head; world coordinates "
             "stay fixed in the room and are resolved against the listener pose."
         )
+        self.frame_combo.currentIndexChanged.connect(self._refresh)
         frame_form.addRow("Coordinates", self.frame_combo)
         self.interpolation_combo = QComboBox()
-        self.interpolation_combo.addItems(["hold", "linear", "cubic", "catmull_rom"])
+        self.interpolation_combo.addItems(
+            ["hold", "linear", "cubic", "catmull_rom", "spherical"]
+        )
         self.interpolation_combo.setCurrentText("cubic")
         self.interpolation_combo.setToolTip(
             "How the path is drawn between the points you place. 'linear' "
@@ -569,6 +675,10 @@ class SamPath3DDialog(QDialog):
         self.speed_combo = QComboBox()
         self.speed_combo.addItem("Constant linear speed", "constant_speed")
         self.speed_combo.addItem("Curve parameter speed", "parameter_speed")
+        self.speed_combo.addItem("Constant angular speed", "angular_speed")
+        self.speed_combo.addItem(
+            "Authored keyframe times (one shot)", "authored_timing"
+        )
         self.speed_combo.setToolTip(
             "Constant speed advances by physical distance, so the source covers "
             "metres at an even rate. Parameter speed advances along the curve's "
@@ -609,6 +719,28 @@ class SamPath3DDialog(QDialog):
         self._sync_jump_controls(self.mode_combo.currentText())
         layout.addWidget(box)
 
+        self.preview_duration_spin = QDoubleSpinBox()
+        self.preview_duration_spin.setRange(0.01, 36000)
+        self.preview_duration_spin.setValue(5.0)
+        self.preview_duration_spin.setSuffix(" s")
+        self.preview_duration_spin.setToolTip(
+            "Preview and coverage interval from source start. Include a full slow modulation cycle when checking coverage."
+        )
+        self.preview_duration_spin.valueChanged.connect(self._refresh)
+        form.addRow("Preview interval", self.preview_duration_spin)
+        self.scrubber = QSlider(Qt.Horizontal)
+        self.scrubber.setRange(0, 10000)
+        self.scrubber.setToolTip(
+            "Scrub the effective source position over the preview interval."
+        )
+        self.scrubber.valueChanged.connect(self._scrub)
+        layout.addWidget(self.scrubber)
+        from .sam_analysis_panel import PlotWidget
+
+        self.elevation_plot = PlotWidget(
+            "Elevation", x_label="time (s)", y_label="degrees"
+        )
+        layout.addWidget(self.elevation_plot)
         self.metrics_label = QLabel()
         self.metrics_label.setWordWrap(True)
         layout.addWidget(self.metrics_label)
@@ -630,6 +762,8 @@ class SamPath3DDialog(QDialog):
     # ------------------------------------------------------------------- load
 
     def _load_spec(self):
+        self._updating = True
+        self._loaded_values = None
         geometry = self._spec.get("geometry", {}) or {}
         kind = str(geometry.get("type", "spline"))
         self._parameters = dict(geometry.get("parameters", {}) or {})
@@ -647,7 +781,11 @@ class SamPath3DDialog(QDialog):
 
         self.primitive_combo.blockSignals(True)
         index = self.primitive_combo.findText(kind)
-        self.primitive_combo.setCurrentIndex(index if index >= 0 else self.primitive_combo.findText("spline"))
+        self._unsupported = index < 0 or int(self._spec.get("schemaVersion", 1)) > 3
+        if index < 0:
+            self.primitive_combo.addItem(kind)
+            index = self.primitive_combo.findText(kind)
+        self.primitive_combo.setCurrentIndex(index)
         self.primitive_combo.blockSignals(False)
 
         traversal = self._spec.get("traversal", {}) or {}
@@ -657,11 +795,15 @@ class SamPath3DDialog(QDialog):
         self.direction_combo.setCurrentIndex(0 if int(traversal.get("direction", 1)) == 1 else 1)
         self.steps_spin.setValue(int(traversal.get("steps", 8)))
         self.crossfade_spin.setValue(float(traversal.get("crossfadeS", 0.0)))
-        self.closed_check.setChecked(bool(geometry.get("closed", False)))
-        self.interpolation_combo.setCurrentText(str(self._spec.get("interpolation", "cubic")))
+        self.closed_check.setChecked(
+            bool(geometry.get("closed", self._spec.get("closed", False)))
+        )
+        self.interpolation_combo.setCurrentText(
+            str(self._spec.get("interpolation", geometry.get("interpolation", "cubic")))
+        )
 
         law = str(self._spec.get("speedLaw", "constant_speed" if self._spec.get("arcLength", True) else "parameter_speed"))
-        self.speed_combo.setCurrentIndex(0 if law == "constant_speed" else 1)
+        self.speed_combo.setCurrentIndex(max(0, self.speed_combo.findData(law)))
         frame = str(self._spec.get("coordinateSystem", "listener_relative_cartesian"))
         self.frame_combo.setCurrentIndex(0 if frame == "listener_relative_cartesian" else 1)
 
@@ -670,7 +812,15 @@ class SamPath3DDialog(QDialog):
         self.scale_row.set_value(transform.get("scale", (1.0, 1.0, 1.0)))
         self.rotation_row.set_value(transform.get("yawPitchRollDegrees", (0.0, 0.0, 0.0)))
 
+        constraints = self._spec.get("constraints", {})
+        for key, (enabled, value) in self.constraint_controls.items():
+            enabled.setChecked(constraints.get(key) is not None)
+            if constraints.get(key) is not None:
+                value.setValue(float(constraints[key]))
+        self.clearance_spin.setValue(float(constraints.get("clearance_m", 0)))
         self._rebuild_parameter_form()
+        self._updating = False
+        self._loaded_values = copy.deepcopy(self.trajectory_spec())
         self._refresh()
 
     @staticmethod
@@ -1277,7 +1427,7 @@ class SamPath3DDialog(QDialog):
         points = self._editable_points()
         if not (0 <= index < len(points)):
             return
-        self._set_editable_point(index, position)
+        self._set_editable_point(index, self._from_display(position))
         self._selected = index
         self._refresh()
 
@@ -1296,7 +1446,7 @@ class SamPath3DDialog(QDialog):
         self.keyframe_time_spin.setEnabled(active and self.is_keyframed)
         if not active:
             return
-        point = points[self._selected]
+        point = self._to_display([points[self._selected]])[0]
         self._updating = True
         self.cartesian_row.set_value(point)
         azimuth, elevation, distance = cartesian_array_to_spherical(np.asarray([point]))[0]
@@ -1310,7 +1460,9 @@ class SamPath3DDialog(QDialog):
     def _cartesian_edited(self):
         if self._updating or not (0 <= self._selected < len(self._editable_points())):
             return
-        self._set_editable_point(self._selected, self.cartesian_row.value())
+        self._set_editable_point(
+            self._selected, self._from_display(self.cartesian_row.value())
+        )
         self._refresh()
 
     def _spherical_edited(self):
@@ -1324,7 +1476,7 @@ class SamPath3DDialog(QDialog):
             self.elevation_spin.value(),
             self.distance_spin.value(),
         )
-        self._set_editable_point(self._selected, [float(value) for value in position])
+        self._set_editable_point(self._selected, self._from_display(position))
         self._refresh()
 
     def _keyframe_time_edited(self):
@@ -1427,9 +1579,9 @@ class SamPath3DDialog(QDialog):
                 "points. Adjust its numbers on the Geometry tab instead.",
             )
             return
-        moved = transform(np.asarray(points, dtype=float))
+        moved = transform(self._to_display(points))
         for index, point in enumerate(moved):
-            self._set_editable_point(index, point)
+            self._set_editable_point(index, self._from_display(point))
         self._refresh()
 
     def _snap_horizontal(self):
@@ -1473,21 +1625,20 @@ class SamPath3DDialog(QDialog):
         selected there is nothing to be outside of.
         """
 
+        self._revision += 1
+        if self._asset_future is not None:
+            self._asset_future.cancel()
+            self._asset_future = None
+        for view in self.views.values():
+            view.set_coverage_mask([])
         positions = None
         if dataset is not None:
             positions = getattr(dataset, "positions_m", None)
             if positions is None and isinstance(dataset, (str, Path)):
-                try:
-                    from src.audio.sam_workbench.hrtf.sofa_io import load_sofa
-
-                    loaded = load_sofa(str(dataset))
-                    positions = loaded.positions_m
-                    label = label or Path(str(dataset)).name
-                except Exception as error:  # noqa: BLE001 - reported in the label
-                    self._dataset_positions = None
-                    self._dataset_label = f"{dataset} could not be read: {error}"
-                    self._refresh_coverage()
-                    return
+                context = copy.deepcopy(self._render_context)
+                context.setdefault("params", {})["hrtfAsset"] = str(dataset)
+                self.set_render_context(context)
+                return
             if positions is None:
                 positions = np.asarray(dataset, dtype=np.float64)
         self._dataset_positions = None if positions is None else np.asarray(
@@ -1525,30 +1676,105 @@ class SamPath3DDialog(QDialog):
         label = getattr(self, "coverage_label", None)
         if label is None:
             return
+        if self._asset_future is not None:
+            label.setText("Loading selected HRTF measurement positions…")
+            return
         if self._dataset_positions is None:
             label.setText(
                 self._dataset_label
                 or "No HRTF dataset selected, so coverage is not being checked."
             )
             return
-        curve = self._sample_curve()
-        if len(curve) < 2:
-            label.setText("")
+        if self._coverage_future is not None:
             return
-        try:
-            from src.audio.sam_workbench.hrtf.coverage import assess_path_coverage
-
-            report = assess_path_coverage(self._dataset_positions, curve)
-        except Exception as error:  # noqa: BLE001 - advice must not block editing
-            label.setText(f"Coverage could not be assessed: {error}")
+        model = self._preview_model()
+        if model is None:
+            label.setText("Fix the invalid path before checking coverage.")
             return
-        if not report.issues:
-            name = self._dataset_label or "the selected dataset"
-            label.setText(f"Fully covered by {name}.")
-            return
-        label.setText(
-            "\n".join(f"• {issue.message}" for issue in report.issues)
+        curve = self._positions_over(model)
+        options = self._render_context.get("params", {}).get("hrtfOptions", {})
+        rate = float(self._render_context.get("sample_rate_hz", 44100))
+        interval = max(
+            1,
+            int(
+                options.get(
+                    "minControlIntervalSamples",
+                    options.get("controlIntervalSamples", 128),
+                )
+            ),
         )
+        from .sam_path_coverage import coverage_preview
+
+        self._coverage_revision = self._revision
+        label.setText("Checking effective path coverage…")
+        self._coverage_future = self._coverage_executor.submit(
+            coverage_preview,
+            self._dataset_positions.copy(),
+            model,
+            self.preview_duration_spin.value(),
+            rate,
+            interval,
+            copy.deepcopy(options),
+            curve.copy(),
+        )
+        self._coverage_poll.start()
+
+    def set_render_context(self, context):
+        self._render_context = copy.deepcopy(context)
+        self._dataset_positions = None
+        self._dataset_label = ""
+        if self._asset_future is not None:
+            self._asset_future.cancel()
+            self._asset_future = None
+        self._model_cache.clear()
+        params = context.get("params", {})
+        asset = params.get("hrtfAsset")
+        if asset:
+            from .sam_path_coverage import load_positions
+
+            self.coverage_label.setText("Loading selected HRTF measurement positions…")
+            self._asset_future = self._coverage_executor.submit(
+                load_positions,
+                asset,
+                copy.deepcopy(params.get("hrtfOptions", {})),
+                params.get("hrtfAssetHash"),
+            )
+            self._coverage_poll.start()
+        self._refresh()
+
+    def _poll_coverage(self):
+        if self._asset_future is not None and self._asset_future.done():
+            try:
+                self._dataset_positions = self._asset_future.result()
+                self._dataset_label = str(
+                    self._render_context.get("params", {}).get(
+                        "hrtfAsset", "selected dataset"
+                    )
+                )
+            except Exception as error:
+                self._dataset_positions = None
+                self._dataset_label = f"HRTF could not be read: {error}"
+            self._asset_future = None
+            self._shell_toggled(self.shell_check.isChecked())
+            self._refresh_coverage()
+        if self._coverage_future is not None and self._coverage_future.done():
+            future, self._coverage_future = self._coverage_future, None
+            if self._coverage_revision != self._revision:
+                self._refresh_coverage()
+            else:
+                try:
+                    messages, bad = future.result()
+                    self.coverage_label.setText(
+                        "\n".join("• " + message for message in messages)
+                    )
+                    for view in self.views.values():
+                        view.set_coverage_mask(bad)
+                except Exception as error:
+                    self.coverage_label.setText(
+                        f"Coverage could not be assessed: {error}"
+                    )
+        if self._asset_future is None and self._coverage_future is None:
+            self._coverage_poll.stop()
 
     # ----------------------------------------------------------------- refresh
 
@@ -1557,7 +1783,27 @@ class SamPath3DDialog(QDialog):
             return {
                 "type": "keyframes",
                 "interpolation": self.interpolation_combo.currentText(),
-                "keyframes": [key.describe() for key in self._keyframes],
+                "keyframes": [
+                    {
+                        **copy.deepcopy(
+                            next(
+                                (
+                                    entry
+                                    for entry in self._spec.get("geometry", {}).get(
+                                        "keyframes", []
+                                    )
+                                    if entry.get("timeSeconds") == key.time_s
+                                ),
+                                (
+                                    self._spec.get("geometry", {}).get("keyframes", [])
+                                    + [{}] * len(self._keyframes)
+                                )[index],
+                            )
+                        ),
+                        **key.describe(),
+                    }
+                    for index, key in enumerate(self._keyframes)
+                ],
             }
         if self.is_parametric:
             return {"type": self.kind, "parameters": dict(self._parameters)}
@@ -1565,13 +1811,18 @@ class SamPath3DDialog(QDialog):
         return {
             "type": kind,
             "controlPointsM": [list(map(float, point)) for point in self._points],
+            **(
+                {"interpolation": self.interpolation_combo.currentText()}
+                if kind in ("spline", "polyline")
+                else {}
+            ),
             "closed": self.closed_check.isChecked(),
         }
 
     def trajectory_spec(self):
         """The saved form: geometry, traversal, and the metadata to read them."""
 
-        return {
+        edited = {
             "schemaVersion": 2,
             "coordinateSystem": self.frame_combo.currentData(),
             "handedness": "right",
@@ -1584,7 +1835,9 @@ class SamPath3DDialog(QDialog):
                 "translationM": self.offset_row.value(),
                 "yawPitchRollDegrees": self.rotation_row.value(),
                 "scale": self.scale_row.value(),
-                "shear": [0.0, 0.0, 0.0],
+                "shear": copy.deepcopy(
+                    self._spec.get("transform", {}).get("shear", [0.0, 0.0, 0.0])
+                ),
             },
             "traversal": {
                 "mode": self.mode_combo.currentText(),
@@ -1598,13 +1851,78 @@ class SamPath3DDialog(QDialog):
             "arcLength": self.speed_combo.currentData() == "constant_speed",
         }
 
+        loaded = getattr(self, "_loaded_values", None)
+        if loaded:
+            for section in ("transform", "traversal"):
+                for key, value in edited[section].items():
+                    if value == loaded.get(section, {}).get(
+                        key
+                    ) and key in self._spec.get(section, {}):
+                        edited[section][key] = copy.deepcopy(self._spec[section][key])
+        if loaded and edited["geometry"].get("type") == self._spec.get(
+            "geometry", {}
+        ).get("type"):
+            for key, value in edited["geometry"].get("parameters", {}).items():
+                original = self._spec.get("geometry", {}).get("parameters", {})
+                if key in original and value == loaded.get("geometry", {}).get(
+                    "parameters", {}
+                ).get(key):
+                    edited["geometry"]["parameters"][key] = copy.deepcopy(original[key])
+        result = copy.deepcopy(self._spec)
+        for key, value in edited.items():
+            if isinstance(value, dict):
+                original = result.get(key, {})
+                # Preserve extensions only when editing the same geometry kind.
+                if key == "geometry" and original.get("type") != value.get("type"):
+                    original = {}
+                result[key] = {**copy.deepcopy(original), **value}
+            else:
+                result[key] = value
+        constraints = copy.deepcopy(self._spec.get("constraints", {}))
+        for key, (enabled, value) in self.constraint_controls.items():
+            constraints.pop(key, None)
+            if enabled.isChecked():
+                constraints[key] = value.value()
+        constraints["clearance_m"] = self.clearance_spin.value()
+        if any(v not in (None, 0) for v in constraints.values()) or any(
+            enabled.isChecked() for enabled, _ in self.constraint_controls.values()
+        ):
+            result["constraints"] = constraints
+        else:
+            result.pop("constraints", None)
+        if result["speedLaw"] == "authored_timing" and self._keyframes:
+            result["traversal"].update(
+                mode="one_shot",
+                durationS=max(key.time_s for key in self._keyframes),
+                direction=1,
+                easing="linear",
+            )
+        extended = (
+            "constraints" in result
+            or result["speedLaw"] in ("authored_timing", "angular_speed")
+            or result["interpolation"] == "spherical"
+        )
+        result["schemaVersion"] = max(
+            3 if extended else 2, int(self._spec.get("schemaVersion", 2))
+        )
+        return result
+
     def path_model(self):
         """The compiled model, or ``None`` when the current edit is invalid."""
 
-        try:
-            return path_model_from_dict(self.trajectory_spec())
-        except (ValueError, TypeError, KeyError):
+        if self._unsupported:
             return None
+        key = json.dumps(self.trajectory_spec(), sort_keys=True)
+        if self._model_cache.get("base_key") != key:
+            try:
+                model = path_model_from_dict(self.trajectory_spec())
+                model.positions(np.linspace(0, max(model.duration_s, 1e-6), 257))
+                self._path_error = ""
+            except (ValueError, TypeError, KeyError) as error:
+                model = None
+                self._path_error = str(error)
+            self._model_cache = {"base_key": key, "base": model}
+        return self._model_cache["base"]
 
     def _preview_model(self):
         """What the renderer would move along: the path with the scene's
@@ -1616,19 +1934,24 @@ class SamPath3DDialog(QDialog):
         scene = self._motion_scene()
         if scene is None:
             return base
+        cache_key = json.dumps(scene, sort_keys=True)
+        if self._model_cache.get("bound_key") == cache_key:
+            return self._model_cache["bound"]
         try:
             bound = compile_bound_trajectory(
                 self.trajectory_spec(),
                 scene,
                 str(self._motion.get("source_id", "") or ""),
-                sample_rate_hz=48_000.0,
-                origin_sample=0,
-                params={},
+                sample_rate_hz=float(self._render_context.get("sample_rate_hz", 48000)),
+                origin_sample=int(self._render_context.get("origin_sample", 0)),
+                params=self._render_context.get("params", {}),
             )
         except Exception:  # noqa: BLE001 - a broken route must not break drawing
             return base
         model = bound.model
-        return model if getattr(model, "bindings", None) else base
+        model = model if getattr(model, "bindings", None) else base
+        self._model_cache.update(bound_key=cache_key, bound=model)
+        return model
 
     def _sample_curve(self):
         """The *authored* shape, without motion - what coverage is judged on."""
@@ -1641,7 +1964,7 @@ class SamPath3DDialog(QDialog):
             return np.zeros((0, 3))
         # Sampled through the traversal, not the raw geometry: what is drawn is
         # what the renderer will be sent.
-        times = np.linspace(0.0, self.duration_spin.value(), count)
+        times = np.linspace(0.0, self.preview_duration_spin.value(), count)
         try:
             return np.asarray(model.positions(times), dtype=float)
         except (ValueError, TypeError):
@@ -1650,6 +1973,24 @@ class SamPath3DDialog(QDialog):
     def _refresh(self):
         if self._updating:
             return
+        self._revision += 1
+        for view in self.views.values():
+            view.set_coverage_mask([])
+        authored = self.speed_combo.currentData() == "authored_timing"
+        for widget in (
+            self.mode_combo,
+            self.duration_spin,
+            self.direction_combo,
+            self.easing_combo,
+        ):
+            widget.setEnabled(not authored)
+        self.interpolation_combo.setEnabled(
+            self.is_keyframed or self.kind in ("spline", "polyline")
+        )
+        # Non-keyframed point geometries support their native curve and spherical arcs.
+        for index in range(self.interpolation_combo.count()):
+            item = self.interpolation_combo.model().item(index)
+            item.setEnabled(self.is_keyframed or item.text() in ("cubic", "spherical"))
         bound = self._preview_model()
         base = self.path_model()
         moving = getattr(bound, "bindings", None)
@@ -1660,14 +2001,52 @@ class SamPath3DDialog(QDialog):
             self._positions_over(base) if moving and base is not None else np.zeros((0, 3))
         )
         points = self._editable_points()
+        displayed = self._to_display(points)
         for view in self.views.values():
             view.set_reference_curve(reference)
-            view.set_path(points, curve)
+            view.set_path(displayed, curve)
             view.set_selected(self._selected)
-        self._refresh_table(points)
+        if not self._drag_active:
+            self._refresh_table(points)
         self._refresh_numeric()
         self._refresh_metrics(curve)
-        self._refresh_coverage()
+        if base is not None:
+            from src.audio.sam_workbench.trajectory.authoring import loop_findings
+
+            try:
+                notes = loop_findings(base)
+                if base.speed_law == "authored_timing":
+                    notes.append(
+                        "Keyframe timestamps are absolute source times; cycle, easing and direction controls are inactive."
+                    )
+                if (
+                    len(curve)
+                    and self.clearance_spin.value() > 0
+                    and np.min(np.linalg.norm(curve, axis=1))
+                    < self.clearance_spin.value()
+                ):
+                    notes.append(
+                        "Path enters the listener clearance radius. Adjust the shape or distance constraint."
+                    )
+                notes.extend(getattr(bound, "notes", ()))
+                if notes:
+                    self.metrics_label.setText(
+                        self.metrics_label.text() + "\n" + "\n".join(notes)
+                    )
+            except ValueError as error:
+                self.metrics_label.setText(str(error))
+        self._coverage_timer.start()
+        self.button_box.button(QDialogButtonBox.Ok).setEnabled(base is not None)
+        if base is None:
+            self.metrics_label.setText(
+                "Cannot save: "
+                + (
+                    "unsupported geometry or newer schema"
+                    if self._unsupported
+                    else getattr(self, "_path_error", "invalid path")
+                )
+            )
+        self._remember_edit()
         if self.shell_check.isChecked():
             self._shell_toggled(True)
 
@@ -1712,7 +2091,18 @@ class SamPath3DDialog(QDialog):
             self.metrics_label.setText("Path is not valid yet.")
             return
         spherical = cartesian_array_to_spherical(curve)
-        duration = max(self.duration_spin.value(), 1e-6)
+        duration = max(self.preview_duration_spin.value(), 1e-6)
+        from .sam_analysis_panel import PlotSeries
+
+        self.elevation_plot.set_series(
+            [
+                PlotSeries(
+                    np.linspace(0, duration, len(curve)),
+                    spherical[:, 1],
+                    name="Elevation",
+                )
+            ]
+        )
         length = float(np.sum(np.linalg.norm(np.diff(curve, axis=0), axis=1)))
         self.metrics_label.setText(
             f"Length {length:.2f} m over {duration:.2f} s "
@@ -1725,7 +2115,8 @@ class SamPath3DDialog(QDialog):
 
     def _preview_toggled(self, running):
         if running:
-            self._preview_time = 0.0
+            self._play_origin = self._preview_time
+            self._preview_clock.start()
             self._timer.start()
         else:
             self._timer.stop()
@@ -1733,6 +2124,12 @@ class SamPath3DDialog(QDialog):
                 view.set_marker(None)
                 view.set_live_shape(None)
             self._refresh_motion_status()
+
+    def _scrub(self, value):
+        self._preview_time = value / 10000.0 * self.preview_duration_spin.value()
+        self._play_origin = self._preview_time
+        self._preview_clock.start()
+        self._draw_preview()
 
     def _live_shape(self, model, time_s):
         """The path's shape at ``time_s``, or ``None`` when nothing moves it.
@@ -1771,10 +2168,29 @@ class SamPath3DDialog(QDialog):
         model = self._preview_model()
         if model is None:
             return
-        self._preview_time += self._timer.interval() / 1000.0
-        duration = max(self.duration_spin.value(), 1e-6)
-        if self.mode_combo.currentText() == "one_shot" and self._preview_time > duration:
-            self._preview_time = 0.0
+        elapsed = (
+            self._preview_clock.elapsed() / 1000.0
+            if self._preview_clock.isValid()
+            else 0.0
+        )
+        self._preview_time = self._play_origin + elapsed
+        duration = max(self.preview_duration_spin.value(), 1e-6)
+        if self.path_model().traversal.mode == "one_shot":
+            duration = min(duration, self.path_model().duration_s)
+        if self._preview_time >= duration:
+            self._preview_time = duration
+            self.preview_button.setChecked(False)
+        self.scrubber.blockSignals(True)
+        self.scrubber.setValue(
+            round(self._preview_time / self.preview_duration_spin.value() * 10000)
+        )
+        self.scrubber.blockSignals(False)
+        self._draw_preview()
+
+    def _draw_preview(self):
+        model = self._preview_model()
+        if model is None:
+            return
         try:
             # Evaluated through the same model the renderer uses, so the marker
             # follows the trajectory actually being sent rather than the drawn
@@ -1797,3 +2213,81 @@ class SamPath3DDialog(QDialog):
                 if row["enable"].isChecked()
             )
             self.motion_status.setText(f"Driven: {driven}{live}")
+
+    def _stage_scene(self, scene):
+        self._draft_scene = copy.deepcopy(scene)
+
+    def accept(self):
+        if self.path_model() is None:
+            return
+        if callable(self._host_commit) and self._draft_scene is not None:
+            self._host_commit(copy.deepcopy(self._draft_scene))
+        super().accept()
+
+    def done(self, result):
+        self._timer.stop()
+        self._coverage_timer.stop()
+        self._coverage_poll.stop()
+        self._coverage_executor.shutdown(wait=False, cancel_futures=True)
+        super().done(result)
+
+    def _to_display(self, points):
+        values = np.asarray(points, dtype=float).reshape(-1, 3)
+        model = self.path_model()
+        if model is None or not len(values):
+            return values
+        values = model.transform.apply(values)
+        return (
+            values
+            if model.is_listener_relative
+            else model.listener.world_to_listener(values)
+        )
+
+    def _from_display(self, point):
+        model = self.path_model()
+        if model is None:
+            return point
+        value = np.asarray(point, dtype=float)
+        if not model.is_listener_relative:
+            value = model.listener.listener_to_world(value)
+        return model.transform.inverse(value).tolist()
+
+    def _begin_drag(self):
+        self._drag_active = True
+        for view in self.views.values():
+            view._scale_locked = True
+
+    def _end_drag(self):
+        self._drag_active = False
+        for view in self.views.values():
+            view._scale_locked = False
+        self._refresh()
+
+    def _remember_edit(self):
+        if self._restoring or self._drag_active:
+            return
+        snapshot = (self.trajectory_spec(), copy.deepcopy(self._draft_scene))
+        if self._history_index >= 0 and snapshot == self._history[self._history_index]:
+            return
+        self._history = self._history[: self._history_index + 1] + [snapshot]
+        self._history = self._history[-100:]
+        self._history_index = len(self._history) - 1
+        self.undo_button.setEnabled(self._history_index > 0)
+        self.redo_button.setEnabled(False)
+
+    def _restore_history(self, index):
+        if not 0 <= index < len(self._history):
+            return
+        self._restoring = True
+        self._history_index = index
+        self._spec, self._draft_scene = copy.deepcopy(self._history[index])
+        self._load_spec()
+        self._restoring = False
+        self.undo_button.setEnabled(index > 0)
+        self.redo_button.setEnabled(index + 1 < len(self._history))
+
+    def undo(self):
+        self._restore_history(self._history_index - 1)
+
+    def redo(self):
+        self._restore_history(self._history_index + 1)

@@ -263,3 +263,88 @@ reproducible by someone else, ship the manifest with it; if you need it to be
 reproducible by you later, keep the SOFA assets — the manifest records their
 hashes, and a different file with the same name will be detected rather than
 silently used.
+
+## 3D authoring: coordinates, constraints, and vertical listening checks
+
+Use **Path & Geometry → Edit 3D path** for canonical three-dimensional motion.
+The older point editor remains available for legacy profiles; canonical paths
+use the 3D editor to preserve their transforms, timing and constraints. Opening
+a legacy profile in the 3D editor starts from its existing shape. The four views
+share one listener-relative display frame: +x forward, +y left, +z up. Numeric
+position controls use that same frame; the table explicitly shows local geometry
+coordinates. Drags are converted through the inverse path/listener transforms.
+Whole-path helpers also operate relative to the listener.
+
+The editor preserves listener pose, shear, source orientation, smoothing, and
+extension fields when saving. Unsupported geometries or future schemas cannot
+be accepted by this editor. Invalid values display a reason and disable OK.
+Motion edits stay in a draft until OK; Cancel discards them. Undo/redo covers
+path and motion edits, with a complete mouse drag recorded as one operation.
+
+The **Position** tab includes optional whole-path constraints for distance,
+elevation, azimuth, and minimum/maximum height. Constraints apply after transforms
+and to intermediate positions, including motion modulation. Listener clearance
+is a diagnostic radius, not a hidden movement correction. Conflicting constraints
+are rejected. The older sphere helper projects only control points; use **Lock
+distance** when the complete interpolated path must remain on a sphere.
+
+**Spherical** interpolation for keyframes, polylines, and splines follows shortest
+great-circle segments and interpolates radius separately. It does not flatten
+vertical arcs into Cartesian chords. Opposite endpoints require an intermediate
+point to choose the arc; a point at the listener has no defined direction.
+Nonuniform scaling can change the radius after interpolation, so combine this
+mode with Lock distance when appropriate.
+
+The **Traversal** tab distinguishes linear speed, curve parameter speed, constant
+angular speed, and authored keyframe times. Authored timing is a one-shot source
+clock: each key is reached at its recorded time, with positions held before the
+first and after the last key. Cycle length, reverse, and easing are inactive in
+that mode. Existing paths retain their previous timing unless a new mode is
+selected. Constant angular speed uses an angular-length lookup for a static
+shape; radial-only sections require parameter speed to preserve that motion.
+Animated geometry/transforms use parameter speed instead, with an explicit
+note; they do not promise constant total angular velocity.
+
+A loop with separated endpoints reports its seam jump. Choose ping-pong, close
+or reshape the curve, or select an explicit discontinuous traversal. A closed
+curve with mismatched endpoint tangents reports the abrupt direction change.
+
+Set **Preview interval** long enough to include slow modulation. The scrubber,
+elevation plot, and source marker refer to that interval. Playback uses elapsed
+time rather than counting timer callbacks and stops at the end of a one-shot.
+Preview model compilation is cached, and view scale stays fixed while dragging.
+
+The selected source's HRTF asset, saved hash, source start, sample rate, and filter
+settings reach the path designer. Asset loading and coverage analysis run outside
+the GUI thread. Orange path sections mark sparse/uncovered directions. The
+**Measurement radius** sphere shows only a representative measurement distance;
+it is not a claim of complete angular coverage. Coverage checks include path
+modulation. Very long intervals use explicitly reported reduced sampling, which
+can miss brief excursions; shorten the interval for control-grid checks. Adaptive
+filter-update spacing may be larger than the candidate grid used for this check.
+
+In **HRTF Lab → Audition**, enable **Check vertical localization** to compare
+broadband material, a sine at the current carrier frequency, and that carrier
+with an explicitly selected -30 dB broadband anchor. All three use the same
+constant-distance vertical arc and selected HRTF subject. Choose covered endpoint
+elevations; an unsupported arc is reported before playback. These audition-only
+settings never enable the anchor in the actual voice. Use the existing subject
+ratings and blinded localization test to compare candidates. Geometric rendering
+alone does not add pinna cues or distinguish mirror positions above and below a
+level listener's ear plane.
+
+### Trajectory schema compatibility
+
+Version 1 and 2 trajectories remain readable with their existing default
+semantics. Selecting constraints, spherical interpolation, `angular_speed`, or
+`authored_timing` explicitly upgrades the edited trajectory to schema version 3.
+The parent track and voice schemas do not change. Version 3 adds:
+
+- `constraints`: optional `distance_m`, `elevation_deg`, `azimuth_deg`,
+  `minimum_height_m`, `maximum_height_m`, and diagnostic `clearance_m`.
+- `speedLaw`: `angular_speed` and `authored_timing` in addition to existing modes.
+- `geometry.interpolation: spherical` for keyframes and point paths.
+
+Control points remain Cartesian metres. Do not downgrade a version 3 trajectory
+by changing its version number: an older application may ignore its new fields.
+Export manifests retain the saved trajectory and therefore its chosen semantics.
