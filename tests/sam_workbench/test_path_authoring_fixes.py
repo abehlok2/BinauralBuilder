@@ -538,3 +538,113 @@ def test_vertical_audition_uses_same_arc_for_comparison(monkeypatch):
         assert path[-1, 2] > path[0, 2]
     np.testing.assert_array_equal(captures[0][1], captures[2][1])
     assert not np.array_equal(captures[1][0], captures[2][0])
+
+
+# --- opening the designer on a profile with nothing drawn in it --------------
+
+
+UNDRAWN_PROFILES = {
+    "no points key": {"schemaVersion": 2},
+    "points empty": {"schemaVersion": 2, "points": []},
+    "a single point": {"points": [[10.0, 20.0]]},
+    "two identical points": {"points": [[5.0, 5.0], [5.0, 5.0]]},
+    "entries that are not coordinates": {"points": ["x", None, [1]]},
+}
+
+
+@pytest.mark.parametrize("label", sorted(UNDRAWN_PROFILES))
+def test_a_profile_with_no_path_in_it_still_opens_the_designer(qtbot, monkeypatch, label):
+    """A 2-D profile created but not drawn used to make the button raise.
+
+    ``promote_profile_to_trajectory`` refuses a profile describing no path,
+    which is right, but the panel asked for the promotion whenever a profile
+    existed at all. The ValueError reached the top, so a source whose profile
+    had been started and left empty could not be given a 3-D path at all.
+    """
+
+    seen = []
+
+    class Designer:
+        def __init__(self, initial, *args, **kwargs):
+            seen.append(copy.deepcopy(initial))
+
+        def set_render_context(self, context):
+            pass
+
+        def exec_(self):
+            return 0
+
+    monkeypatch.setattr("src.ui.sam_path_panel.SamPath3DDialog", Designer)
+    panel = SamPathPanel()
+    qtbot.addWidget(panel)
+    panel.set_params({"customPathProfile": UNDRAWN_PROFILES[label]})
+
+    panel.open_3d_designer()
+
+    assert len(seen) == 1, "the designer must open rather than raise"
+    # Nothing to carry over, so the designer starts on its own default path.
+    assert not seen[0]
+
+
+def test_a_profile_that_does_describe_a_path_is_still_promoted(qtbot, monkeypatch):
+    """The guard must not cost the promotion it was added to protect."""
+
+    from src.audio.sam_workbench.trajectory.legacy_paths import (
+        promote_profile_to_trajectory,
+    )
+
+    seen = []
+
+    class Designer:
+        def __init__(self, initial, *args, **kwargs):
+            seen.append(copy.deepcopy(initial))
+
+        def set_render_context(self, context):
+            pass
+
+        def exec_(self):
+            return 0
+
+    monkeypatch.setattr("src.ui.sam_path_panel.SamPath3DDialog", Designer)
+    panel = SamPathPanel()
+    qtbot.addWidget(panel)
+    profile = {"points": [[0.0, 0.0], [100.0, 50.0], [40.0, 120.0]], "closedLoop": True}
+    panel.set_params({"customPathProfile": profile})
+
+    panel.open_3d_designer()
+
+    assert seen == [promote_profile_to_trajectory(profile)]
+
+
+@pytest.mark.parametrize("label", sorted(UNDRAWN_PROFILES))
+def test_promotability_is_decided_by_the_evaluator_not_by_counting(label):
+    """Two of these carry two or more entries and still describe no path, so a
+    caller that counted points would let them through and get the exception it
+    was trying to avoid."""
+
+    from src.audio.sam_workbench.trajectory.legacy_paths import (
+        legacy_profile_is_promotable,
+        promote_profile_to_trajectory,
+    )
+
+    profile = UNDRAWN_PROFILES[label]
+    assert legacy_profile_is_promotable(profile) is False
+    with pytest.raises(ValueError):
+        promote_profile_to_trajectory(profile)
+
+
+@pytest.mark.parametrize("profile", [None, "nonsense", 42, {"points": "not a list"}])
+def test_an_unreadable_profile_is_simply_not_promotable(profile):
+    from src.audio.sam_workbench.trajectory.legacy_paths import (
+        legacy_profile_is_promotable,
+    )
+
+    assert legacy_profile_is_promotable(profile) is False
+
+
+def test_a_drawable_profile_is_promotable():
+    from src.audio.sam_workbench.trajectory.legacy_paths import (
+        legacy_profile_is_promotable,
+    )
+
+    assert legacy_profile_is_promotable({"points": [[0.0, 0.0], [100.0, 50.0]]}) is True
