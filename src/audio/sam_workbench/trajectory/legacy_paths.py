@@ -38,6 +38,7 @@ __all__ = [
     "canonical_profile_points",
     "migrate_legacy_profile",
     "legacy_profile_geometry",
+    "legacy_profile_is_promotable",
 ]
 
 
@@ -104,6 +105,27 @@ def legacy_profile_geometry(profile):
     )
     canonical = transform.to_canonical(scene_points)
     return Polyline(tuple(map(tuple, canonical)), closed=bool(metadata.get("closedLoop", False)))
+
+
+def legacy_profile_is_promotable(profile) -> bool:
+    """Whether this profile carries a path that can become a trajectory.
+
+    Asked through the same evaluator that would do the promoting, rather than
+    by counting points: a profile can hold two entries and still describe no
+    path at all - two identical points, or entries that are not coordinate
+    pairs. A caller that counted instead would let those through and get the
+    exception it was trying to avoid.
+
+    A profile that has been started but not yet drawn is the ordinary case
+    here, not a broken one: an editor opening on it should offer somewhere to
+    begin rather than refuse.
+    """
+
+    try:
+        scene_x, _scene_y = resolve_custom_path_xy(np.zeros(1), profile)
+    except Exception:  # noqa: BLE001 - an unreadable profile is simply not one
+        return False
+    return scene_x is not None
 
 
 def promote_profile_to_trajectory(profile, *, duration_s=10.0):

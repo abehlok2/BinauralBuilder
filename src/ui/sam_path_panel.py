@@ -19,6 +19,7 @@ from PyQt5.QtWidgets import (
 from src.audio.sam_workbench.analysis.trajectory_metrics import trajectory_metrics
 from src.audio.sam_workbench.trajectory.legacy_paths import (
     legacy_profile_geometry,
+    legacy_profile_is_promotable,
     promote_profile_to_trajectory,
 )
 from src.audio.sam_workbench.trajectory import (
@@ -203,6 +204,13 @@ class SamPathPanel(QWidget):
         The legacy compatibility profile is left alone: this editor writes the
         canonical path, and a two-dimensional projection of a path with height
         in it would be a worse record of the author's intent than no update.
+
+        A profile with nothing drawn in it yet is promotable only in the sense
+        that it exists. Asking for it to be promoted raised, and the exception
+        reached the top instead of the designer opening, so a source whose 2-D
+        profile had been created but not drawn could not be given a 3-D path at
+        all. Such a profile now opens the designer on its default path, which
+        is where someone starting from nothing wanted to be.
         """
 
         modulation = None
@@ -214,7 +222,7 @@ class SamPathPanel(QWidget):
                 "disclosure": self._disclosure,
             }
         initial_spec = self._trajectory_spec
-        if not initial_spec and self._profile:
+        if not initial_spec and legacy_profile_is_promotable(self._profile):
             initial_spec = promote_profile_to_trajectory(self._profile)
         dialog = SamPath3DDialog(initial_spec, self, modulation=modulation)
         if callable(self._render_context_provider):
